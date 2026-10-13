@@ -37,6 +37,7 @@ import {
   limparSchema,
   melhorFlash,
   sucessorSugerido,
+  esquecerModelos,
   schemaParaGemini,
   testarGemini,
 } from '../../electron/services/llm'
@@ -525,12 +526,23 @@ async function main(): Promise<void> {
         details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '0.01s' }],
       },
     })
+    // Sem lista na hora de trocar (a fila acaba): desiste com a nota.
     preparar([fora, fora, fora])
     {
       const err = await erroDe(generateMetadata({ texto: ROTEIRO }))
       conferir('desiste com a nota', (err as Error).message, 'O Gemini esta instavel agora. Tente de novo em alguns minutos.')
     }
-    conferir('1 chamada + 2 retentativas', pedidos.length, 3)
+    conferir('1 chamada + 2 retentativas no mesmo modelo', pedidos.slice(0, 3).every((p) => p.url.includes('gemini-3.5-flash:')), true)
+
+    // O caso real de 13/10/2026: o sucessor recem-lancado vive lotado (503
+    // "high demand"). No automatico, vai no proximo da lista em vez de desistir.
+    zerar(null)
+    esquecerModelos()
+    saveSettings({ geminiApiKey: 'AIza-falsa-de-teste-0006', iaProvedor: 'gemini' })
+    preparar([...listaDeModelos(), fora, fora, fora, ...listaDeModelos(), respostaDoGemini(TEXTOS)])
+    const textos = await generateMetadata({ texto: ROTEIRO })
+    conferir('lotado: troca de modelo e da certo', textos.titles.length > 0, true)
+    conferir('foi no proximo da lista', pedidos[pedidos.length - 1]!.url.includes('gemini-2.5-flash:'), true)
   }
 
   console.log('Gemini: chave invalida e sem internet')
@@ -615,6 +627,7 @@ async function main(): Promise<void> {
   console.log('o botao Testar')
   {
     zerar(null)
+    esquecerModelos()
     preparar([...listaDeModelos(), respostaDoGemini({ ok: true })])
     const teste = await testarGemini('AIza-digitada-0007', '')
     conferir('lista so os Gemini de texto, mais novos primeiro', teste.modelos, ['gemini-3.5-flash', 'gemini-2.5-flash'])

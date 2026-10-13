@@ -90,6 +90,30 @@ export const GEMINI_PADRAO = 'gemini-2.5-flash'
  */
 const aposentados = new Set<string>()
 
+/**
+ * Modelos que deram 503 ("high demand") ha pouco, e ate quando evitar. Modelo
+ * recem-lancado vive lotado; o automatico vai no proximo da lista em vez de
+ * deixar a analise sem IA. Passa sozinho: e lotacao, nao aposentadoria.
+ */
+const lotados = new Map<string, number>()
+const LOTADO_POR_MS = 5 * 60_000
+
+/** Esquece aposentados, lotados e o automatico. So os testes usam. */
+export function esquecerModelos(): void {
+  aposentados.clear()
+  lotados.clear()
+  automatico = null
+}
+
+function indisponivel(id: string): boolean {
+  if (aposentados.has(id)) return true
+  const ate = lotados.get(id)
+  if (ate === undefined) return false
+  if (Date.now() < ate) return true
+  lotados.delete(id)
+  return false
+}
+
 /** O 404 de modelo aposentado as vezes diz qual usar: "use models/gemini-X". */
 export function sucessorSugerido(mensagem: string): string | null {
   const achou = /use\s+(?:models\/)?(gemini-[\w.-]*\w)/i.exec(mensagem)
@@ -254,7 +278,9 @@ async function viaGemini<S extends z.ZodType>(
   let modelo = modeloConfigurado || (await modeloAutomatico(chave))
   let formato = formatoQueServe
   let trocouFormato = false
-  let trocouModelo = false
+  // Duas trocas: o caso real e aposentado (404) -> sucessor lotado (503) -> outro.
+  let trocasDeModelo = 0
+  const MAX_TROCAS_DE_MODELO = 2
 
   for (;;) {
     const chamada = await chamarComRetentativa(
@@ -273,16 +299,20 @@ async function viaGemini<S extends z.ZodType>(
       trocouFormato = true
       continue
     }
-    // O automatico caiu num modelo que saiu do ar: marca, e vai no sucessor que
-    // o proprio Google sugere ou no proximo da lista. Uma troca so.
-    if (erro.status === 404 && !modeloConfigurado && !trocouModelo) {
-      aposentados.add(modelo)
+    // O automatico caiu num modelo que saiu do ar (404) ou que esta lotado
+    // mesmo depois das retentativas (503): marca, e vai no sucessor que o
+    // proprio Google sugere ou no proximo da lista.
+    const aposentou = erro.status === 404
+    const lotou = erro.status === 503
+    if ((aposentou || lotou) && !modeloConfigurado && trocasDeModelo < MAX_TROCAS_DE_MODELO) {
+      if (aposentou) aposentados.add(modelo)
+      else lotados.set(modelo, Date.now() + LOTADO_POR_MS)
       automatico = null
-      const sugerido = sucessorSugerido(erro.mensagem)
-      const outro =
-        sugerido && !aposentados.has(sugerido) ? sugerido : await modeloAutomatico(chave)
-      trocouModelo = true
-      if (outro !== modelo) {
+      const sugerido = aposentou ? sucessorSugerido(erro.mensagem) : null
+      const outro = sugerido && !indisponivel(sugerido) ? sugerido : await outroDaLista(chave)
+      trocasDeModelo += 1
+      if (outro && outro !== modelo) {
+        console.warn(`[llm] gemini: ${modelo} deu ${erro.status}, indo no ${outro}`)
         modelo = outro
         automatico = { chave, modelo }
         continue
@@ -726,7 +756,7 @@ export function modelosDeTexto(ids: readonly string[]): string[] {
  * aposenta modelo para chave nova antes de tira-lo da lista.
  */
 export function melhorFlash(ids: readonly string[]): string | null {
-  const texto = modelosDeTexto(ids.filter((id) => !aposentados.has(id)))
+  const texto = modelosDeTexto(ids.filter((id) => !indisponivel(id)))
   const flashes = texto
     .filter((id) => id.includes('flash'))
     .sort(
@@ -769,6 +799,18 @@ export async function listarModelosGemini(chave: string): Promise<string[]> {
     pagina = corpo.nextPageToken
   }
   return ids
+}
+
+/**
+ * O proximo modelo para quando o atual falhou: so da lista, nunca o padrao fixo
+ * (que pode ser justamente o aposentado). null quando nao ha alternativa.
+ */
+async function outroDaLista(chave: string): Promise<string | null> {
+  try {
+    return melhorFlash(await listarModelosGemini(chave))
+  } catch {
+    return null
+  }
 }
 
 async function modeloAutomatico(chave: string): Promise<string> {
@@ -814,7 +856,9 @@ export async function testarGemini(chave: string, modeloConfigurado: string): Pr
     chave,
     modeloConfigurado,
   )
-  if (!resposta.ok) console.warn(`[llm:teste] gemini: ${resposta.bruto}`)
+  if (!resposta.ok) {
+    console.warn(`[llm:teste] gemini (${modeloConfigurado || automatico?.modelo || '?'}): ${resposta.bruto}`)
+  }
   const modelo = resposta.ok
     ? resposta.modelo
     : modeloConfigurado || automatico?.modelo || GEMINI_PADRAO

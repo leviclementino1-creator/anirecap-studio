@@ -1,0 +1,141 @@
+import type { LibraryClip, Nickname, ScriptBlock, SceneDescription } from './channels'
+import { buildScriptIndex, readScript } from './script-reader'
+import { selectClips, type SelectionCandidate } from './selection'
+
+/**
+ * Sugerir cenas para o TRECHO que ele esta marcando.
+ *
+ * Mesmo motor da montagem automatica, usado como assistente e nao como
+ * decisor. A diferenca importa: no automatico o app escolhe e ele corrige; aqui
+ * ele escolhe e o app so poe as mais provaveis na frente. O acervo tem 20 mil
+ * cenas e o roteiro tem ~39 trechos -- o custo do modo manual e varrer o
+ * palheiro 39 vezes, e e esse custo que isto corta.
+ *
+ * Nada aqui filtra a grade: as sugestoes aparecem ANTES dela, e a biblioteca
+ * inteira continua a um rolar de distancia.
+ */
+
+/** Quantas sugestoes cabem numa faixa sem virar uma segunda grade. */
+export const SUGESTOES = 12
+
+/**
+ * Quantas o "ver mais" traz. Doze e o que cabe numa faixa sem virar grade; quando
+ * nenhuma das doze serve, o proximo passo e olhar bem mais -- e ainda na ordem
+ * do que o trecho pede, e nao na ordem do disco como a grade de baixo.
+ */
+export const MAIS_SUGESTOES = 60
+
+export interface ContextoDeSugestao {
+  blocks: readonly ScriptBlock[]
+  clips: readonly LibraryClip[]
+  characters: readonly string[]
+  nicknames: readonly Nickname[]
+  descriptions: Record<string, SceneDescription>
+}
+
+/**
+ * As series que o roteiro parece citar.
+ *
+ * Serve para abrir a Biblioteca ja no anime certo. E so um ponto de partida:
+ * a trilha de episodios continua inteira, e trocar de anime ou entrar num
+ * episodio especifico funciona igual. Roteiro que nao cita ninguem -- ou que
+ * cita gente de duas series -- nao pre-seleciona nada, porque escolher errado
+ * por ele seria pior que nao escolher.
+ */
+export function seriesDoRoteiro(ctx: ContextoDeSugestao): string[] {
+  if (ctx.characters.length === 0 || ctx.blocks.length === 0) return []
+  const index = buildScriptIndex(ctx.characters, ctx.nicknames)
+  const linhas = readScript(
+    ctx.blocks.map((b) => b.text),
+    index,
+  )
+  const citados = new Set(linhas.flatMap((l) => l.matches.map((m) => m.character)))
+  if (citados.size === 0) return []
+
+  const series = new Set<string>()
+  for (const clip of ctx.clips) {
+    if (clip.characters.some((c) => citados.has(c))) series.add(clip.anime)
+  }
+  return [...series]
+}
+
+/**
+ * Quem o trecho cita, na ordem de confianca do leitor.
+ *
+ * E a mesma leitura que alimenta as sugestoes -- no contexto do roteiro
+ * inteiro, para "ele" e "ela" arrastarem o nome citado antes. Existe para o
+ * botao de "ver todas" saber em QUAL pasta abrir: a faixa mostra doze cenas,
+ * e quando nenhuma serve o proximo lugar para procurar e o personagem inteiro.
+ */
+export function personagensDoBloco(ctx: ContextoDeSugestao, bloco: number): string[] {
+  if (!ctx.blocks[bloco] || ctx.characters.length === 0) return []
+  const index = buildScriptIndex(ctx.characters, ctx.nicknames)
+  const linhas = readScript(
+    ctx.blocks.map((b) => b.text),
+    index,
+  )
+  return [...new Set(linhas[bloco]?.matches.map((m) => m.character) ?? [])]
+}
+
+/**
+ * As cenas mais provaveis para UM trecho.
+ *
+ * O trecho e lido no contexto do roteiro inteiro, e nao sozinho: o arrasto de
+ * pronome ("ele", "ela") so faz sentido sabendo quem foi citado antes, e trecho
+ * curto -- "em vez de encontrar as memorias dele," -- quase nunca traz nome.
+ *
+ * `jaUsadas` sai da frente: cena marcada em outro trecho reaparecendo no topo
+ * seria um convite a repetir imagem no mesmo video.
+ */
+export function sugerirParaBloco(
+  ctx: ContextoDeSugestao,
+  bloco: number,
+  jaUsadas: ReadonlySet<string>,
+  /** Quantas trazer. A faixa mostra SUGESTOES; "ver mais" pede MAIS_SUGESTOES. */
+  quantas: number = SUGESTOES,
+): SelectionCandidate[] {
+  const alvo = ctx.blocks[bloco]
+  if (!alvo || ctx.clips.length === 0) return []
+
+  const index = buildScriptIndex(ctx.characters, ctx.nicknames)
+  const linhas = readScript(
+    ctx.blocks.map((b) => b.text),
+    index,
+  )
+  const linha = linhas[bloco]
+  if (!linha) return []
+
+  /*
+   * Cena ja usada continua aparecendo -- e so desce na lista.
+   *
+   * Antes ela sumia da faixa, para nao convidar a repetir. Estava errado:
+   * repetir e escolha dele ("em alguns momentos e cabivel eu colocar a mesma
+   * cena novamente"), e esconder tirava do alcance justamente a cena que ele
+   * queria de volta. O cartao ja mostra "ja usada"; avisar basta.
+   */
+  const saida = selectClips(
+    [{ ...linha, text: alvo.text, start: alvo.start, end: alvo.end }],
+    ctx.clips,
+    {
+      /*
+       * Modo teoria mesmo no recap: cronologia so faz sentido quando o app
+       * monta a fita inteira em ordem. Aqui ele pula de trecho como quiser, e
+       * cobrar "a cena tem que vir depois da anterior" esconderia material bom
+       * so porque ele voltou para arrumar o trecho 12.
+       */
+      mode: 'theory',
+      fita: quantas,
+      descriptions: ctx.descriptions,
+      // A serie sai do roteiro inteiro, nao deste trecho: trecho sem nome
+      // nenhum liberaria o acervo todo e traria Bleach num video de Re:Zero.
+      series: seriesDoRoteiro(ctx),
+    },
+  )
+  const candidatos = saida[0]?.candidates ?? []
+  // Estavel: as nao usadas primeiro, mantendo a ordem de nota dentro de cada
+  // grupo. Assim repetir continua a um clique, sem roubar a frente.
+  return [
+    ...candidatos.filter((c) => !jaUsadas.has(c.clip.id)),
+    ...candidatos.filter((c) => jaUsadas.has(c.clip.id)),
+  ]
+}

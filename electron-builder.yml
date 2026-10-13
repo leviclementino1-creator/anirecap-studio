@@ -1,0 +1,87 @@
+appId: com.kintay.dangai
+productName: Dangai
+copyright: Kintay
+
+directories:
+  output: release
+  buildResources: build
+
+# As atualizacoes vem das releases deste repositorio. O app instalado consulta
+# aqui, baixa em segundo plano e troca de versao quando o usuario mandar.
+# Repositorio publico de proposito: privado exigiria um token do GitHub embutido
+# no instalador, de onde qualquer pessoa conseguiria extrair.
+publish:
+  provider: github
+  owner: faahpla
+  repo: dangai
+  # Publicada, e nao rascunho: o updater so enxerga release publicada, e um
+  # rascunho esquecido significaria ninguem recebendo atualizacao nenhuma.
+  releaseType: release
+
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - package.json
+
+# O bundle do Remotion e os SFX ficam FORA do asar, como recursos soltos.
+# O Chrome do render carrega o bundle por caminho de arquivo e nao enxerga
+# nada dentro de um asar; o main aponta para process.resourcesPath.
+extraResources:
+  - from: out/remotion
+    to: remotion
+  - from: assets/sfx
+    to: sfx
+  # O cascade de rosto de anime e lido pelo main na importacao de imagens.
+  - from: assets/vision
+    to: vision
+  # O modelo de upscale (2,4 MB) e a licenca BSD-3 dele. Vai junto em vez de ser
+  # baixado: descobrir que a internet caiu no meio de um render seria o pior
+  # momento possivel.
+  - from: assets/upscale
+    to: upscale
+
+# Binario dentro de asar nao pode ser executado, e o sharp carrega .node
+# nativo. Os dois precisam ficar desempacotados.
+asarUnpack:
+  - '**/node_modules/ffmpeg-static/**'
+  - '**/node_modules/sharp/**'
+  - '**/node_modules/@img/**'
+  # O compositor do Remotion e um executavel nativo; o main aponta para ele
+  # explicitamente via binariesDirectory (ver findCompositorDir em main.ts).
+  - '**/node_modules/@remotion/compositor-*/**'
+  # O OpenCV e um .wasm que o loader le do disco; dentro do asar ele nao abre.
+  - '**/node_modules/opencv-wasm/**'
+  # O etiquetador de cenas carrega um .node nativo e as DLLs do DirectML ao
+  # lado dele. Provado no app empacotado antes de entrar: sessao DML criada e
+  # inferencia em 72ms.
+  - '**/node_modules/onnxruntime-node/**'
+
+win:
+  # O .ico sai de build/icon.ico, gerado por `npm run icon`.
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+
+nsis:
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+mac:
+  icon: build/icon.png
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  category: public.app-category.video
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+
+# Sem assinatura: nao ha certificado neste projeto. O instalador funciona, mas
+# o SmartScreen do Windows avisa na primeira execucao.
+forceCodeSigning: false

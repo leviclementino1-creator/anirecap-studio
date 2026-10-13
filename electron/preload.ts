@@ -1,0 +1,253 @@
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import {
+  IPC,
+  type AnalyzeArgs,
+  type AutomountRequest,
+  type AutomountResult,
+  type ScriptBlocksResult,
+  type DangaiBridge,
+  type IpcResult,
+  type MusicPick,
+  type PublicSettings,
+  type DropExpansion,
+  type LibraryIndex,
+  type Nickname,
+  type NicknameSuggestion,
+  type ReframeArgs,
+  type SaveProjectArgs,
+  type SceneDescription,
+  type SettingsPatch,
+  type StartRenderArgs,
+  type TiraDaCena,
+  type LegendasSincronizadas,
+  type ArquivoDaBin,
+  type UpdateStatus,
+} from '@shared/channels'
+import type {
+  AnalysisResult,
+  AudioAnalysis,
+  ImageAsset,
+  Metadata,
+  RenderProgress,
+} from '@shared/contract'
+import type { OpenedProject, ProjectFile } from '@shared/project-file'
+
+/**
+ * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
+ * metodo novo aqui exige a assinatura no contrato compartilhado.
+ *
+ * pathForFile existe porque File.path foi removido no Electron 32: webUtils e
+ * a unica forma de obter o caminho real de um arquivo soltado na janela.
+ */
+const bridge: DangaiBridge = {
+  pathForFile: (file) => webUtils.getPathForFile(file),
+
+  analyzeAudio: (path) =>
+    ipcRenderer.invoke(IPC.analyzeAudio, path) as Promise<IpcResult<AudioAnalysis>>,
+  ondaDetalhada: (path) =>
+    ipcRenderer.invoke(IPC.ondaDetalhada, path) as Promise<
+      IpcResult<{ peaks: number[]; rms: number[]; durationSec: number }>
+    >,
+
+  importImages: (paths, focus, sections) =>
+    ipcRenderer.invoke(IPC.importImages, paths, focus, sections) as Promise<
+      IpcResult<ImageAsset[]>
+    >,
+
+  reframeImage: (args: ReframeArgs) =>
+    ipcRenderer.invoke(IPC.reframeImage, args) as Promise<IpcResult<string>>,
+
+  expandDrop: (paths) =>
+    ipcRenderer.invoke(IPC.expandDrop, paths) as Promise<IpcResult<DropExpansion>>,
+
+  readScript: (path) => ipcRenderer.invoke(IPC.readScript, path) as Promise<IpcResult<string>>,
+
+  scanLibrary: () => ipcRenderer.invoke(IPC.scanLibrary) as Promise<IpcResult<LibraryIndex>>,
+
+  pickLibraryDir: () =>
+    ipcRenderer.invoke(IPC.pickLibraryDir) as Promise<IpcResult<string | null>>,
+
+  libraryClipUrl: (path) =>
+    ipcRenderer.invoke(IPC.libraryClipUrl, path) as Promise<IpcResult<string>>,
+  libraryClipStrip: (path) =>
+    ipcRenderer.invoke(IPC.libraryClipStrip, path) as Promise<IpcResult<TiraDaCena>>,
+  prepararSobreposicao: (path) =>
+    ipcRenderer.invoke(IPC.prepararSobreposicao, path) as Promise<
+      IpcResult<{ url: string; tipo: 'video' | 'image'; durationSec: number; aspecto: number }>
+    >,
+  escolherPasta: (titulo) =>
+    ipcRenderer.invoke(IPC.escolherPasta, titulo) as Promise<IpcResult<string | null>>,
+  exportarTexto: (args) => ipcRenderer.invoke(IPC.exportarTexto, args) as Promise<IpcResult<string | null>>,
+  importarTexto: (args) =>
+    ipcRenderer.invoke(IPC.importarTexto, args) as Promise<IpcResult<{ nome: string; conteudo: string } | null>>,
+  listarPasta: (pasta) =>
+    ipcRenderer.invoke(IPC.listarPasta, pasta) as Promise<IpcResult<ArquivoDaBin[]>>,
+  existemArquivos: (paths) =>
+    ipcRenderer.invoke(IPC.existemArquivos, paths) as Promise<IpcResult<boolean[]>>,
+  mesclarClipes: (paths) =>
+    ipcRenderer.invoke(IPC.mesclarClipes, paths) as Promise<
+      IpcResult<{ path: string; pedacos: string[]; ancut: 'atualizado' | 'sem-banco' | 'episodio-nao-encontrado'; segundos: number }>
+    >,
+  escolherVideo: () =>
+    ipcRenderer.invoke(IPC.escolherVideo) as Promise<IpcResult<{ video: string; roteiro: string | null } | null>>,
+  sondarVideo: (path) =>
+    ipcRenderer.invoke(IPC.sondarVideo, path) as Promise<
+      IpcResult<{ width: number; height: number; durationSec: number; temAudio: boolean }>
+    >,
+  sincronizarLegendas: (audioPath, palavras) =>
+    ipcRenderer.invoke(IPC.sincronizarLegendas, audioPath, palavras) as Promise<IpcResult<LegendasSincronizadas>>,
+
+  onLibraryProgress: (listener) => {
+    const handler = (_event: unknown, mensagem: string): void => listener(mensagem)
+    ipcRenderer.on(IPC.libraryProgress, handler)
+    return () => {
+      ipcRenderer.off(IPC.libraryProgress, handler)
+    }
+  },
+
+  readNicknames: () =>
+    ipcRenderer.invoke(IPC.readNicknames) as Promise<IpcResult<Record<string, Nickname[]>>>,
+
+  saveNicknames: (series, list) =>
+    ipcRenderer.invoke(IPC.saveNicknames, series, list) as Promise<
+      IpcResult<Record<string, Nickname[]>>
+    >,
+
+  suggestNicknames: (series, characters) =>
+    ipcRenderer.invoke(IPC.suggestNicknames, series, characters) as Promise<
+      IpcResult<NicknameSuggestion[]>
+    >,
+
+  automount: (request) =>
+    ipcRenderer.invoke(IPC.automount, request) as Promise<IpcResult<AutomountResult>>,
+
+  scriptBlocks: (request) =>
+    ipcRenderer.invoke(IPC.scriptBlocks, request) as Promise<IpcResult<ScriptBlocksResult>>,
+
+  tagLibrary: () =>
+    ipcRenderer.invoke(IPC.tagLibrary) as Promise<IpcResult<Record<string, string[]>>>,
+
+  readTags: () => ipcRenderer.invoke(IPC.readTags) as Promise<IpcResult<Record<string, string[]>>>,
+
+  describeLibrary: (anime: string | null) =>
+    ipcRenderer.invoke(IPC.describeLibrary, anime) as Promise<IpcResult<Record<string, SceneDescription>>>,
+
+  readDescriptions: () =>
+    ipcRenderer.invoke(IPC.readDescriptions) as Promise<IpcResult<Record<string, SceneDescription>>>,
+
+  readFavorites: () => ipcRenderer.invoke(IPC.readFavorites) as Promise<IpcResult<string[]>>,
+
+  toggleFavorite: (id) =>
+    ipcRenderer.invoke(IPC.toggleFavorite, id) as Promise<IpcResult<string[]>>,
+
+  listSfx: () => ipcRenderer.invoke(IPC.listSfx) as Promise<IpcResult<string[]>>,
+
+  openSfxDir: () => ipcRenderer.invoke(IPC.openSfxDir) as Promise<IpcResult<null>>,
+
+  listFontes: () =>
+    ipcRenderer.invoke(IPC.listFontes) as Promise<IpcResult<{ nome: string; url: string }[]>>,
+
+  openFontesDir: () => ipcRenderer.invoke(IPC.openFontesDir) as Promise<IpcResult<null>>,
+
+  upscaleAssets: (assets, limites) =>
+    ipcRenderer.invoke(IPC.upscaleAssets, assets, limites) as Promise<
+      IpcResult<Record<string, string> | null>
+    >,
+
+  upscaleVideoPronto: () =>
+    ipcRenderer.invoke(IPC.upscaleVideoPronto) as Promise<IpcResult<string | null>>,
+
+  cancelarUpscale: () => ipcRenderer.invoke(IPC.cancelarUpscale) as Promise<IpcResult<null>>,
+
+  onVideoProntoProgress: (listener) => {
+    const handler = (_event: unknown, p: { feitos: number; total: number; nome: string }): void => listener(p)
+    ipcRenderer.on(IPC.videoProntoProgress, handler)
+    return () => {
+      ipcRenderer.off(IPC.videoProntoProgress, handler)
+    }
+  },
+
+  inverterClipe: (asset, invertido) =>
+    ipcRenderer.invoke(IPC.inverterClipe, asset, invertido) as Promise<IpcResult<ImageAsset>>,
+
+  appVersion: () => ipcRenderer.invoke(IPC.appVersion) as Promise<IpcResult<string>>,
+
+  installUpdate: () => ipcRenderer.invoke(IPC.installUpdate) as Promise<IpcResult<null>>,
+
+  checkUpdate: () => ipcRenderer.invoke(IPC.checkUpdate) as Promise<IpcResult<null>>,
+
+  onUpdateStatus: (listener) => {
+    const handler = (_event: unknown, status: UpdateStatus): void => listener(status)
+    ipcRenderer.on(IPC.updateStatus, handler)
+    return () => {
+      ipcRenderer.off(IPC.updateStatus, handler)
+    }
+  },
+
+  pickFiles: () => ipcRenderer.invoke(IPC.pickFiles) as Promise<IpcResult<string[]>>,
+
+  pickMusic: () => ipcRenderer.invoke(IPC.pickMusic) as Promise<IpcResult<MusicPick | null>>,
+
+  loadMusic: (path) => ipcRenderer.invoke(IPC.loadMusic, path) as Promise<IpcResult<MusicPick>>,
+
+  generateMetadata: (texto) =>
+    ipcRenderer.invoke(IPC.generateMetadata, texto) as Promise<IpcResult<Metadata>>,
+
+  copyText: (text) => ipcRenderer.invoke(IPC.copyText, text) as Promise<IpcResult<null>>,
+
+  startRender: (args: StartRenderArgs) =>
+    ipcRenderer.invoke(IPC.startRender, args) as Promise<IpcResult<string | null>>,
+
+  cancelRender: () => ipcRenderer.invoke(IPC.cancelRender) as Promise<IpcResult<null>>,
+  cancelAnalyze: () => ipcRenderer.invoke(IPC.cancelAnalyze) as Promise<IpcResult<null>>,
+  faceAt: (path, instantes) =>
+    ipcRenderer.invoke(IPC.faceAt, path, instantes) as ReturnType<DangaiBridge['faceAt']>,
+  setFormato: (formato) =>
+    ipcRenderer.invoke(IPC.setFormato, formato) as Promise<IpcResult<null>>,
+  trackBox: (path, inicio, duracao, caixa) =>
+    ipcRenderer.invoke(IPC.trackBox, path, inicio, duracao, caixa) as ReturnType<
+      DangaiBridge['trackBox']
+    >,
+
+  revealFile: (path) => ipcRenderer.invoke(IPC.revealFile, path) as Promise<IpcResult<null>>,
+
+  analyze: (args: AnalyzeArgs) =>
+    ipcRenderer.invoke(IPC.analyze, args) as Promise<IpcResult<AnalysisResult>>,
+
+  saveProject: (args: SaveProjectArgs) =>
+    ipcRenderer.invoke(IPC.saveProject, args) as Promise<IpcResult<string | null>>,
+
+  openProject: (path) =>
+    ipcRenderer.invoke(IPC.openProject, path) as Promise<IpcResult<OpenedProject | null>>,
+
+  autosaveProject: (file: ProjectFile, projectPath) =>
+    ipcRenderer.invoke(IPC.autosaveProject, file, projectPath) as Promise<IpcResult<null>>,
+
+  readAutosave: () =>
+    ipcRenderer.invoke(IPC.readAutosave) as Promise<IpcResult<OpenedProject | null>>,
+
+  clearAutosave: () => ipcRenderer.invoke(IPC.clearAutosave) as Promise<IpcResult<null>>,
+
+  getSettings: () => ipcRenderer.invoke(IPC.getSettings) as Promise<IpcResult<PublicSettings>>,
+
+  saveSettings: (patch: SettingsPatch) =>
+    ipcRenderer.invoke(IPC.saveSettings, patch) as Promise<IpcResult<PublicSettings>>,
+
+  onRenderProgress: (listener) => {
+    const handler = (_event: unknown, progress: RenderProgress): void => listener(progress)
+    ipcRenderer.on(IPC.renderProgress, handler)
+    return () => {
+      ipcRenderer.off(IPC.renderProgress, handler)
+    }
+  },
+
+  onAnalyzeProgress: (listener) => {
+    const handler = (_event: unknown, message: string): void => listener(message)
+    ipcRenderer.on(IPC.analyzeProgress, handler)
+    return () => {
+      ipcRenderer.off(IPC.analyzeProgress, handler)
+    }
+  },
+}
+
+contextBridge.exposeInMainWorld('dangai', bridge)

@@ -1,0 +1,1177 @@
+import { boundariesFrom, pickCuts } from './rhythm'
+import { fonteDaCamera } from './camera'
+import {
+  CAPTION_ANIMATION_DEFAULT,
+  CAPTION_ANIMATION_FRAMES_DEFAULT,
+  CURVA_DA_ENTRADA_PADRAO,
+  type CurvaDaEntrada,
+  type SobreposicaoSalva,
+  CAPTION_MARK_DEFAULT,
+  CAPTION_SHADOW_DEFAULT,
+  CAPTION_STROKE_DEFAULT,
+  CAPTION_COLOR_DEFAULT,
+  CAPTION_Y_DEFAULT,
+  CAPTION_SCALE_DEFAULT,
+  FORMATO_PADRAO,
+  medidasDo,
+  KEN_BURNS_EFFECTS,
+  MOTION_CURVE_DEFAULT,
+  AJUSTE_DE_COR_PADRAO,
+  framesDaTransicao,
+  resolverTransicao,
+  VIDEO_FPS,
+  type CaptionBlock,
+  type Formato,
+  type CaptionAnimation,
+  type CaptionMark,
+  type CaptionShadow,
+  type CaptionColor,
+  type ImageAsset,
+  type OverlayCard,
+  type RenderProps,
+  type Scene,
+  type ScenePlan,
+  type Transcript,
+  type Word,
+} from './contract'
+
+/**
+ * Tudo que transforma "n imagens + duracao" em um plano de cenas.
+ *
+ * Vive em shared/ porque o main (render) e o renderer (preview) precisam chegar
+ * exatamente ao mesmo plano -- se divergirem, o preview mente.
+ *
+ * A ordem das imagens NUNCA muda aqui. Ela e do usuario; o plano decide apenas
+ * onde caem os cortes, qual efeito e qual transicao.
+ */
+
+/**
+ * Piso absoluto de um bloco.
+ *
+ * Baixo de proposito: o tamanho do bloco e livre, decidido pela conta
+ * "duracao do audio / numero de imagens" e depois pelo arraste do usuario.
+ * Este numero so existe para nenhum bloco virar um piscar.
+ */
+export const MIN_SCENE_SEC = 0.6
+/** Mais longa que isso a atencao cai num short. Vale como dica para a IA. */
+export const MAX_SCENE_SEC = 6
+/** Quanto um corte pode andar para cair numa pausa natural. */
+export const SNAP_TOLERANCE_SEC = 0.4
+
+/*
+ * UMA IMAGEM, UM BLOCO. Sem excecao.
+ *
+ * Houve uma versao que repartia sozinha as cenas longas em blocos de ~2s para
+ * dar mais ritmo. Estava errado: quem importa 46 imagens espera 46 blocos, e
+ * receber 63 significa nao reconhecer mais o proprio material na linha do
+ * tempo. Ritmo se resolve importando mais imagens, nao multiplicando as que
+ * existem -- e agora da para inserir imagem exatamente onde falta.
+ */
+
+// ------------------------------------------------------------------ fallback
+
+/**
+ * Divide a duracao igualmente entre as imagens. Ultimo recurso: sem transcricao,
+ * sem silencios, sem IA. Sempre produz um video valido.
+ */
+export function planEqualSplit(imageCount: number, durationSec: number): ScenePlan {
+  if (imageCount <= 0) {
+    throw new Error('Sem imagens para montar o plano')
+  }
+
+  const per = durationSec / imageCount
+  const scenes: Scene[] = Array.from({ length: imageCount }, (_, index) => ({
+    imageIndex: index,
+    // Tela cheia. A divisao e escolha dele, feita na fita da Biblioteca.
+    imageIndexB: null,
+    start: index * per,
+    end: index === imageCount - 1 ? durationSec : (index + 1) * per,
+    effect: pickEffect(index),
+    intensity: 0.12,
+    // A metade de baixo segue a de cima ate ele separar as duas.
+    effectB: null,
+    intensityB: null,
+    curve: MOTION_CURVE_DEFAULT,
+    // Todo bloco novo parte do comeco do clipe; mover e escolha dele.
+    sourceStart: 0,
+    sourceStartB: 0,
+    curvePoints: null,
+    // Camera livre so quando ele desenhar as pontas.
+    camera: null,
+    rotation: 0 as const,
+    transitionIn: index === 0 ? ('cut' as const) : ('cut' as const),
+  }))
+
+  return { scenes }
+}
+
+/**
+ * Distribui as imagens pelas pausas naturais da narracao.
+ *
+ * Escolhe, entre os instantes candidatos, os n-1 que deixam as cenas mais
+ * proximas do tamanho ideal. E o fallback que roda quando a IA nao esta
+ * disponivel mas existe transcricao ou deteccao de silencio -- bem melhor que
+ * divisao igual, e sem depender de rede.
+ */
+export function planFromCandidates(
+  imageCount: number,
+  durationSec: number,
+  candidates: readonly number[],
+): ScenePlan {
+  const cutsNeeded = imageCount - 1
+  if (cutsNeeded === 0) return planEqualSplit(imageCount, durationSec)
+
+  const usable = candidates
+    .filter((t) => t > MIN_SCENE_SEC && t < durationSec - MIN_SCENE_SEC)
+    .sort((a, b) => a - b)
+
+  if (usable.length < cutsNeeded) return planEqualSplit(imageCount, durationSec)
+
+  // Para cada corte ideal (divisao igual), pega o candidato livre mais proximo.
+  const ideal = Array.from({ length: cutsNeeded }, (_, i) => ((i + 1) * durationSec) / imageCount)
+  const taken = new Set<number>()
+  const chosen: number[] = []
+
+  for (const target of ideal) {
+    let best = -1
+    let bestDistance = Infinity
+    for (let i = 0; i < usable.length; i++) {
+      if (taken.has(i)) continue
+      const distance = Math.abs(usable[i]! - target)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = i
+      }
+    }
+    if (best === -1) return planEqualSplit(imageCount, durationSec)
+    taken.add(best)
+    chosen.push(usable[best]!)
+  }
+
+  chosen.sort((a, b) => a - b)
+
+  const bounds = [0, ...chosen, durationSec]
+  const scenes: Scene[] = Array.from({ length: imageCount }, (_, index) => ({
+    imageIndex: index,
+    // Tela cheia. A divisao e escolha dele, feita na fita da Biblioteca.
+    imageIndexB: null,
+    start: bounds[index]!,
+    end: bounds[index + 1]!,
+    effect: pickEffect(index),
+    intensity: 0.12,
+    // A metade de baixo segue a de cima ate ele separar as duas.
+    effectB: null,
+    intensityB: null,
+    curve: MOTION_CURVE_DEFAULT,
+    // Todo bloco novo parte do comeco do clipe; mover e escolha dele.
+    sourceStart: 0,
+    sourceStartB: 0,
+    curvePoints: null,
+    // Camera livre so quando ele desenhar as pontas.
+    camera: null,
+    rotation: 0 as const,
+    transitionIn: 'cut' as const,
+  }))
+
+  return sanitize({ scenes }, imageCount, durationSec)
+}
+
+// -------------------------------------------------------------------- snap
+
+/**
+ * Move cada corte para o instante natural mais proximo, dentro da tolerancia.
+ *
+ * Isto e o que garante o criterio "nenhuma troca de imagem cai no meio de uma
+ * palavra". Nao da para delegar isso a IA: ela devolve numeros arbitrarios como
+ * 3.4 ou 7.13, e acertar a fronteira entre palavras por acaso e sorte. A regra
+ * precisa ser deterministica e rodar DEPOIS de qualquer plano, venha ele da IA
+ * ou do fallback.
+ */
+export function snapToCandidates(
+  plan: ScenePlan,
+  candidates: readonly number[],
+  durationSec: number,
+  imageCount: number,
+): ScenePlan {
+  if (candidates.length === 0 || plan.scenes.length < 2) return plan
+
+  const sorted = [...candidates].sort((a, b) => a - b)
+  const scenes = plan.scenes.map((scene) => ({ ...scene }))
+
+  for (let i = 1; i < scenes.length; i++) {
+    const cut = scenes[i]!.start
+    const snapped = nearest(sorted, cut)
+    if (snapped === null || Math.abs(snapped - cut) > SNAP_TOLERANCE_SEC) continue
+
+    // So aceita se as duas cenas vizinhas continuarem com tamanho utilizavel.
+    const previousLength = snapped - scenes[i - 1]!.start
+    const nextLength = scenes[i]!.end - snapped
+    if (previousLength < MIN_SCENE_SEC || nextLength < MIN_SCENE_SEC) continue
+
+    scenes[i - 1]!.end = snapped
+    scenes[i]!.start = snapped
+  }
+
+  // imageCount vem de fora e nao de scenes.length: os dois so coincidem
+  // enquanto ha exatamente uma cena por imagem, e a reparticao em blocos
+  // quebrou essa igualdade.
+  return sanitize({ ...plan, scenes }, imageCount, durationSec)
+}
+
+function nearest(sorted: readonly number[], target: number): number | null {
+  if (sorted.length === 0) return null
+  let low = 0
+  let high = sorted.length - 1
+  let best = sorted[0]!
+
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    const value = sorted[mid]!
+    if (Math.abs(value - target) < Math.abs(best - target)) best = value
+    if (value < target) low = mid + 1
+    else if (value > target) high = mid - 1
+    else return value
+  }
+  return best
+}
+
+// ---------------------------------------------------------------- saneamento
+
+/**
+ * Deixa qualquer plano utilizavel, venha da IA ou do fallback.
+ *
+ * A IA erra de formas previsiveis: cena de 0.4s, buraco entre duas cenas,
+ * ultima cena que nao chega no fim do audio, indice de imagem repetido. Nada
+ * disso pode chegar no render, e nenhuma dessas garantias deve depender de o
+ * modelo ter obedecido o prompt.
+ */
+export function sanitize(plan: ScenePlan, imageCount: number, durationSec: number): ScenePlan {
+  // Audio curto demais para caber o minimo por cena: divisao igual e a unica
+  // saida honesta, e forcar o minimo aqui so produziria tempos absurdos.
+  if (imageCount * MIN_SCENE_SEC > durationSec) {
+    return planEqualSplit(imageCount, durationSec)
+  }
+
+  // Uma cena por imagem, na ordem do usuario. Se a IA devolveu indice repetido,
+  // faltando ou fora de ordem, a contagem de imagens manda.
+  const base: Scene[] = Array.from({ length: imageCount }, (_, index) => {
+    const found = plan.scenes.find((scene) => scene.imageIndex === index)
+    return found
+      ? { ...found, imageIndex: index }
+      : {
+          imageIndex: index,
+          // Tela cheia. A divisao e escolha dele, feita na fita da Biblioteca.
+          imageIndexB: null,
+          start: (index * durationSec) / imageCount,
+          end: ((index + 1) * durationSec) / imageCount,
+          effect: pickEffect(index),
+          intensity: 0.12,
+          // A metade de baixo segue a de cima ate ele separar as duas.
+          effectB: null,
+          intensityB: null,
+          curve: MOTION_CURVE_DEFAULT,
+          // Todo bloco novo parte do comeco do clipe; mover e escolha dele.
+          sourceStart: 0,
+          sourceStartB: 0,
+          curvePoints: null,
+          // Camera livre so quando ele desenhar as pontas.
+          camera: null,
+    rotation: 0 as const,
+    transitionIn: 'cut' as const,
+        }
+  })
+
+  // Fronteiras contiguas a partir dos inicios: sem buraco, sem sobreposicao,
+  // comecando em 0 e terminando exatamente na duracao do audio.
+  const starts = base.map((scene, index) => (index === 0 ? 0 : clamp(scene.start, 0, durationSec)))
+
+  // Empurra para frente o que ficou curto demais...
+  for (let i = 1; i < starts.length; i++) {
+    const minimum = starts[i - 1]! + MIN_SCENE_SEC
+    if (starts[i]! < minimum) starts[i] = minimum
+  }
+  // ...e comprime de tras para frente se isso estourou o fim.
+  for (let i = starts.length - 1; i > 0; i--) {
+    const maximum = (i === starts.length - 1 ? durationSec : starts[i + 1]!) - MIN_SCENE_SEC
+    if (starts[i]! > maximum) starts[i] = maximum
+  }
+
+  const scenes: Scene[] = base.map((scene, index) => {
+    const start = starts[index]!
+    const end = index === base.length - 1 ? durationSec : starts[index + 1]!
+    return {
+      ...scene,
+      start,
+      end: Math.max(end, start + 1 / VIDEO_FPS),
+      intensity: clamp(scene.intensity, 0.02, 0.15),
+      // A primeira cena nao tem de onde transicionar.
+      transitionIn: index === 0 ? 'cut' : scene.transitionIn,
+    }
+  })
+
+  return { ...plan, scenes: avoidRepeatedEffects(scenes) }
+}
+
+/** Duas cenas seguidas nunca com o mesmo movimento. */
+function avoidRepeatedEffects(scenes: readonly Scene[]): Scene[] {
+  const result = scenes.map((scene) => ({ ...scene }))
+  for (let i = 1; i < result.length; i++) {
+    if (result[i]!.effect !== result[i - 1]!.effect) continue
+    const alternative = KEN_BURNS_EFFECTS.find(
+      (effect) => effect !== result[i - 1]!.effect && effect !== result[i + 1]?.effect,
+    )
+    if (alternative) result[i]!.effect = alternative
+  }
+  return result
+}
+
+function pickEffect(index: number): Scene['effect'] {
+  return KEN_BURNS_EFFECTS[index % KEN_BURNS_EFFECTS.length] ?? 'zoom-in'
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+// ------------------------------------------------------------------ candidatos
+
+/**
+ * Instantes bons para cortar, tirados da transcricao.
+ *
+ * Fronteira de frase vale mais que intervalo entre palavras, entao as duas
+ * entram -- o snap escolhe a mais proxima. O meio do intervalo e melhor que a
+ * borda: cortar exatamente no fim da palavra ainda soa apertado.
+ */
+export function cutCandidatesFrom(words: readonly { start: number; end: number }[],
+  segments: readonly { start: number; end: number }[]): number[] {
+  const candidates: number[] = []
+
+  for (let i = 1; i < words.length; i++) {
+    const gap = words[i]!.start - words[i - 1]!.end
+    if (gap > 0.08) candidates.push((words[i - 1]!.end + words[i]!.start) / 2)
+  }
+
+  for (const segment of segments) {
+    candidates.push(segment.start)
+    candidates.push(segment.end)
+  }
+
+  return [...new Set(candidates.map((t) => Math.round(t * 1000) / 1000))].sort((a, b) => a - b)
+}
+
+// ------------------------------------------------------------------- render
+
+/**
+ * Converte o plano (em segundos) no que a composicao Remotion consome (em
+ * frames). Esta e a unica traducao segundo->frame do app; fazer isso em dois
+ * lugares e como o audio e a imagem saem de sincronia.
+ */
+export interface CardText {
+  /** Texto do gancho. Vazio nao gera card. */
+  hook: string
+  hookSec: number
+  /** Texto do fechamento. Vazio nao gera card. */
+  end: string
+  endSec: number
+}
+
+export function toRenderProps(
+  plan: ScenePlan,
+  images: readonly ImageAsset[],
+  captions: readonly CaptionBlock[] = [],
+  cardText: CardText | null = null,
+  captionColor: CaptionColor = CAPTION_COLOR_DEFAULT,
+  captionY: number = CAPTION_Y_DEFAULT,
+  /**
+   * Duracao da narracao, que e quem manda no tamanho do video.
+   *
+   * Existe porque o render monta a composicao com o tempo do AUDIO enquanto a
+   * esteira de imagens era montada com o fim da ULTIMA CENA -- duas fontes de
+   * verdade para o mesmo numero. Quando discordavam, o final do video ficava sem
+   * imagem nenhuma e o card de fechamento disparava cedo, porque ele e colocado
+   * contra o fim da esteira.
+   *
+   * Discordar e facil: basta o plano nao alcancar o fim da narracao, ou uma cena
+   * ser descartada por apontar para imagem que nao existe mais -- e esse
+   * descarte e silencioso. Medido: um plano de 9s com narracao de 12s deixava 72
+   * frames, 3 segundos inteiros, sem nada.
+   *
+   * Ausente, cai no comportamento antigo: os testes de plano que nao conhecem o
+   * audio continuam valendo.
+   */
+  durationSec?: number,
+  /**
+   * O que a legenda ganhou depois, num objeto em vez de mais dois parametros
+   * posicionais -- oito posicoes ja e mais do que qualquer chamada consegue ler
+   * sem contar virgula.
+   */
+  legenda: {
+    font?: { family: string; url: string } | null
+    animation?: CaptionAnimation
+    animationFrames?: number
+    animationCurve?: CurvaDaEntrada
+    mark?: CaptionMark
+    shadow?: CaptionShadow
+    stroke?: number
+    scale?: number
+  } = {},
+  /**
+   * O formato do projeto. Ele decide o QUADRO, e o quadro decide a geometria da
+   * camera: num 16:9 uma fonte 16:9 preenche exato e nao ha folga para passear,
+   * do mesmo jeito que um 9:16 nao tem folga no quadro vertical.
+   *
+   * Com padrao para os testes de plano, que nao conhecem formato, continuarem
+   * valendo -- e porque 'short' e o que todo projeto salvo antes disto e.
+   */
+  formato: Formato = FORMATO_PADRAO,
+  /** A faixa de video: as sobreposicoes, com a URL do arquivo preparado. */
+  sobreposicoesDoProjeto: readonly (SobreposicaoSalva & { url: string })[] = [],
+  /**
+   * FOCO AO VIVO: as imagens (por id) que tocam o ORIGINAL e recortam na
+   * hora pelo foco, em vez do arquivo ja recortado. "Mudo o enquadramento e o
+   * preview nao muda junto": o recorte em disco so era refeito ao soltar o
+   * retangulo -- num clipe, reencodando o video inteiro, segundos depois.
+   *
+   * So a que esta sendo ENQUADRADA AGORA: o original tem tres vezes os pixels
+   * da copia recortada (e audio 5.1 junto), e tocar todos deixava o play
+   * lento para pegar. O render nao passa nada aqui: sai do arquivo recortado, que da o mesmo
+   * quadro (cover + object-position e a mesma conta do recorte).
+   */
+  focoAoVivo: ReadonlySet<string> = new Set(),
+): RenderProps {
+  /*
+   * As sobreposicoes em quadros. Sem URL (projeto recem-aberto, arquivo ainda
+   * sendo preparado) fica de fora em vez de quebrar o video.
+   */
+  const sobreposicoes = sobreposicoesDoProjeto
+    .filter((o) => o.url || o.tipo === 'ajuste')
+    .map((o) => {
+      const toca = Math.max(o.usarSec ?? o.durationSec - o.inicioSec, 0.05)
+      const from = Math.max(0, Math.round(o.at * VIDEO_FPS))
+      let ate = Math.round((o.at + toca) * VIDEO_FPS)
+      /*
+       * ATE O ULTIMO QUADRO. O video tem ceil(duracao x 24) quadros, e um clipe
+       * que termina no fim da narracao arredondava para um quadro antes --
+       * "o ultimo frame fica sem a minha CC". Terminando a menos de um quadro
+       * do fim, o clipe vai ate o fim do video.
+       */
+      if (durationSec !== undefined && o.at + toca >= durationSec - 1 / VIDEO_FPS) {
+        ate = Math.max(ate, Math.ceil(durationSec * VIDEO_FPS))
+      }
+      const quadros = Math.max(1, ate - from)
+      // A transicao de cada ponta cabe na metade do clipe: as duas nunca se cruzam.
+      const ponta = (t: SobreposicaoSalva['transicaoEntrada']) => {
+        if (!t || t.tipo === 'cut' || o.tipo === 'ajuste') return null
+        const f = Math.min(framesDaTransicao(t.tipo, t.ajuste), Math.floor(quadros / 2))
+        return f > 0 ? resolverTransicao(t.tipo, t.ajuste, f) : null
+      }
+      return {
+        entrada: ponta(o.transicaoEntrada),
+        saida: ponta(o.transicaoSaida),
+        url: o.url,
+        tipo: o.tipo,
+        from,
+        durationInFrames: Math.max(1, ate - from),
+        inicioFrames: Math.max(0, Math.round(o.inicioSec * VIDEO_FPS)),
+        x: o.x,
+        y: o.y,
+        escala: o.escala,
+        opacidade: o.opacidade,
+        faixa: o.faixa,
+        rotacao: o.rotacao ?? 0,
+        efeito: o.efeito ?? 'nenhum',
+        intensidade: o.intensidade ?? 0.1,
+        curva: o.curva ?? MOTION_CURVE_DEFAULT,
+        pontosDaCurva: o.pontosDaCurva ?? null,
+        ...(o.tipo === 'ajuste' ? { cor: o.cor ?? AJUSTE_DE_COR_PADRAO } : {}),
+        espelhar: o.espelhar ?? false,
+        preencher: o.preencher ?? false,
+        fadeInFrames: Math.round((o.fadeInSec ?? 0) * VIDEO_FPS),
+        fadeOutFrames: Math.round((o.fadeOutSec ?? 0) * VIDEO_FPS),
+      }
+    })
+  const quadro = medidasDo(formato)
+  const aspectoDoQuadro = quadro.width / quadro.height
+  const captionFont = legenda.font ?? null
+  const captionAnimation = legenda.animation ?? CAPTION_ANIMATION_DEFAULT
+  const captionAnimationFrames = legenda.animationFrames ?? CAPTION_ANIMATION_FRAMES_DEFAULT
+  const captionAnimationCurve = legenda.animationCurve ?? CURVA_DA_ENTRADA_PADRAO
+  const captionMark = legenda.mark ?? CAPTION_MARK_DEFAULT
+  const captionShadow = legenda.shadow ?? CAPTION_SHADOW_DEFAULT
+  const captionStroke = legenda.stroke ?? CAPTION_STROKE_DEFAULT
+  const captionScale = legenda.scale ?? CAPTION_SCALE_DEFAULT
+  const usable = plan.scenes.filter(
+    (scene) => images[scene.imageIndex] && (scene.imageIndexB === null || images[scene.imageIndexB]),
+  )
+  if (usable.length === 0) {
+    return {
+      formato,
+      scenes: [],
+      captions: [],
+      cards: [],
+      captionColor,
+      captionY,
+      captionFont,
+      captionAnimation,
+      captionAnimationFrames,
+      captionAnimationCurve,
+      sobreposicoes,
+      captionMark,
+      captionShadow,
+      captionStroke,
+      captionScale,
+    }
+  }
+
+  // A ultima cena estica ate o fim da narracao. Congelar o ultimo quadro por
+  // alguns segundos e ruim; tela preta com a pessoa ainda falando e pior.
+  const fim = Math.max(durationSec ?? usable.at(-1)!.end, usable.at(-1)!.end)
+
+  /**
+   * Fronteiras em frames, calculadas a partir dos inicios absolutos em vez de
+   * somar duracoes uma a uma -- somar acumula erro de arredondamento e o video
+   * termina alguns frames fora do audio.
+   */
+  const bounds = [
+    ...usable.map((scene) => Math.round(scene.start * VIDEO_FPS)),
+    totalFrames(fim),
+  ]
+
+  /*
+   * Quanto cada emenda dura, com o ajuste dela -- e PRESA a metade do bloco
+   * mais curto dos dois. Transicao de 1,5s entre dois blocos de 1s cruzaria
+   * tres cenas de uma vez; com o teto, as duas pontas de um bloco nunca se
+   * encontram, por mais longa que ele peca cada uma.
+   */
+  const bases = usable.map((_, index) => bounds[index + 1]! - bounds[index]!)
+  const transitionFrames = usable.map((scene, index) => {
+    if (index === 0) return 0
+    const pedido = framesDaTransicao(scene.transitionIn, scene.transicao)
+    return Math.max(0, Math.min(pedido, Math.floor(Math.min(bases[index - 1]!, bases[index]!) / 2)))
+  })
+
+  /*
+   * A ENTRADA E A SAIDA DO VIDEO: a transicao de entrada do primeiro bloco e a
+   * de saida do ultimo. Nao sobrepoem nada -- nao ha vizinho --, entao nao
+   * entram na compensacao abaixo.
+   */
+  const primeira = usable[0]!
+  const ultima = usable.at(-1)!
+  const entradaDoVideo = Math.min(
+    framesDaTransicao(primeira.transitionIn, primeira.transicao),
+    Math.floor(bases[0]! / 2),
+  )
+  const saidaDoVideo = ultima.transitionOut
+    ? Math.min(framesDaTransicao(ultima.transitionOut, ultima.transicaoSaida), Math.floor(bases.at(-1)! / 2))
+    : 0
+
+  /**
+   * Compensacao da sobreposicao.
+   *
+   * O TransitionSeries encurta o total: uma transicao de T frames faz as duas
+   * cenas se sobreporem por T, entao o video sairia T mais curto por transicao
+   * e perderia o sincronismo com a narracao.
+   *
+   * A correcao e devolver esses T frames distribuidos entre as duas cenas
+   * vizinhas -- metade para cada. Isso mantem o total exato E coloca o meio da
+   * transicao exatamente no instante planejado do corte, que e onde o olho
+   * espera que a troca aconteca.
+   */
+  const scenes = usable.map((scene, index) => {
+    const image = images[scene.imageIndex]!
+    const base = bounds[index + 1]! - bounds[index]!
+
+    const incoming = transitionFrames[index] ?? 0
+    const outgoing = transitionFrames[index + 1] ?? 0
+
+    // floor na entrada e ceil na saida: as duas metades somam T exato, sem
+    // sobrar nem faltar frame.
+    const padding = Math.floor(incoming / 2) + Math.ceil(outgoing / 2)
+
+    const durationInFrames = Math.max(base + padding, 1)
+
+    /*
+     * So informa a duracao do clipe quando ela e MENOR que o bloco.
+     *
+     * Clipe que cobre o bloco inteiro nao precisa de congelamento nenhum -- e o
+     * caso normal, ja que ele chega cortado. Mandar null ali deixa o Scene com
+     * um caminho a menos para errar.
+     */
+    /*
+     * De onde o clipe parte, e quanto dele ainda resta a partir dali.
+     *
+     * O deslocamento entra ANTES da conta do congelamento: um clipe de 6s
+     * comecando no segundo 5 tem 1 segundo de sobra, nao 6. Sem descontar,
+     * um bloco de 2s acharia que esta coberto e o video ficaria preto no fim.
+     *
+     * Fica preso ao que existe: pedir para comecar depois do fim do clipe
+     * deixaria a tela preta, entao o valor cai para "o ultimo instante em que
+     * ainda ha imagem".
+     */
+    const totalFonte =
+      image.kind === 'video' && image.durationSec !== undefined
+        ? Math.floor(image.durationSec * VIDEO_FPS)
+        : null
+
+    /*
+     * A cena que entra por transicao nasce floor(T/2) quadros ANTES do corte
+     * planejado (a compensacao acima). Recuar o ponto de entrada do clipe na
+     * mesma conta faz o quadro do corte ser exatamente o escolhido -- e, num
+     * video pronto cortado em dois, a fala continua batendo com a boca durante
+     * a transicao.
+     */
+    const recuo = Math.floor(incoming / 2)
+    const inicioFonte =
+      totalFonte === null
+        ? 0
+        : clamp(Math.round((scene.sourceStart ?? 0) * VIDEO_FPS) - recuo, 0, Math.max(totalFonte - 1, 0))
+
+    const sourceFrames = totalFonte === null ? null : totalFonte - inicioFonte
+
+    /*
+     * A metade de baixo, quando o bloco e tela dividida.
+     *
+     * Ela usa o arquivo ORIGINAL (`urlSource`) e nao o recorte 9:16: cada
+     * metade ocupa 1080x960, e recortar o que ja veio recortado mostraria so a
+     * faixa central de um quadro que ja e estreito -- corta rosto. Com o
+     * original, cada metade faz o proprio corte preenchendo, com o foco que o
+     * app ja guarda (o rosto detectado na importacao, ou o que ele arrastou).
+     */
+    const parceira = scene.imageIndexB === null ? undefined : images[scene.imageIndexB]
+    const abaixo =
+      parceira === undefined
+        ? null
+        : (() => {
+            /*
+             * O ponto de entrada da de baixo, pela MESMA conta da de cima.
+             *
+             * Ela partia de zero fixo, e o que sobrava do clipe era medido do
+             * comeco do arquivo -- entao um bloco que entrasse no meio de um
+             * clipe curto congelava cedo demais, ou nao congelava quando devia.
+             * Medindo a sobra a partir de onde ela realmente comeca, as duas
+             * metades se comportam igual.
+             */
+            const total =
+              parceira.kind === 'video' && parceira.durationSec !== undefined
+                ? Math.floor(parceira.durationSec * VIDEO_FPS)
+                : null
+            const inicio =
+              total === null
+                ? 0
+                : clamp(
+                    Math.round((scene.sourceStartB ?? 0) * VIDEO_FPS),
+                    0,
+                    Math.max(total - 1, 0),
+                  )
+            const sobra = total === null ? null : total - inicio
+            return {
+              url: parceira.urlSource ?? parceira.url,
+              kind: parceira.kind,
+              focusX: parceira.focusX,
+              focusY: parceira.focusY,
+              sourceDurationInFrames:
+                sobra !== null && sobra < durationInFrames ? Math.max(sobra, 1) : null,
+              sourceStartFrames: inicio,
+              /*
+               * `null` na cena quer dizer "segue a de cima", e a conta e feita
+               * AQUI -- o Remotion recebe o movimento ja resolvido, sem precisar
+               * saber que existe heranca.
+               */
+              effect: scene.effectB ?? scene.effect,
+              intensity: scene.intensityB ?? scene.intensity,
+              escala: scene.escalaB ?? 1,
+              espelhar: scene.espelharB ?? false,
+              escalaOrigem: scene.escalaOrigemB ?? { x: 0.5, y: 0.5 },
+              // A camera de baixo enquadra o ORIGINAL desta metade -- a mesma
+              // fonte que ela ja usa --, entao a conta precisa do aspecto dele.
+              camera: scene.cameraB ?? null,
+              aspecto: parceira.height > 0 ? parceira.width / parceira.height : null,
+            }
+          })()
+
+    /*
+     * Giro de um QUARTO parte do original, e nao do recorte 9:16.
+     *
+     * `url` ja vem cortado em 1080x1920. Gira-lo um quarto de volta poria uma
+     * tira estreita e deitada dentro de um quadro em pe, e cobrir isso
+     * significaria ampliar a tira ate a imagem virar zoom -- o inverso do que
+     * girar deveria fazer. Com o original, o corte acontece DEPOIS do giro.
+     *
+     * Meia volta nao precisa: 180 graus nao troca largura por altura, entao o
+     * recorte que ja existe serve inteiro e sem reamostrar nada.
+     */
+    const quarto = (scene.rotation ?? 0) === 90 || (scene.rotation ?? 0) === 270
+
+    /*
+     * Camera livre sobre o ORIGINAL.
+     *
+     * Fora da tela dividida e do giro de um quarto, que ja escolhem a fonte por
+     * outros motivos e mandam no object-position -- somar a camera neles seria
+     * duas regras disputando o mesmo eixo.
+     */
+    const cameraNaFonte =
+      abaixo === null && !quarto && scene.camera != null
+        ? fonteDaCamera(image, scene.camera, aspectoDoQuadro)
+        : null
+
+    return {
+      // Na tela dividida a metade de CIMA tambem parte do original, pelo mesmo
+      // motivo da de baixo: recortar duas vezes come o enquadramento.
+      url:
+        cameraNaFonte !== null
+          ? cameraNaFonte.url
+          : abaixo === null && !quarto && !(focoAoVivo.has(image.id) && image.urlSource)
+            ? image.url
+            : (image.urlSource ?? image.url),
+      focoNaFonte:
+        focoAoVivo.has(image.id) && cameraNaFonte === null && abaixo === null && !quarto && Boolean(image.urlSource),
+      sourceAspect:
+        cameraNaFonte?.aspecto ??
+        // Na tela dividida a metade de cima tambem parte do original: a camera
+        // dela precisa do aspecto dele.
+        (abaixo !== null && scene.camera != null && image.height > 0 ? image.width / image.height : null),
+      urlSource: image.urlSource ?? null,
+      focusX: image.focusX,
+      focusY: image.focusY,
+      abaixo,
+      durationInFrames,
+      effect: scene.effect,
+      intensity: scene.intensity,
+      curve: scene.curve,
+      curvePoints: scene.curvePoints ?? null,
+      // Camera livre, quando ele definiu as pontas a mao.
+      camera: scene.camera ?? null,
+      kind: image.kind,
+      // So o preview usa: e a cama que evita o preto na troca de bloco.
+      thumbnail: image.thumbnail ?? null,
+      sourceDurationInFrames:
+        sourceFrames !== null && sourceFrames < durationInFrames ? Math.max(sourceFrames, 1) : null,
+      sourceStartFrames: inicioFonte,
+      rotation: scene.rotation ?? 0,
+      escala: scene.escala ?? 1,
+      espelhar: scene.espelhar ?? false,
+      escalaOrigem: scene.escalaOrigem ?? { x: 0.5, y: 0.5 },
+      transitionIn: scene.transitionIn,
+      transitionInFrames: index === 0 ? entradaDoVideo : incoming,
+      entrada:
+        (index === 0 ? entradaDoVideo : incoming) > 0
+          ? resolverTransicao(scene.transitionIn, scene.transicao, index === 0 ? entradaDoVideo : incoming)
+          : null,
+      saida:
+        index === usable.length - 1 && saidaDoVideo > 0 && ultima.transitionOut
+          ? resolverTransicao(ultima.transitionOut, ultima.transicaoSaida, saidaDoVideo)
+          : null,
+    }
+  })
+
+  return {
+    formato,
+    scenes,
+    captions: untieWordStarts(captions),
+    cards: buildCards(cardText, bounds.at(-1)!),
+    captionColor,
+    captionY,
+    captionFont,
+    captionAnimation,
+    captionAnimationFrames,
+    captionAnimationCurve,
+    sobreposicoes,
+    captionMark,
+    captionShadow,
+    captionStroke,
+    captionScale,
+  }
+}
+
+/**
+ * Garante que, dentro de um bloco, duas palavras nunca comecem no mesmo frame.
+ *
+ * Isso acontece de verdade: no projeto real do Kintay, quatro blocos tinham
+ * palavrinhas de ligacao ("e", "a", "o") empatadas -- as que o Whisper nao ouviu
+ * e receberam tempo interpolado por tamanho de texto, que num frame de 42ms
+ * arredonda para o mesmo lugar. O marcador so pode estar em uma palavra por
+ * frame, entao a empatada nunca chegava a ser marcada.
+ *
+ * A correcao mora AQUI, e nao no buildCaptions, de proposito. Os projetos ja
+ * salvos guardam os tempos como o Whisper mediu e nao sao reconstruidos ao
+ * abrir; consertando na traducao para frames, eles se beneficiam sem que nada
+ * no disco precise ser reescrito. O arquivo continua guardando a medida
+ * honesta, e quem resolve o que a taxa de frames consegue mostrar e a exibicao.
+ *
+ * O empurrao respeita o fim do bloco: cada palavra deixa pelo menos um frame
+ * para cada uma que vem depois dela.
+ */
+function untieWordStarts(blocks: readonly CaptionBlock[]): CaptionBlock[] {
+  return blocks.map((block) => {
+    const end = block.from + block.durationInFrames
+    const total = block.words.length
+
+    let anterior = -1
+    let mudou = false
+
+    const words = block.words.map((word, index) => {
+      // Teto: as (total - 1 - index) palavras seguintes precisam de um frame
+      // cada. Nunca abaixo do inicio do bloco -- com bloco curto demais para o
+      // numero de palavras, e melhor empatar do que sair da janela.
+      const teto = Math.max(end - (total - index), block.from)
+      const from = Math.min(Math.max(word.from, anterior + 1), teto)
+      anterior = from
+      if (from !== word.from) mudou = true
+      return from === word.from ? word : { ...word, from }
+    })
+
+    return mudou ? { ...block, words } : block
+  })
+}
+
+/**
+ * Gancho no comeco e fechamento no fim, em frames.
+ *
+ * O total do video nao entra na conta por acaso: os cards sao recortados dentro
+ * dele. Um fechamento mais longo que o video inteiro vira o video inteiro, e
+ * nao um video mais longo -- ver overlayCardSchema.
+ */
+function buildCards(texto: CardText | null, totalFrames: number): OverlayCard[] {
+  if (!texto || totalFrames <= 0) return []
+
+  const cards: OverlayCard[] = []
+
+  const hook = texto.hook.trim()
+  if (hook.length > 0) {
+    cards.push({
+      text: hook,
+      from: 0,
+      durationInFrames: Math.max(
+        Math.min(Math.round(texto.hookSec * VIDEO_FPS), totalFrames),
+        1,
+      ),
+      // No alto: embaixo mora a legenda, e os dois juntos se atropelariam
+      // justamente nos segundos que decidem se a pessoa continua vendo.
+      position: 'top',
+    })
+  }
+
+  const end = texto.end.trim()
+  if (end.length > 0) {
+    const duracao = Math.max(Math.min(Math.round(texto.endSec * VIDEO_FPS), totalFrames), 1)
+    cards.push({
+      text: end,
+      from: Math.max(totalFrames - duracao, 0),
+      durationInFrames: duracao,
+      position: 'center',
+    })
+  }
+
+  return cards
+}
+
+/**
+ * As legendas moram em @shared/legendas. Reexportado daqui porque e daqui que
+ * o app inteiro sempre as importou.
+ */
+export { buildCaptions } from './legendas'
+
+/**
+ * Onde tocam os SFX e qual arquivo toca em cada ponto.
+ *
+ * Uma transicao sim, outra nao: som em todo corte vira ruido de fundo e o
+ * ouvido para de registrar. Alternando, cada whoosh volta a marcar alguma
+ * coisa.
+ *
+ * Os arquivos entram em rodizio pela pasta, na ordem em que ela lista. Repetir
+ * o mesmo som a cada troca soa mecanico depois do terceiro.
+ */
+export function sfxCuesFor(
+  scenes: readonly Scene[],
+  files: readonly string[],
+): { at: number; sound: string }[] {
+  if (files.length === 0 || scenes.length < 2) return []
+
+  const cues: { at: number; sound: string }[] = []
+
+  // Comeca no primeiro corte e pula de dois em dois.
+  for (let index = 1; index < scenes.length; index += 2) {
+    const sound = files[cues.length % files.length]
+    if (sound === undefined) break
+    cues.push({ at: scenes[index]!.start, sound })
+  }
+
+  return cues
+}
+
+/** Total de frames da composicao, a partir da duracao do audio. */
+export function totalFrames(durationSec: number): number {
+  return Math.max(Math.ceil(durationSec * VIDEO_FPS), 1)
+}
+
+/**
+ * Monta o plano a partir dos cortes escolhidos pela pontuacao da narracao.
+ *
+ * Ver shared/rhythm.ts: um ponto final e o fim de uma ideia, e e ali que o olho
+ * aceita ver outra imagem.
+ */
+export function planByRhythm(
+  imageCount: number,
+  durationSec: number,
+  words: readonly Word[],
+): ScenePlan | null {
+  if (imageCount < 2 || words.length < 2) return null
+
+  const cortes = pickCuts(boundariesFrom(words), imageCount - 1, durationSec)
+  if (!cortes) return null
+
+  const bounds = [0, ...cortes, durationSec]
+  const scenes: Scene[] = Array.from({ length: imageCount }, (_, index) => ({
+    imageIndex: index,
+    // Tela cheia. A divisao e escolha dele, feita na fita da Biblioteca.
+    imageIndexB: null,
+    start: bounds[index]!,
+    end: bounds[index + 1]!,
+    effect: pickEffect(index),
+    intensity: 0.12,
+    // A metade de baixo segue a de cima ate ele separar as duas.
+    effectB: null,
+    intensityB: null,
+    curve: MOTION_CURVE_DEFAULT,
+    // Todo bloco novo parte do comeco do clipe; mover e escolha dele.
+    sourceStart: 0,
+    sourceStartB: 0,
+    curvePoints: null,
+    // Camera livre so quando ele desenhar as pontas.
+    camera: null,
+    rotation: 0 as const,
+    transitionIn: 'cut' as const,
+  }))
+
+  return sanitize({ scenes }, imageCount, durationSec)
+}
+
+/**
+ * Onde cada parte do roteiro termina, em segundos.
+ *
+ * A parte vem da LINHA EM BRANCO do roteiro colado, que o alinhamento ja marca
+ * palavra por palavra (`paragraph`). Nao e um conceito novo: o ritmo ja dava
+ * peso extra a esse ponto para escolher cortes. Aqui ele deixa de ser uma dica
+ * e passa a ser uma fronteira dura.
+ *
+ * A ultima parte nao entra -- ela termina junto com o audio, e quem chama sabe
+ * disso. Palavra sem tempo medido (NaN) e ignorada: ela existe quando o Whisper
+ * nao ouviu aquele trecho, e usar um NaN como fronteira quebraria o plano todo.
+ */
+export function paragraphEnds(words: readonly Word[]): number[] {
+  const ends: number[] = []
+  for (let i = 0; i < words.length - 1; i++) {
+    const word = words[i]!
+    if (!word.paragraph) continue
+    if (!Number.isFinite(word.end)) continue
+    ends.push(word.end)
+  }
+  return ends
+}
+
+/**
+ * Um plano em que cada parte do roteiro so recebe o material da sua pasta.
+ *
+ * A diferenca para o planByRhythm nao esta no algoritmo -- e o mesmo -- e sim no
+ * escopo: em vez de escolher n-1 cortes ao longo do audio inteiro, escolhe os
+ * cortes DENTRO de cada parte, e as fronteiras entre partes ficam fixas.
+ *
+ * O caso de hoje (arquivo solto, sem pasta) e o caso particular de "uma parte
+ * so" -- por isso nao existe motor novo aqui para dar problema diferente.
+ *
+ * Devolve null quando a conta nao fecha: numero de partes diferente do numero
+ * de pastas, parte sem material, ou audio curto demais para os blocos pedidos.
+ * Quem chama avisa o usuario; nada aqui chuta.
+ */
+export function planBySections(
+  sectionCounts: readonly number[],
+  durationSec: number,
+  words: readonly Word[],
+): ScenePlan | null {
+  if (sectionCounts.length === 0) return null
+  if (sectionCounts.some((count) => count < 1)) return null
+
+  const ends = paragraphEnds(words)
+  if (ends.length + 1 !== sectionCounts.length) return null
+
+  const bounds = [0, ...ends, durationSec]
+  // Fronteira fora de ordem significa roteiro desalinhado do audio; melhor cair
+  // fora e deixar o caminho antigo assumir do que montar um plano torto.
+  for (let i = 1; i < bounds.length; i++) {
+    if (bounds[i]! <= bounds[i - 1]!) return null
+  }
+
+  const scenes: Scene[] = []
+  for (let s = 0; s < sectionCounts.length; s++) {
+    const inicio = bounds[s]!
+    const fim = bounds[s + 1]!
+    const duracao = fim - inicio
+    const quantos = sectionCounts[s]!
+
+    if (duracao < MIN_SCENE_SEC * quantos) return null
+
+    // Cortes internos da parte, medidos a partir do zero dela e devolvidos ao
+    // tempo absoluto no fim -- o pickCuts raciocina sempre em 0..duracao.
+    const locais = words
+      .filter((w) => Number.isFinite(w.start) && w.start >= inicio && w.end <= fim)
+      .map((w) => ({ ...w, start: w.start - inicio, end: w.end - inicio }))
+
+    const cortes =
+      quantos === 1 ? [] : pickCuts(boundariesFrom(locais), quantos - 1, duracao)
+    if (!cortes) return null
+
+    const dentro = [0, ...cortes, duracao]
+    for (let i = 0; i < quantos; i++) {
+      const index = scenes.length
+      scenes.push({
+        imageIndex: index,
+        // Tela cheia. A divisao e escolha dele, feita na fita da Biblioteca.
+        imageIndexB: null,
+        start: inicio + dentro[i]!,
+        end: inicio + dentro[i + 1]!,
+        effect: pickEffect(index),
+        intensity: 0.12,
+        // A metade de baixo segue a de cima ate ele separar as duas.
+        effectB: null,
+        intensityB: null,
+        curve: MOTION_CURVE_DEFAULT,
+        // Todo bloco novo parte do comeco do clipe; mover e escolha dele.
+        sourceStart: 0,
+        sourceStartB: 0,
+        curvePoints: null,
+        // Camera livre so quando ele desenhar as pontas.
+        camera: null,
+    rotation: 0 as const,
+    transitionIn: 'cut' as const,
+      })
+    }
+  }
+
+  return sanitize({ scenes }, scenes.length, durationSec)
+}
+
+/** Plano de melhor esforco sem IA. Usado pelo fallback e pelo preview inicial. */
+export function planWithoutAI(
+  imageCount: number,
+  durationSec: number,
+  transcript: Transcript | null,
+): { plan: ScenePlan; origin: 'rhythm' | 'silence' | 'equal' } {
+  // Com texto cronometrado, a pontuacao manda: ela sabe onde uma ideia acaba,
+  // coisa que o silencio de uma narracao corrida nunca vai dizer.
+  if (transcript && transcript.words.length >= 2) {
+    const porRitmo = planByRhythm(imageCount, durationSec, transcript.words)
+    if (porRitmo) return { plan: porRitmo, origin: 'rhythm' }
+  }
+
+  if (transcript && transcript.cutCandidates.length >= imageCount - 1) {
+    return {
+      plan: planFromCandidates(imageCount, durationSec, transcript.cutCandidates),
+      origin: 'silence',
+    }
+  }
+  return { plan: planEqualSplit(imageCount, durationSec), origin: 'equal' }
+}
+
+/**
+ * Qual imagem a metade escolhida de um bloco usa.
+ *
+ * Existe porque o indice do BLOCO nao serve como indice da IMAGEM, e isso
+ * deixou de ser verdade no dia em que a tela dividida chegou: um bloco dividido
+ * consome DUAS imagens, e a partir do primeiro par as contas param de bater --
+ * o "Buscar na biblioteca" do bloco 2 trocava a imagem de baixo do bloco 1. O
+ * `pares` ja tinha corrigido o mesmo desencontro na montagem do plano; aqui ele
+ * tinha ficado.
+ *
+ * Quem sabe qual imagem cada metade usa e a propria cena, e e dela que a
+ * resposta sai. null quer dizer "nao ha essa metade neste bloco".
+ */
+export function imagemDaMetade(
+  plan: ScenePlan | null,
+  sceneIndex: number,
+  metade: 'cima' | 'baixo',
+): number | null {
+  const cena = plan?.scenes[sceneIndex]
+  if (!cena) return null
+  return metade === 'baixo' ? cena.imageIndexB : cena.imageIndex
+}
+
+/**
+ * Reordena os BLOCOS quando a tira de imagens e reordenada.
+ *
+ * Mora aqui, e nao no store, porque e conta de plano: e a mesma familia do
+ * `imagemDaMetade`, e daqui da para conferi-la sem arrastar a interface junto.
+ * Uma permutacao trocada de lado e exatamente o defeito que ele descreveu --
+ * "ele joga para um lugar aleatorio" -- e e o tipo de erro que so um teste pega.
+ *
+ * Devolve null quando a lista nova nao e uma permutacao da atual; ai quem
+ * chamou mexe so na tira e nao inventa nada sobre o plano.
+ */
+export function reordenarBlocos(
+  plan: ScenePlan,
+  idsAntes: readonly string[],
+  idsAgora: readonly string[],
+): { plan: ScenePlan; moveuBlocos: boolean } | null {
+  if (idsAntes.length !== idsAgora.length) return null
+
+  /*
+   * A permutacao sai dos IDS, e nao da posicao: as duas listas tem o mesmo
+   * tamanho e e justamente a posicao que mudou.
+   */
+  const agora = new Map(idsAgora.map((id, k) => [id, k]))
+  if (idsAntes.some((id) => !agora.has(id))) return null
+
+  const reaponta = (i: number | null | undefined): number | null => {
+    if (i == null) return null
+    const id = idsAntes[i]
+    return id === undefined ? null : (agora.get(id) ?? null)
+  }
+
+  /*
+   * CADA BLOCO SEGUE A SUA IMAGEM DE CIMA.
+   *
+   * Ate aqui os blocos so andavam quando cada um tinha exatamente uma imagem.
+   * Bastava UMA tela dividida no projeto -- um bloco com duas imagens -- para
+   * a tira e o plano deixarem de ser a mesma lista, e ai arrastar no topo so
+   * reapontava referencias: a tira mudava de ordem e a timeline ficava igual.
+   * Reportado pelo ajk ("quando tenta trocar uma cena de lugar, ele nao altera
+   * na timeline mais"), e o "mais" era justo: antes de a v1.31 tratar o
+   * arrasto, a reordenacao refazia o plano inteiro -- perdendo os ajustes, mas
+   * mexendo na timeline.
+   *
+   * A regra geral e a do caso simples, generalizada: a ordem dos blocos passa
+   * a ser a ordem das imagens DE CIMA deles na tira nova. A de baixo de uma
+   * tela dividida vai junto com o bloco; arrastar so ela muda a tira e nao
+   * separa o par, porque o par e do bloco e nao da tira. Imagem que nenhum
+   * bloco usa tambem so muda a tira. Empate -- a mesma imagem em dois blocos
+   * -- mantem a ordem que ja tinham.
+   */
+  const ordem = plan.scenes
+    .map((cena, i) => ({ cena, i, pos: reaponta(cena.imageIndex) ?? Number.POSITIVE_INFINITY }))
+    .sort((a, b) => a.pos - b.pos || a.i - b.i)
+
+  const scenes = ordem.map(({ cena }, k) => {
+    const lugar = plan.scenes[k]!
+    return {
+      ...cena,
+      imageIndex: reaponta(cena.imageIndex) ?? cena.imageIndex,
+      imageIndexB: reaponta(cena.imageIndexB),
+      /*
+       * O TEMPO E DO LUGAR, os ajustes sao do bloco.
+       *
+       * Inicio e fim saem da narracao: descrevem a frase que esta sendo dita
+       * ali, e nao a imagem. Levar o tempo junto embaralharia a duracao das
+       * falas. A transicao de entrada fica pelo mesmo motivo -- ela descreve a
+       * EMENDA com o bloco anterior, que e da juncao e nao do que passa por ela.
+       */
+      start: lugar.start,
+      end: lugar.end,
+      transitionIn: lugar.transitionIn,
+      transicao: lugar.transicao,
+      // A saida do video e do FIM, nao do bloco que estava la.
+      transitionOut: lugar.transitionOut,
+      transicaoSaida: lugar.transicaoSaida,
+    }
+  })
+
+  return { plan: { ...plan, scenes }, moveuBlocos: ordem.some((o, k) => o.i !== k) }
+}

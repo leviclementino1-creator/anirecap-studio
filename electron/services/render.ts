@@ -1,0 +1,757 @@
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { ensureBrowser, makeCancelSignal, renderMedia, selectComposition } from '@remotion/renderer'
+import type { RenderProgress, RenderProps } from '@shared/contract'
+import { MUSIC_FADE_IN_SEC, MUSIC_FADE_OUT_SEC, VIDEO_FPS } from '@shared/contract'
+import { makeWebpackOverride } from '../../remotion.webpack'
+import { ffmpegPath } from './ffmpeg-path'
+
+const COMPOSITION_ID = 'dangai'
+
+/**
+ * Onde encontrar o bundle da composicao e a origem do projeto. Injetado pelo
+ * main na inicializacao em vez de lido de `app` aqui dentro: mantem este
+ * servico livre do Electron, o que o torna testavel sem abrir janela.
+ */
+export interface RenderPaths {
+  /** Raiz do projeto (dev) ou do app empacotado. */
+  appPath: string
+  /** Pasta do bundle pre-gerado, se existir. */
+  prebuiltBundle: string
+  /** SFX que vem com o app; o usuario pode apontar outra pasta em settings. */
+  defaultSfxDir: string
+  /**
+   * Onde estao os binarios do compositor do Remotion (remotion.exe, ffmpeg).
+   *
+   * null em dev, onde o node_modules resolve sozinho. No app empacotado tem que
+   * ser explicito: o Remotion monta o caminho a partir do proprio __dirname, que
+   * cai dentro do app.asar, e binario dentro de asar nao pode ser executado --
+   * o spawn falha com ENOENT mesmo com o arquivo desempacotado ao lado.
+   */
+  binariesDirectory: string | null
+}
+
+let paths: RenderPaths | null = null
+
+export function configureRender(next: RenderPaths): void {
+  paths = next
+}
+
+function requirePaths(): RenderPaths {
+  if (!paths) throw new Error('Render nao configurado')
+  return paths
+}
+
+export interface RenderRequest {
+  props: RenderProps
+  audioPath: string
+  durationInFrames: number
+  sfxCues: readonly SfxCue[]
+  /** Pasta alternativa de SFX. Vazio usa a que vem com o app. */
+  sfxDir: string
+  /** Cama de musica por baixo de tudo. null quando o usuario nao escolheu nenhuma. */
+  music: MusicBed | null
+  /** Os trechos das faixas de audio da linha do tempo. Vazio = nenhum. */
+  trilhas?: readonly TrechoParaMixar[]
+}
+
+/** Um trecho de faixa de audio, ja resolvido para o mix. */
+export interface TrechoParaMixar {
+  path: string
+  /** Onde entra no video, em segundos. */
+  at: number
+  /** De que ponto do arquivo parte. */
+  inicioSec: number
+  /** Quanto toca. */
+  duracaoSec: number
+  /** dB sobre o arquivo (absoluto). */
+  gainDb: number
+  fadeInSec: number
+  fadeOutSec: number
+}
+
+export interface MusicBed {
+  path: string
+  /** Quantos dB abaixo do fundo de escala. Sempre negativo. */
+  gainDb: number
+}
+
+export interface SfxCue {
+  at: number
+  sound: string
+  /** Ganho em dB sobre o nivel padrao. Ausente = 0, o de sempre. */
+  gainDb?: number
+  /** Quanto do som toca. Ausente = o arquivo inteiro. */
+  durationSec?: number | null
+}
+
+type ProgressSink = (progress: RenderProgress) => void
+
+/**
+ * Cancelamento nao e erro: foi o usuario que pediu. Um tipo proprio deixa o
+ * handler de IPC distinguir isso de uma falha real, em vez de procurar a
+ * palavra "cancel" na mensagem interna do Remotion.
+ */
+export class RenderCancelled extends Error {
+  constructor() {
+    super('Render cancelado')
+    this.name = 'RenderCancelled'
+  }
+}
+
+let activeCancel: (() => void) | null = null
+let cancelRequested = false
+
+export function cancelRender(): void {
+  cancelRequested = true
+  activeCancel?.()
+}
+
+/**
+ * Render em duas etapas:
+ *  1. Remotion desenha o video puro (sem faixa de audio);
+ *  2. FFmpeg normaliza a narracao em -14 LUFS e faz o mux, copiando o video
+ *     sem reencodar.
+ *
+ * Separar assim evita decodificar audio dentro do Chrome (lento) e coloca o
+ * loudnorm de duas passadas onde ele precisa estar de qualquer jeito.
+ */
+export async function renderVideo(
+  request: RenderRequest,
+  onProgress: ProgressSink,
+): Promise<string> {
+  const workDir = mkdtempSync(join(tmpdir(), 'dangai-'))
+  const silentVideo = join(workDir, 'video.mp4')
+  const outputPath = uniqueOutputPath(request.audioPath)
+
+  const { cancelSignal, cancel } = makeCancelSignal()
+  activeCancel = cancel
+  cancelRequested = false
+
+  try {
+    onProgress({ progress: 0, stage: 'bundling', message: 'Preparando a composicao...' })
+    const browserExecutable = await resolveBrowser(onProgress)
+    const serveUrl = await getServeUrl()
+
+    const { binariesDirectory } = requirePaths()
+
+    const composition = await selectComposition({
+      serveUrl,
+      id: COMPOSITION_ID,
+      inputProps: request.props,
+      browserExecutable,
+      binariesDirectory,
+    })
+
+    onProgress({ progress: 0, stage: 'rendering', message: 'Renderizando...' })
+
+    /*
+     * A GPU NO CHROME DO RENDER (gl 'angle').
+     *
+     * As transicoes de verdade (v1.61) desenham o borrao de movimento com
+     * filtros SVG -- o radial do zoom sao dezenas de deslocamentos por quadro.
+     * No Chrome sem GPU (o padrao do render) um quadro desses levava 9 a 14s e
+     * estourava o limite de 30s; com a GPU, 0,6s. Os quadros comuns saem iguais
+     * nos dois jeitos (medido: 62 dB). Se a GPU falhar nesta maquina, o render
+     * recomeca sem ela, com mais paciencia por quadro.
+     */
+    const renderizar = (comGpu: boolean) =>
+      renderMedia({
+        composition: {
+          ...composition,
+          durationInFrames: request.durationInFrames,
+          fps: VIDEO_FPS,
+        },
+        serveUrl,
+        codec: 'h264',
+        outputLocation: silentVideo,
+        inputProps: request.props,
+        browserExecutable,
+        binariesDirectory,
+        // JPEG em vez de PNG: para imagem fotografica a diferenca visual e nula e
+        // a serializacao de cada frame fica bem mais rapida.
+        imageFormat: 'jpeg',
+        jpegQuality: 90,
+        crf: 18,
+        // Sem isto o H.264 sai em yuvj420p (full range, formato legado herdado
+        // dos frames JPEG), que alguns decodificadores mostram com cor lavada.
+        pixelFormat: 'yuv420p',
+        colorSpace: 'bt709',
+        cancelSignal,
+        chromiumOptions: comGpu ? { gl: 'angle' } : {},
+        timeoutInMilliseconds: comGpu ? 30_000 : 180_000,
+        onProgress: ({ progress }) => {
+          // O render e ~90% do tempo; o mux fecha os 10% restantes.
+          onProgress({ progress: progress * 0.9, stage: 'rendering' })
+        },
+      })
+    try {
+      await renderizar(true)
+    } catch (err) {
+      if (cancelRequested) throw err
+      console.warn('[render] com GPU falhou, refazendo sem:', err)
+      onProgress({ progress: 0, stage: 'rendering', message: 'Renderizando sem a GPU...' })
+      await renderizar(false)
+    }
+
+    onProgress({ progress: 0.9, stage: 'muxing', message: 'Ajustando o audio...' })
+    await muxWithNormalizedAudio(
+      silentVideo,
+      request.audioPath,
+      outputPath,
+      resolveSfx(request),
+      resolveMusic(request),
+      (request.trilhas ?? []).filter((t) => t.duracaoSec > 0.01 && existsSync(t.path)),
+      request.durationInFrames / VIDEO_FPS,
+    )
+
+    onProgress({ progress: 1, stage: 'done', outputPath })
+    return outputPath
+  } catch (err) {
+    // O Remotion aborta com a propria mensagem em ingles; traduzir para o tipo
+    // do dominio aqui evita que ela chegue na interface.
+    if (cancelRequested) throw new RenderCancelled()
+    throw err
+  } finally {
+    activeCancel = null
+    rmSync(workDir, { recursive: true, force: true })
+  }
+}
+
+// ------------------------------------------------------------------- bundle
+
+let cachedServeUrl: string | null = null
+
+/**
+ * Prefere o bundle gerado no build (`npm run remotion:bundle`). Se nao existir
+ * -- caso tipico em dev logo depois de um clone -- monta na hora e guarda em
+ * cache para os proximos renders da sessao.
+ *
+ * O import do @remotion/bundler e dinamico DE PROPOSITO, e ele e uma
+ * devDependency. Ele arrasta webpack, babel e o @remotion/studio, que nunca
+ * rodam no app empacotado -- ali o bundle pre-gerado sempre existe. Importado
+ * no topo, so o peso ja seriam centenas de MB no instalador.
+ */
+async function getServeUrl(): Promise<string> {
+  if (cachedServeUrl) return cachedServeUrl
+
+  const { appPath, prebuiltBundle } = requirePaths()
+
+  if (existsSync(join(prebuiltBundle, 'index.html'))) {
+    /*
+     * Bundle mais velho que a composicao para o render em vez de reconstruir.
+     *
+     * Reconstruir aqui parece gentil e nao e: o bundler roda DENTRO do processo
+     * main, sem sinal de progresso, e um render que deveria levar 30 segundos
+     * fica minutos parado em "Preparando..." sem ninguem saber por que. Entre
+     * esperar em silencio e uma frase dizendo o comando, a frase ganha.
+     *
+     * So acontece em desenvolvimento: no app empacotado nao existe fonte ao
+     * lado do executavel e bundleVencido responde false na primeira linha.
+     */
+    if (bundleVencido(appPath, prebuiltBundle)) {
+      throw new Error(
+        'A composicao de video mudou depois do ultimo bundle. Rode "npm run remotion:bundle" e tente de novo.',
+      )
+    }
+    cachedServeUrl = prebuiltBundle
+    return prebuiltBundle
+  }
+
+  try {
+    const { bundle } = await import('@remotion/bundler')
+    cachedServeUrl = await bundle({
+      entryPoint: join(appPath, 'src', 'remotion', 'index.ts'),
+      webpackOverride: makeWebpackOverride(join(appPath, 'shared')),
+      onProgress: () => undefined,
+    })
+    return cachedServeUrl
+  } catch {
+    throw new Error(
+      'A composicao de video nao esta montada. Rode "npm run remotion:bundle" e tente de novo.',
+    )
+  }
+}
+
+/**
+ * O bundle pre-gerado ficou para tras do codigo da composicao?
+ *
+ * Isto so acontece em desenvolvimento, e custa caro quando acontece: o preview
+ * usa o componente Video importado direto do fonte, mas o RENDER usa o bundle
+ * do disco. Com o bundle velho, o preview mostra a mudanca e o MP4 sai sem ela
+ * -- sem erro, sem aviso, so um video errado. Ja me custou um ciclo de render
+ * inteiro achando que a funcionalidade estava quebrada.
+ *
+ * No app empacotado nao ha o que comparar (nao existe fonte ao lado) e a funcao
+ * responde false na primeira linha: o bundle sempre foi gerado no mesmo build.
+ */
+function bundleVencido(appPath: string, bundle: string): boolean {
+  /*
+   * So o que a composicao de fato importa.
+   *
+   * Olhar shared/ inteiro daria alarme falso a cada mexida em channels.ts ou
+   * project-file.ts, que o bundle nem enxerga -- e alarme falso que custa um
+   * rebundle de um minuto ensina a ignorar o alarme. Hoje src/remotion importa
+   * exclusivamente de @shared/contract; se um dia importar outro modulo de
+   * shared/, ele entra nesta lista.
+   */
+  const fontes = [join(appPath, 'src', 'remotion'), join(appPath, 'shared', 'contract.ts')]
+  if (!fontes.every((caminho) => existsSync(caminho))) return false
+
+  try {
+    const gerado = statSync(join(bundle, 'index.html')).mtimeMs
+    return fontes.some((caminho) => maisRecente(caminho) > gerado)
+  } catch {
+    return false
+  }
+}
+
+/** Mtime mais recente de um arquivo ou de tudo dentro de uma pasta. */
+function maisRecente(caminho: string): number {
+  const info = statSync(caminho)
+  if (!info.isDirectory()) return info.mtimeMs
+
+  let maior = 0
+  for (const entrada of readdirSync(caminho, { withFileTypes: true })) {
+    const quando = maisRecente(join(caminho, entrada.name))
+    if (quando > maior) maior = quando
+  }
+  return maior
+}
+
+/**
+ * Resolve qual navegador o render usa.
+ *
+ * Prefere o Chrome Headless Shell do Remotion, baixado uma vez (~113MB). Medido
+ * nesta maquina, 60s de video / 1800 frames:
+ *
+ *   Headless Shell .... 51 fps ... 35s
+ *   Edge instalado .... 18 fps ... 101s
+ *
+ * Quase 3x. O navegador completo carrega custo por aba que o headless shell nao
+ * tem, entao trocar o download unico por navegador instalado sairia caro em
+ * TODO render. O Edge/Chrome local fica como plano B para quando o download nao
+ * pode acontecer -- sem internet o app continua produzindo video, so mais devagar.
+ *
+ * Devolver null significa "usa o teu proprio", que e o que queremos.
+ */
+async function resolveBrowser(onProgress: ProgressSink): Promise<string | null> {
+  try {
+    await ensureBrowser({
+      onBrowserDownload: () => ({
+        version: null,
+        onProgress: ({ percent, alreadyAvailable }) => {
+          if (alreadyAvailable) return
+          onProgress({
+            progress: 0,
+            stage: 'bundling',
+            message: `Baixando o navegador de render... ${Math.round(percent * 100)}%`,
+          })
+        },
+      }),
+    })
+    return null
+  } catch {
+    const installed = findInstalledBrowser()
+    if (!installed) {
+      throw new Error(
+        'Nenhum navegador disponivel para o render. Conecte a internet uma vez para o Dangai baixar o navegador, ou instale o Google Chrome.',
+      )
+    }
+    return installed
+  }
+}
+
+function findInstalledBrowser(): string | null {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+          ]
+        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+
+  return candidates.find((path) => existsSync(path)) ?? null
+}
+
+// ---------------------------------------------------------------------- mux
+
+/**
+ * Mede o loudness da narracao e depois normaliza em -14 LUFS enquanto faz o
+ * mux. Duas passadas porque a passada unica do loudnorm e um ajuste dinamico
+ * que bombeia o volume; com as medidas em maos o ajuste vira linear.
+ *
+ * O video e copiado sem reencodar -- o Remotion ja entregou H.264.
+ */
+/** -12 dB abaixo da narracao, como a spec pede. 10^(-12/20). */
+const SFX_GAIN = 0.2512
+
+/** Fade aplicado no fim de um SFX cortado, para o corte nao estalar. */
+const FADE_CORTE_SEC = 0.03
+
+interface ResolvedCue {
+  path: string
+  at: number
+  /** Ganho em dB SOBRE o nivel padrao dos SFX. 0 = como sempre foi. */
+  gainDb: number
+  /** Quanto do som toca, em segundos. null = o arquivo inteiro. */
+  durationSec: number | null
+}
+
+/**
+ * Descarta cue sem arquivo correspondente em vez de derrubar o render.
+ *
+ * `sound` e o nome do arquivo como esta na pasta, com extensao -- o usuario
+ * larga os proprios sons la e eles entram pelo nome. Ainda aceita o formato
+ * antigo, sem extensao, para plano salvo antes desta mudanca nao virar silencio.
+ */
+function resolveSfx(request: RenderRequest): ResolvedCue[] {
+  const dir = request.sfxDir || requirePaths().defaultSfxDir
+  return request.sfxCues.flatMap((cue) => {
+    /*
+     * Caminho inteiro tambem vale.
+     *
+     * A faixa de SFX da linha do tempo aceita arquivo arrastado de QUALQUER
+     * lugar do disco -- ele nao precisa mover o som para a pasta do app so
+     * para usar uma vez. Os automaticos continuam vindo pelo nome.
+     */
+    const extra = {
+      at: Math.max(cue.at, 0),
+      gainDb: cue.gainDb ?? 0,
+      durationSec: cue.durationSec ?? null,
+    }
+
+    if (isAbsolute(cue.sound) && existsSync(cue.sound)) {
+      return [{ path: cue.sound, ...extra }]
+    }
+
+    const direct = join(dir, cue.sound)
+    if (existsSync(direct)) return [{ path: direct, ...extra }]
+
+    const legacy = join(dir, `${cue.sound}.mp3`)
+    return existsSync(legacy) ? [{ path: legacy, ...extra }] : []
+  })
+}
+
+/** Descarta musica sem arquivo em vez de derrubar o render inteiro por ela. */
+function resolveMusic(request: RenderRequest): MusicBed | null {
+  if (!request.music) return null
+  return existsSync(request.music.path) ? request.music : null
+}
+
+async function muxWithNormalizedAudio(
+  videoPath: string,
+  audioPath: string,
+  outputPath: string,
+  sfx: readonly ResolvedCue[],
+  music: MusicBed | null,
+  trilhas: readonly TrechoParaMixar[],
+  durationSec: number,
+): Promise<void> {
+  const measured = await measureLoudness(audioPath)
+
+  const loudnormFilter = measured
+    ? `loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
+    : 'loudnorm=I=-14:TP=-1.5:LRA=11'
+
+  /*
+   * A normalizacao acontece SOZINHA, num passo antes do mix.
+   *
+   * O loudnorm olha 3 segundos a frente. Quando ele divide o grafo com uma
+   * entrada que sobrevive a narracao -- a trilha, e so ela: SFX sao curtos e
+   * acabam antes -- esses 3 segundos finais nunca saem do filtro, e o video
+   * termina com imagem e sem voz. Foi o que ele viu em 21/08: primeiro o video
+   * cortava junto, depois so o audio. Mesma causa, dois sintomas.
+   *
+   * Normalizando em separado o mix recebe um arquivo comum, ja no nivel certo,
+   * e a interacao deixa de existir. Custa ~2s numa narracao de 77s.
+   */
+  const narracaoNormalizada = join(dirname(videoPath), 'narracao-normalizada.wav')
+  await runFfmpeg([
+    '-y',
+    '-i', audioPath,
+    '-af', `${loudnormFilter},aformat=channel_layouts=stereo`,
+    '-c:a', 'pcm_s16le',
+    '-ar', '48000',
+    narracaoNormalizada,
+  ])
+
+  const inputs = ['-i', videoPath, '-i', narracaoNormalizada]
+  for (const cue of sfx) {
+    // `-t` ANTES do `-i` limita a leitura da entrada: e assim que um som longo
+    // entra so pelo pedaco que ele deixou na faixa.
+    if (cue.durationSec !== null) inputs.push('-t', cue.durationSec.toFixed(3))
+    inputs.push('-i', cue.path)
+  }
+
+  // -stream_loop -1: uma faixa mais curta que o video se repete em vez de
+  // deixar o final em silencio. O atrim logo abaixo corta no lugar certo, entao
+  // o loop infinito nunca chega a segurar o encerramento do ffmpeg.
+  if (music) inputs.push('-stream_loop', '-1', '-i', music.path)
+  /*
+   * Cada trecho le do COMECO do arquivo ate o fim do pedaco (-t), e o filtro
+   * corta o comeco (atrim). Sem -ss na entrada de proposito: num arquivo do
+   * Google Drive (H:\Meu Drive\...) o ffmpeg pulando direto para o ponto lia
+   * lixo -- "Invalid data found", taxa de erro 1 -- e o render inteiro morria
+   * no fim com "Conversion failed!". Lido do comeco, o mesmo arquivo decodifica
+   * limpo; e ler uns segundos a mais de um mp3 nao custa nada.
+   */
+  for (const t of trilhas) {
+    inputs.push('-t', (t.inicioSec + t.duracaoSec).toFixed(3), '-i', t.path)
+  }
+
+  // Os SFX entram por cima da narracao em -12dB, para o nivel de referencia do
+  // video continuar sendo a voz, que e o que importa.
+  const chain = [`[1:a]aformat=channel_layouts=stereo[narr]`]
+  const labels = ['[narr]']
+
+  sfx.forEach((cue, index) => {
+    const ms = Math.round(cue.at * 1000)
+    const label = `[s${index}]`
+
+    // O ganho dele multiplica o nivel padrao: 0 dB continua sendo -12 dB sob a
+    // voz, e o que ele escolhe e o quanto ESTE som foge desse padrao.
+    const ganho = SFX_GAIN * 10 ** (cue.gainDb / 20)
+
+    /*
+     * Cortar um som no meio da onda estala.
+     *
+     * Um fade curtinho no fim do pedaco resolve, e so entra quando ha corte --
+     * som inteiro ja termina no proprio silencio. 30ms e curto demais para
+     * mudar o ataque e longo o bastante para o clique sumir.
+     */
+    const fade =
+      cue.durationSec !== null && cue.durationSec > FADE_CORTE_SEC
+        ? `,afade=t=out:st=${(cue.durationSec - FADE_CORTE_SEC).toFixed(3)}:d=${FADE_CORTE_SEC}`
+        : ''
+
+    chain.push(
+      `[${index + 2}:a]aformat=channel_layouts=stereo${fade},adelay=${ms}|${ms},volume=${ganho.toFixed(5)}${label}`,
+    )
+    labels.push(label)
+  })
+
+  if (music) {
+    const ganho = 10 ** (music.gainDb / 20)
+    // O fade de saida comeca cedo o bastante para terminar junto com o video --
+    // musica cortada a seco no fim soa como arquivo truncado.
+    const inicioFade = Math.max(durationSec - MUSIC_FADE_OUT_SEC, 0)
+    chain.push(
+      [
+        `[${sfx.length + 2}:a]aformat=channel_layouts=stereo`,
+        `atrim=0:${durationSec.toFixed(3)}`,
+        `asetpts=N/SR/TB`,
+        `volume=${ganho.toFixed(5)}`,
+        `afade=t=in:st=0:d=${MUSIC_FADE_IN_SEC}`,
+        `afade=t=out:st=${inicioFade.toFixed(3)}:d=${MUSIC_FADE_OUT_SEC}[mus]`,
+      ].join(','),
+    )
+    labels.push('[mus]')
+  }
+
+  /*
+   * AS FAIXAS DE AUDIO: cada trecho com o proprio volume e fades, no instante
+   * dele. O fade de saida e medido no PEDACO que toca, entao cortar o trecho
+   * leva o fade junto para o novo fim -- musica cortada a seco soa truncada.
+   */
+  const primeiraTrilha = sfx.length + 2 + (music ? 1 : 0)
+  trilhas.forEach((t, k) => {
+    const ms = Math.round(t.at * 1000)
+    // Cada fade ate o clipe inteiro; cruzados, o afade de saida multiplica o de
+    // entrada -- o mesmo "vale o menor" do preview, so que suave.
+    const entrada = Math.min(t.fadeInSec, t.duracaoSec)
+    const saida = Math.min(t.fadeOutSec, t.duracaoSec)
+    const fades = [
+      entrada > 0 ? `afade=t=in:st=0:d=${entrada.toFixed(3)}` : null,
+      saida > 0 ? `afade=t=out:st=${(t.duracaoSec - saida).toFixed(3)}:d=${saida.toFixed(3)}` : null,
+    ].filter(Boolean)
+    chain.push(
+      [
+        `[${primeiraTrilha + k}:a]aformat=channel_layouts=stereo`,
+        `atrim=start=${t.inicioSec.toFixed(3)}`,
+        'asetpts=PTS-STARTPTS',
+        ...fades,
+        `volume=${(10 ** (t.gainDb / 20)).toFixed(5)}`,
+        `adelay=${ms}|${ms}[t${k}]`,
+      ].join(','),
+    )
+    labels.push(`[t${k}]`)
+  })
+
+  // normalize=0: sem isso o amix divide o volume pelo numero de entradas e a
+  // narracao afunda a cada SFX adicionado.
+  /*
+   * duration=longest e nao first: toda entrada aqui ja tem fim proprio -- a
+   * trilha vem cortada em durationSec logo acima, os SFX sao curtos -- entao
+   * "longest" nao tem como correr solto, e ainda cobre a narracao que acabe
+   * antes do fim da composicao.
+   */
+  const misturado =
+    labels.length > 1
+      ? `${labels.join('')}amix=inputs=${labels.length}:duration=longest:normalize=0`
+      : `[narr]anull`
+
+  /*
+   * O audio termina EXATAMENTE junto com o video, medido e nao negociado.
+   *
+   * apad enche o que faltar com silencio, atrim corta o que passar. Antes disso
+   * quem alinhava as pontas era o -shortest, e ele cortava o VIDEO quando havia
+   * trilha, levando embora os ultimos blocos.
+   */
+  const mix = `${misturado}[cru];[cru]apad,atrim=0:${durationSec.toFixed(3)},asetpts=N/SR/TB[out]`
+
+  await runFfmpeg([
+    '-y',
+    ...inputs,
+    '-filter_complex', [...chain, mix].join(';'),
+    '-map', '0:v:0',
+    '-map', '[out]',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-ar', '48000',
+    // Estereo na entrega: narracao de TTS costuma vir mono, e alguns
+    // encoders de plataforma tratam mono de forma inconsistente.
+    '-ac', '2',
+    '-movflags', '+faststart',
+    // Trava de seguranca: o audio ja sai no tamanho certo do filtro, e o video
+    // vem com a duracao exata do Remotion. -t garante que nenhuma entrada
+    // (a musica em loop, em particular) estique a saida.
+    '-t', durationSec.toFixed(3),
+    outputPath,
+  ])
+}
+
+interface LoudnessMeasurement {
+  input_i: string
+  input_tp: string
+  input_lra: string
+  input_thresh: string
+  target_offset: string
+}
+
+async function measureLoudness(audioPath: string): Promise<LoudnessMeasurement | null> {
+  try {
+    const stderr = await runFfmpeg([
+      '-hide_banner',
+      '-i', audioPath,
+      '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json',
+      '-f', 'null',
+      '-',
+    ])
+
+    // O loudnorm imprime o JSON no fim do stderr.
+    const start = stderr.lastIndexOf('{')
+    const end = stderr.lastIndexOf('}')
+    if (start === -1 || end === -1) return null
+
+    const parsed: unknown = JSON.parse(stderr.slice(start, end + 1))
+    if (typeof parsed !== 'object' || parsed === null) return null
+
+    const m = parsed as Record<string, unknown>
+    const fields = ['input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset'] as const
+    if (!fields.every((f) => typeof m[f] === 'string')) return null
+
+    /*
+     * Narracao MUDA devolve `-inf` e `inf` nas medidas, e o ffmpeg recusa esses
+     * valores na segunda passada com "Result too large" -- uma mensagem que nao
+     * ajuda ninguem a entender que o audio esta silencioso.
+     *
+     * Devolver null aqui faz o loudnorm cair para a passada unica, que aceita
+     * silencio sem reclamar. O video sai mudo, que e o correto: o audio dele e
+     * que estava mudo.
+     */
+    if (fields.some((f) => !Number.isFinite(Number(m[f])))) return null
+
+    return {
+      input_i: m['input_i'] as string,
+      input_tp: m['input_tp'] as string,
+      input_lra: m['input_lra'] as string,
+      input_thresh: m['input_thresh'] as string,
+      target_offset: m['target_offset'] as string,
+    }
+  } catch {
+    // Sem medicao o loudnorm ainda funciona numa passada so. Perde precisao,
+    // nao trava o render.
+    return null
+  }
+}
+
+function runFfmpeg(args: readonly string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, [...args], { windowsHide: true })
+    let stderr = ''
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('error', (err) => reject(new Error(`FFmpeg nao pode ser executado: ${err.message}`)))
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(stderr)
+        return
+      }
+      /*
+       * A CAUSA, e nao a ultima linha. O fim do stderr e quase sempre a linha
+       * de progresso e o "Conversion failed!" -- que nao dizem nada. "FFmpeg
+       * falhou: size=55597kB time=00:01:07.79 ... Conversion failed!" foi tudo
+       * o que ele viu, duas vezes. As linhas com cara de erro vao para a tela;
+       * o stderr inteiro, para o log.
+       */
+      console.error('[ffmpeg] falhou com codigo', code, '\nargs:', JSON.stringify(args), '\n', stderr)
+      const linhas = stderr
+        .split(/\r?\n|\r/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+      const erros = linhas.filter(
+        (l) =>
+          /error|invalid|failed|could not|unable|no such|denied|not found|matches no|too large/i.test(l) &&
+          !/^Conversion failed/i.test(l),
+      )
+      /*
+       * "aist#11:0" e a entrada 11: dizer QUAL arquivo e o que deixa ele
+       * resolver (trocar ou tirar o som) sem precisar de mim.
+       */
+      const entradas = args.flatMap((a, i) => (a === '-i' ? [args[i + 1] ?? ''] : []))
+      const ruim = /aist#(\d+):/.exec(erros.join(' '))
+      const arquivo = ruim ? entradas[Number(ruim[1])] : undefined
+      if (arquivo) {
+        reject(new Error(`Nao deu para ler o audio "${basename(arquivo)}" (${arquivo}). Troque ou tire esse som e renderize de novo.`))
+        return
+      }
+      const detail = (erros.length > 0 ? erros.slice(-3) : linhas.slice(-3)).join(' | ')
+      reject(new Error(`FFmpeg falhou: ${detail}`))
+    })
+  })
+}
+
+// -------------------------------------------------------------------- saida
+
+/**
+ * Salva ao lado da narracao com nome previsivel. Nunca sobrescreve: se ja
+ * existir, numera. Sem dialogo de "salvar como" -- e um clique a menos e o
+ * usuario sempre sabe onde o arquivo caiu.
+ */
+function uniqueOutputPath(audioPath: string): string {
+  const folder = dirname(audioPath)
+  const stem = basename(audioPath, extname(audioPath))
+
+  let candidate = join(folder, `${stem}-short.mp4`)
+  let counter = 2
+  while (existsSync(candidate)) {
+    candidate = join(folder, `${stem}-short-${counter}.mp4`)
+    counter++
+  }
+  return candidate
+}

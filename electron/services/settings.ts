@@ -1,0 +1,219 @@
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
+/**
+ * Guarda tres campos em um JSON no userData.
+ *
+ * A spec pedia electron-store, mas a v11 e ESM puro ("type": "module", sem
+ * main) e o processo main aqui e CJS -- externalizado, o require() quebra.
+ * Para tres campos nao compensa comprar a briga ESM/CJS; isto faz o mesmo,
+ * inclusive escrita atomica.
+ *
+ * A chave da API vive aqui, fora do repositorio. Nunca em .env, nunca no codigo.
+ */
+
+export interface Settings {
+  anthropicApiKey: string
+  /** Modelo do Whisper: quanto maior, melhor e mais lento. */
+  whisperModel: 'base' | 'small' | 'medium'
+  /** Pasta dos SFX. Vazio = usa a que vem com o app. */
+  sfxDir: string
+  /** Raiz da biblioteca de cenas do AnCut. Vazio = a biblioteca fica desligada. */
+  libraryDir: string
+  /**
+   * Curvas de movimento que ele guardou.
+   *
+   * Ficam aqui e nao no projeto porque um ritmo que ele gostou vale para os
+   * PROXIMOS videos -- guardar no projeto obrigaria a redesenhar a mesma curva
+   * em cada um.
+   */
+  curvePresets: { nome: string; pontos: [number, number, number, number] }[]
+  /**
+   * O estilo de legenda que ele deixou por ultimo.
+   *
+   * Mesmo motivo das curvas: cor, altura, tamanho, fonte e contorno sao gosto
+   * DELE, nao caracteristica de um video. Guardado so no projeto, cada video
+   * novo nascia no padrao de fabrica e obrigava a refazer os mesmos ajustes --
+   * "toda vez ficar alterando e um saco".
+   *
+   * O projeto continua guardando o proprio estilo: abrir um video antigo mostra
+   * o que ELE tinha, e nao o de agora. Isto aqui e so o ponto de partida de
+   * quem comeca do zero.
+   *
+   * `null` ate ele mexer em alguma coisa pela primeira vez.
+   */
+  captionStyle: Record<string, unknown> | null
+  /**
+   * Estilos de legenda que ele guardou com nome. Conferidos do outro lado, pelo
+   * schema do contract -- aqui so atravessam como objetos.
+   */
+  captionPresets: Record<string, unknown>[]
+  /** As Power Bins: colecoes de arquivos que ele arrasta para a linha do tempo. */
+  bins: Record<string, unknown>[]
+  /** Curvas da entrada da legenda que ele desenhou e guardou. */
+  curvasDeEntrada: Record<string, unknown>[]
+  /** Atalhos de teclado configurados. Conferidos no renderer; null = os de fabrica. */
+  atalhos: Record<string, unknown> | null
+  /** Projetos recentes, o mais novo primeiro. Conferidos no renderer. */
+  recentes: Record<string, unknown>[]
+  /** Presets de correcao de cor. Conferidos no renderer pelo ajusteDeCorSchema. */
+  presetsDeCor: Record<string, unknown>[]
+  /** Transicoes configuradas e guardadas com nome. Conferidas no renderer. */
+  presetsDeTransicao: Record<string, unknown>[]
+}
+
+const DEFAULTS: Settings = {
+  anthropicApiKey: '',
+  whisperModel: 'small',
+  sfxDir: '',
+  libraryDir: '',
+  curvePresets: [],
+  captionPresets: [],
+  bins: [],
+  curvasDeEntrada: [],
+  captionStyle: null,
+  atalhos: null,
+  recentes: [],
+  presetsDeCor: [],
+  presetsDeTransicao: [],
+}
+
+let filePath: string | null = null
+let cache: Settings | null = null
+
+export function configureSettings(userDataDir: string): void {
+  filePath = join(userDataDir, 'settings.json')
+  cache = null
+}
+
+export function getSettings(): Settings {
+  if (cache) return cache
+  if (!filePath) throw new Error('Settings nao configurado')
+
+  try {
+    const raw: unknown = JSON.parse(readFileSync(filePath, 'utf8'))
+    cache = coerce(raw)
+  } catch {
+    // Arquivo ausente ou corrompido: volta ao padrao em vez de derrubar o app.
+    cache = { ...DEFAULTS }
+  }
+  return cache
+}
+
+export function saveSettings(patch: Partial<Settings>): Settings {
+  if (!filePath) throw new Error('Settings nao configurado')
+
+  const next = coerce({ ...getSettings(), ...patch })
+  mkdirSync(dirname(filePath), { recursive: true })
+
+  // Escreve em temporario e renomeia: se o app morrer no meio, o arquivo
+  // antigo continua intacto em vez de virar JSON pela metade.
+  const temp = `${filePath}.tmp`
+  writeFileSync(temp, JSON.stringify(next, null, 2), 'utf8')
+  renameSync(temp, filePath)
+
+  cache = next
+  return next
+}
+
+/** A interface nunca recebe a chave inteira -- so o suficiente para reconhecer. */
+export function getSettingsForRenderer(): Omit<Settings, 'anthropicApiKey'> & {
+  hasApiKey: boolean
+  apiKeyHint: string
+} {
+  const settings = getSettings()
+  const key = settings.anthropicApiKey
+  return {
+    whisperModel: settings.whisperModel,
+    sfxDir: settings.sfxDir,
+    libraryDir: settings.libraryDir,
+    curvePresets: settings.curvePresets,
+    captionStyle: settings.captionStyle,
+    captionPresets: settings.captionPresets,
+    bins: settings.bins,
+    curvasDeEntrada: settings.curvasDeEntrada,
+    atalhos: settings.atalhos,
+    recentes: settings.recentes,
+    presetsDeCor: settings.presetsDeCor,
+    presetsDeTransicao: settings.presetsDeTransicao,
+    hasApiKey: key.length > 0,
+    apiKeyHint: key.length > 8 ? `••••${key.slice(-4)}` : '',
+  }
+}
+
+function coerce(raw: unknown): Settings {
+  if (typeof raw !== 'object' || raw === null) return { ...DEFAULTS }
+  const value = raw as Record<string, unknown>
+
+  const model = value['whisperModel']
+  return {
+    anthropicApiKey:
+      typeof value['anthropicApiKey'] === 'string' ? value['anthropicApiKey'].trim() : '',
+    whisperModel: model === 'base' || model === 'small' || model === 'medium' ? model : 'small',
+    sfxDir: typeof value['sfxDir'] === 'string' ? value['sfxDir'] : '',
+    libraryDir: typeof value['libraryDir'] === 'string' ? value['libraryDir'] : '',
+    curvePresets: curvasSalvas(value['curvePresets']),
+    // Conferido do outro lado, pelo schema do contract: aqui so passa adiante
+    // um objeto, e um campo estranho vira o padrao em vez de derrubar o app.
+    captionStyle:
+      typeof value['captionStyle'] === 'object' && value['captionStyle'] !== null
+        ? (value['captionStyle'] as Record<string, unknown>)
+        : null,
+    captionPresets: Array.isArray(value['captionPresets'])
+      ? (value['captionPresets'] as unknown[]).filter(
+          (x): x is Record<string, unknown> => typeof x === 'object' && x !== null,
+        )
+      : [],
+    bins: Array.isArray(value['bins'])
+      ? (value['bins'] as unknown[]).filter(
+          (x): x is Record<string, unknown> => typeof x === 'object' && x !== null,
+        )
+      : [],
+    curvasDeEntrada: Array.isArray(value['curvasDeEntrada'])
+      ? (value['curvasDeEntrada'] as unknown[]).filter(
+          (x): x is Record<string, unknown> => typeof x === 'object' && x !== null,
+        )
+      : [],
+    atalhos:
+      typeof value['atalhos'] === 'object' && value['atalhos'] !== null && !Array.isArray(value['atalhos'])
+        ? (value['atalhos'] as Record<string, unknown>)
+        : null,
+    recentes: Array.isArray(value['recentes'])
+      ? (value['recentes'] as unknown[])
+          .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null)
+          .slice(0, 12)
+      : [],
+    presetsDeCor: Array.isArray(value['presetsDeCor'])
+      ? (value['presetsDeCor'] as unknown[])
+          .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null)
+          .slice(0, 50)
+      : [],
+    presetsDeTransicao: Array.isArray(value['presetsDeTransicao'])
+      ? (value['presetsDeTransicao'] as unknown[])
+          .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null)
+          .slice(0, 50)
+      : [],
+  }
+}
+
+/**
+ * As curvas guardadas, conferidas uma a uma.
+ *
+ * Este arquivo e editavel a mao e sobrevive a atualizacao do app: um valor
+ * estranho aqui viraria uma curva que o Remotion nao sabe interpolar, e o
+ * sintoma apareceria como movimento travado no meio do render.
+ */
+function curvasSalvas(raw: unknown): Settings['curvePresets'] {
+  if (!Array.isArray(raw)) return []
+  const ok: Settings['curvePresets'] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const { nome, pontos } = item as Record<string, unknown>
+    if (typeof nome !== 'string' || !nome.trim()) continue
+    if (!Array.isArray(pontos) || pontos.length !== 4) continue
+    if (!pontos.every((n) => typeof n === 'number' && n >= 0 && n <= 1)) continue
+    ok.push({ nome: nome.trim().slice(0, 40), pontos: pontos as [number, number, number, number] })
+  }
+  // Vinte ja e mais do que qualquer pessoa distingue numa lista de chips.
+  return ok.slice(0, 20)
+}

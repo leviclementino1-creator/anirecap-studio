@@ -1,0 +1,60 @@
+{
+  "name": "dangai",
+  "version": "1.65.0",
+  "private": true,
+  "description": "Maquina de fazer shorts de recap de anime",
+  "main": "out/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "remotion:bundle": "remotion bundle src/remotion/index.ts --out-dir=out/remotion",
+    "build": "npm run typecheck && electron-vite build && npm run remotion:bundle",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "sfx": "node --experimental-strip-types scripts/make-sfx.ts",
+    "icon": "node --experimental-strip-types scripts/make-icon.ts",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "release": "node scripts/release.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@remotion/renderer": "^4.0.523",
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.3.0",
+    "onnxruntime-node": "^1.27.0",
+    "opencv-wasm": "^4.3.0-10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.523",
+    "sharp": "^0.35.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@remotion/bundler": "^4.0.523",
+    "@remotion/cli": "^4.0.523",
+    "@remotion/player": "^4.0.523",
+    "@remotion/transitions": "^4.0.523",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.10.1",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "lucide-react": "^0.552.0",
+    "motion": "^12.42.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "zustand": "^5.0.14"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true,
+    "ffmpeg-static@5.3.0": true,
+    "electron@43.2.0": true,
+    "electron-winstaller@5.4.0": true
+  }
+}

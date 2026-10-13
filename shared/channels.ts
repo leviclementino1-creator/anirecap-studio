@@ -1,0 +1,780 @@
+import type {
+  AnalysisResult,
+  AudioAnalysis,
+  ImageAsset,
+  Metadata,
+  RenderProgress,
+  RenderProps,
+  Transcript,
+} from './contract'
+import type { OpenedProject, ProjectFile } from './project-file'
+
+/**
+ * Valores de runtime que o preload precisa, sem dependencias.
+ *
+ * Isto vive separado de contract.ts de proposito: contract.ts importa zod, e
+ * qualquer valor importado dele arrasta zod para dentro do bundle. O preload
+ * roda antes de cada pagina carregar, entao ele fica pequeno.
+ */
+
+/**
+ * Todo handler de IPC devolve isto. Erro nunca vira excecao atravessando a
+ * ponte: vira um valor com mensagem pronta para a interface. A copy do erro
+ * explica o que aconteceu e como resolver -- nunca pede desculpa.
+ */
+export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string }
+
+/** Canais de IPC, centralizados para nao existir string solta nos dois lados. */
+export const IPC = {
+  analyzeAudio: 'audio:analyze',
+  ondaDetalhada: 'audio:onda-detalhada',
+  importImages: 'images:import',
+  expandDrop: 'drop:expand',
+  reframeImage: 'images:reframe',
+  readScript: 'script:read',
+  listSfx: 'sfx:list',
+  listFontes: 'fontes:list',
+  upscaleAssets: 'upscale:assets',
+  upscaleVideoPronto: 'upscale:video-pronto',
+  videoProntoProgress: 'upscale:video-pronto-progress',
+  cancelarUpscale: 'upscale:cancel',
+  inverterClipe: 'assets:inverter',
+  openFontesDir: 'fontes:open',
+  openSfxDir: 'sfx:open',
+  pickFiles: 'dialog:pick-files',
+  pickMusic: 'dialog:pick-music',
+  loadMusic: 'music:load',
+  generateMetadata: 'metadata:generate',
+  copyText: 'clipboard:write',
+  startRender: 'render:start',
+  cancelRender: 'render:cancel',
+  cancelAnalyze: 'plan:cancel',
+  faceAt: 'faces:at',
+  trackBox: 'track:box',
+  setFormato: 'formato:set',
+  revealFile: 'shell:reveal',
+  analyze: 'plan:analyze',
+  getSettings: 'settings:get',
+  saveSettings: 'settings:save',
+  saveProject: 'project:save',
+  openProject: 'project:open',
+  autosaveProject: 'project:autosave',
+  readAutosave: 'project:autosave-read',
+  clearAutosave: 'project:autosave-clear',
+  /** main -> renderer, evento de progresso */
+  renderProgress: 'render:progress',
+  /** main -> renderer, texto de andamento da analise */
+  analyzeProgress: 'plan:progress',
+  /** main -> renderer, andamento da atualizacao do app */
+  updateStatus: 'update:status',
+  installUpdate: 'update:install',
+  checkUpdate: 'update:check',
+  appVersion: 'app:version',
+  scanLibrary: 'library:scan',
+  pickLibraryDir: 'library:pick-dir',
+  libraryClipUrl: 'library:clip-url',
+  libraryClipStrip: 'library:clip-strip',
+  sincronizarLegendas: 'captions:sync',
+  escolherPasta: 'dialog:pasta',
+  exportarTexto: 'dialog:exportar-texto',
+  importarTexto: 'dialog:importar-texto',
+  prepararSobreposicao: 'timeline:sobreposicao',
+  listarPasta: 'bins:listar-pasta',
+  existemArquivos: 'arquivos:existem',
+  escolherVideo: 'dialog:escolher-video',
+  mesclarClipes: 'biblioteca:mesclar',
+  sondarVideo: 'video:sondar',
+  readNicknames: 'nicknames:read',
+  saveNicknames: 'nicknames:save',
+  suggestNicknames: 'nicknames:suggest',
+  automount: 'automount:run',
+  scriptBlocks: 'automount:blocks',
+  tagLibrary: 'tagger:run',
+  readTags: 'tagger:read',
+  describeLibrary: 'describe:run',
+  readDescriptions: 'describe:read',
+  readFavorites: 'favorites:read',
+  toggleFavorite: 'favorites:toggle',
+  /** main -> renderer, andamento da varredura da biblioteca */
+  libraryProgress: 'library:progress',
+} as const
+
+export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
+export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'] as const
+export const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv'] as const
+
+export function classifyFile(
+  fileName: string,
+): 'audio' | 'image' | 'video' | 'subtitle' | 'script' | 'project' | 'unknown' {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  if ((AUDIO_EXTENSIONS as readonly string[]).includes(ext)) return 'audio'
+  if ((IMAGE_EXTENSIONS as readonly string[]).includes(ext)) return 'image'
+  if ((VIDEO_EXTENSIONS as readonly string[]).includes(ext)) return 'video'
+  if (ext === 'srt') return 'subtitle'
+  if (ext === 'txt' || ext === 'md') return 'script'
+  if (ext === 'dangai') return 'project'
+  return 'unknown'
+}
+
+/**
+ * Print e clipe ocupam o MESMO lugar no app: a mesma lista, a mesma ordem, o
+ * mesmo bloco. Quem decide quanto tempo cada um fica na tela continua sendo a
+ * narracao.
+ *
+ * Por isso quase todo lugar que hoje pergunta "isso e imagem?" na verdade quer
+ * perguntar "isso entra na esteira?" -- e essa e a pergunta certa.
+ */
+export function isVisual(fileName: string): boolean {
+  const kind = classifyFile(fileName)
+  return kind === 'image' || kind === 'video'
+}
+
+export interface StartRenderArgs {
+  props: RenderProps
+  audioPath: string
+  durationInFrames: number
+  /** Vazio quando o usuario mutou os SFX. */
+  sfxCues: readonly {
+    at: number
+    sound: string
+    /** Ganho em dB sobre o nivel padrao dos SFX. Ausente = 0. */
+    gainDb?: number
+    /** Quanto do som toca. Ausente = o arquivo inteiro. */
+    durationSec?: number | null
+  }[]
+  /** Cama de musica, quando ha uma escolhida. */
+  music: { path: string; gainDb: number } | null
+  /** Os trechos das faixas de audio, ja com o pedaco que toca. */
+  trilhas?: readonly {
+    path: string
+    at: number
+    inicioSec: number
+    duracaoSec: number
+    gainDb: number
+    fadeInSec: number
+    fadeOutSec: number
+  }[]
+}
+
+/** Uma faixa de musica escolhida pelo usuario. */
+export interface MusicPick {
+  path: string
+  fileName: string
+  /** URL do servidor de midia local, para o preview conseguir tocar a faixa. */
+  url: string
+}
+
+/** Uma parte do roteiro e o material que o usuario pos nela. */
+export interface DropSection {
+  name: string
+  files: string[]
+}
+
+export interface DropExpansion {
+  /** Material sem parte. E o caminho de sempre. */
+  files: string[]
+  /** Partes na ordem das pastas. Vazio quando ninguem soltou pasta. */
+  sections: DropSection[]
+}
+
+/**
+ * Uma cena da biblioteca de clipes -- a que o AnCut HUB ja cortou e identificou.
+ *
+ * O Dangai so LE essa pasta. Tudo aqui ja existia no disco antes dele: quem
+ * corta a cena, acha o personagem e extrai o keyframe e o outro programa.
+ */
+/** Uma tira de quadros pronta para o cartao, ja publicada no servidor local. */
+/**
+ * O tempo de cada palavra, medido pelo alinhamento forcado. Mesma ordem das
+ * palavras pedidas. `score` e a confianca media: abaixo de ~0,35 o texto nao e
+ * o que se ouve neste audio.
+ */
+export interface LegendasSincronizadas {
+  tempos: { start: number; end: number }[]
+  score: number
+}
+
+/** Um arquivo de midia, como as Power Bins o listam. */
+export interface ArquivoDaBin {
+  path: string
+  nome: string
+  tipo: 'audio' | 'video' | 'image'
+}
+
+export interface TiraDaCena {
+  url: string
+  quadros: number
+  colunas: number
+  linhas: number
+  /** Largura/altura da fonte. */
+  aspecto: number
+}
+
+export interface LibraryClip {
+  /** Caminho relativo a raiz. Estavel entre varreduras. */
+  id: string
+  /** Caminho absoluto do mp4, que e o que o importador do projeto recebe. */
+  path: string
+  /** Keyframe publicado no servidor local, para a grade desenhar. */
+  thumbUrl: string
+  /**
+   * O mesmo keyframe como caminho de arquivo, para quem le do disco.
+   *
+   * Aponta para a miniatura de 320px que o Dangai guarda no perfil, e nao para
+   * a da biblioteca -- e a que continua a mao no dia em que os clipes forem
+   * para a nuvem.
+   */
+  thumbPath: string
+  /**
+   * O keyframe ORIGINAL do AnCut, em resolucao cheia. Vazio quando sumiu.
+   *
+   * O etiquetador prefere este quando existe: medido, ele e a miniatura
+   * concordam em 84% das etiquetas, e o detalhe fino que so aparece aqui
+   * (`cloud` num ceu) e justamente o que a busca por cenario quer.
+   */
+  keyframe: string
+  /** A pasta da serie. E o que agrupa, porque e o nome que o usuario escolheu. */
+  anime: string
+  /**
+   * O titulo que o AnCut gravou no shots.json. Serve de detalhe e de alvo de
+   * busca -- nao de agrupador: ele varia por temporada e as vezes vem errado.
+   */
+  animeTitle: string
+  season: number
+  episode: number
+  /** Numero da cena no episodio. "0164-0167" quando o usuario juntou cenas. */
+  shot: string
+  /** Segundo em que a cena comeca no episodio original. */
+  start: number
+  duration: number
+  /** Vazio na maioria: quase dois tercos das cenas nao tem rosto identificado. */
+  characters: string[]
+}
+
+export interface LibraryIndex {
+  root: string
+  clips: LibraryClip[]
+  /** Facetas prontas, para a interface nao varrer milhares de itens para montar filtro. */
+  animes: string[]
+  characters: string[]
+  episodes: number
+  /** Episodios lidos do zero nesta varredura. O resto veio do cache. */
+  scanned: number
+}
+
+/**
+ * Como o usuario chama um personagem quando escreve o roteiro.
+ *
+ * "o slime" e o Rimuru; "uma Lorde Demonio" e a Luminous. O leitor de roteiro
+ * resolve nome escrito e pronome com regra -- apelido nao da, porque nao esta
+ * no texto: e conhecimento da serie.
+ */
+export interface Nickname {
+  /** Como ele escreve no roteiro. Comparado sem acento e sem caixa. */
+  term: string
+  /** Nome do personagem na biblioteca, ja unificado. */
+  character: string
+}
+
+/** Uma sugestao do modelo local. So vale depois que ele confirmar. */
+export interface NicknameSuggestion {
+  term: string
+  character: string
+}
+
+// ------------------------------------------------------- montagem automatica
+
+/** Recap ou teoria. Escolhido no gesto, quando ele solta a narracao. */
+export type AutomountMode = 'recap' | 'theory'
+
+export interface AutomountRequest {
+  audioPath: string
+  subtitlePath: string | null
+  /** Roteiro escrito, quando houver. Deixa o texto exato, sem erro de Whisper. */
+  script: string | null
+  mode: AutomountMode
+  /**
+   * De que serie sao as cenas. Vazio = deduz do proprio roteiro.
+   *
+   * Deduzir funciona -- nome de personagem nao colide entre as series dele --
+   * mas ele quis dizer. Palavras dele: "quando o roteiro for de Mushoku Tensei
+   * ele tem q buscar coisas diretamente de mushoku tensei". Escolher tambem
+   * blinda o bloco que nao cita ninguem, que e onde a deducao nao alcanca.
+   */
+  series: string | null
+}
+
+/** Um clipe proposto para um bloco. */
+export interface AutomountCandidate {
+  /** Caminho do mp4. E o que o importador do projeto recebe -- a mesma porta do arraste. */
+  path: string
+  thumbUrl: string
+  /** "Tensura S04E15 #0195". So para ele saber de onde veio. */
+  label: string
+  durationSec: number
+  /** Por que este entrou: "Kisuke Urahara, so ele em cena, cobre o bloco". */
+  reason: string
+}
+
+export interface AutomountBlock {
+  start: number
+  end: number
+  text: string
+  /** Quem o leitor achou nesta frase. Vazio quando a frase nao cita ninguem. */
+  characters: string[]
+  /** O primeiro ja vai aplicado; o resto e a fita. Vazio quando nao havia material. */
+  candidates: AutomountCandidate[]
+}
+
+export interface AutomountResult {
+  blocks: AutomountBlock[]
+  /**
+   * A transcricao que decidiu os cortes. Vai junto de proposito.
+   *
+   * Sem ela o renderer transcreveria de novo para fazer as legendas -- e a
+   * segunda passada nao tem o vocabulario da biblioteca, entao escreveria
+   * "Ischigo" onde esta acertou "ichigo". A legenda contradiria o corte, e o
+   * usuario esperaria o Whisper duas vezes pelo mesmo audio.
+   */
+  transcript: Transcript | null
+  scriptNote: string | null
+  /** Aviso quando algum bloco ficou sem cena. null quando deu tudo certo. */
+  note: string | null
+}
+
+/**
+ * Uma frase do roteiro, com o tempo que ela ocupa na narracao.
+ *
+ * Frase INTEIRA, e nao o bloco de 3s da montagem automatica: aqui quem decide
+ * quantas cenas cada frase tem e ele. Palavras dele sobre o gancho -- "nessa
+ * parte eu usaria 3 cenas provavelmente".
+ */
+/** Um trecho como a pontuacao o cortou, antes de qualquer juncao. */
+export interface PedacoDoTrecho {
+  text: string
+  start: number
+  end: number
+  sentence: number
+}
+
+export interface ScriptBlock {
+  /**
+   * Os trechos originais, quando este e a JUNCAO de dois ou mais.
+   *
+   * Existe para desfazer. A pontuacao corta onde corta, e as vezes corta curto
+   * demais para caber um clipe -- "Veldora," sozinho sao 0,3s. Ele junta com o
+   * vizinho; e se juntou errado, estes pedacos sao o que permite separar de
+   * volta sem reler o roteiro inteiro.
+   */
+  partes?: PedacoDoTrecho[]
+  text: string
+  start: number
+  end: number
+  /**
+   * A qual FRASE este trecho pertence, contando do zero.
+   *
+   * O bloco deixou de ser a frase e passou a ser o TRECHO entre pontuacoes --
+   * "Isso acontece quando Subaru abre o Livro dos Mortos de Reid e," e um,
+   * "em vez de encontrar as memorias dele," e outro. A frase continua existindo
+   * como agrupamento na tela, e este numero e o que permite remonta-la sem
+   * trocar a lista de blocos por uma arvore.
+   */
+  sentence: number
+}
+
+export interface ScriptBlocksResult {
+  blocks: ScriptBlock[]
+  /** A mesma transcricao, para o projeto nao ter que ouvir o audio de novo. */
+  transcript: Transcript | null
+  scriptNote: string | null
+}
+
+export interface ReframeArgs {
+  id: string
+  path: string
+  /** 0 = esquerda/topo, 1 = direita/base. */
+  focusX: number
+  focusY: number
+}
+
+export interface SaveProjectArgs {
+  /** null abre o dialogo de "salvar como". */
+  path: string | null
+  file: ProjectFile
+  /** Nome sugerido no dialogo, sem extensao. */
+  suggestedName: string
+}
+
+export interface AnalyzeArgs {
+  audioPath: string
+  subtitlePath: string | null
+  images: readonly ImageAsset[]
+  durationSec: number
+  /** Roteiro escrito, quando o usuario forneceu. */
+  script: string | null
+}
+
+/**
+ * Andamento da atualizacao automatica.
+ *
+ * 'baixando' cobre desde "achei uma versao nova" ate o download terminar, com
+ * percent indo de 0 a 1. A interface nao precisa distinguir os dois momentos.
+ */
+export type UpdateStatus =
+  | { state: 'procurando' }
+  | { state: 'atual' }
+  | { state: 'baixando'; version?: string; percent: number }
+  | { state: 'pronta'; version: string }
+  /**
+   * Baixou, conferiu, e o WINDOWS nao deixou instalar.
+   *
+   * Separado de `erro` porque e um caso completamente diferente: nao falta
+   * nada e nada quebrou -- o instalador esta no disco, inteiro e com o hash
+   * certo, e o sistema recusou executa-lo. O Smart App Control barra
+   * executavel novo sem assinatura, e o instalador e exatamente isso a cada
+   * versao.
+   *
+   * Existe porque isto ja aconteceu em silencio: ele clicou em "Atualizar"
+   * seis vezes seguidas (23/09/2026, 15:40 as 15:42), o botao voltou a ser o
+   * numero da versao e nenhuma mensagem apareceu em lugar nenhum. A conclusao
+   * dele foi "meu dangai nao ta atualizando", que e o que qualquer um
+   * concluiria.
+   */
+  | { state: 'bloqueada'; version: string; message: string }
+  | { state: 'erro'; message: string }
+
+/**
+ * De onde vem as versoes.
+ *
+ * Mora aqui, junto do estado da atualizacao, porque os dois lados precisam: o
+ * main monta a URL do pacote para baixar, e a tela monta o link da release
+ * para quando algo der errado.
+ */
+export const REPO = 'faahpla/dangai'
+export const RELEASES_URL = `https://github.com/${REPO}/releases`
+
+/** O que a interface pode ver das configuracoes. A chave nunca volta inteira. */
+export interface PublicSettings {
+  whisperModel: 'base' | 'small' | 'medium'
+  sfxDir: string
+  /** Raiz da biblioteca do AnCut. Vazio = o usuario ainda nao escolheu. */
+  libraryDir: string
+  hasApiKey: boolean
+  apiKeyHint: string
+  /** Curvas de movimento que ele guardou, para reusar em outros videos. */
+  curvePresets: { nome: string; pontos: [number, number, number, number] }[]
+  /** O estilo de legenda que ele deixou por ultimo. Ponto de partida do proximo video. */
+  captionStyle: Record<string, unknown> | null
+  /** Estilos de legenda guardados com nome. Conferidos pelo captionPresetSchema. */
+  captionPresets: Record<string, unknown>[]
+  /** As Power Bins. Conferidas pelo binSchema. */
+  bins: Record<string, unknown>[]
+  /** Curvas da entrada da legenda guardadas. Conferidas pelo curvaGuardadaSchema. */
+  curvasDeEntrada: Record<string, unknown>[]
+  /** Os atalhos que ele configurou: acao -> combinacoes. null = os de fabrica. */
+  atalhos: Record<string, unknown> | null
+  /** Os projetos abertos ou salvos por ultimo, o mais novo primeiro. */
+  recentes: Record<string, unknown>[]
+  /** Presets de correcao de cor da camada de ajuste. Conferidos no renderer. */
+  presetsDeCor: Record<string, unknown>[]
+  /** Transicoes configuradas e guardadas com nome. Conferidas no renderer. */
+  presetsDeTransicao: Record<string, unknown>[]
+}
+
+export interface SettingsPatch {
+  anthropicApiKey?: string
+  whisperModel?: 'base' | 'small' | 'medium'
+  sfxDir?: string
+  libraryDir?: string
+  curvePresets?: { nome: string; pontos: [number, number, number, number] }[]
+  captionStyle?: Record<string, unknown>
+  captionPresets?: Record<string, unknown>[]
+  bins?: Record<string, unknown>[]
+  curvasDeEntrada?: Record<string, unknown>[]
+  atalhos?: Record<string, unknown> | null
+  recentes?: Record<string, unknown>[]
+  presetsDeCor?: Record<string, unknown>[]
+  presetsDeTransicao?: Record<string, unknown>[]
+}
+
+/**
+ * A superficie que o preload expoe. O renderer nao conhece nada alem disto.
+ * O import de contract aqui e `import type`, entao e apagado na compilacao.
+ */
+/**
+ * O que uma cena mostra, em portugues.
+ *
+ * Curto e em portugues de proposito: o roteiro dele e em portugues, entao
+ * casar "raiva" com "raiva" dispensa a tabela de traducao que as etiquetas em
+ * ingles exigiram. Campo vazio significa que a cena foi lida e o modelo nao
+ * soube dizer -- diferente de nao estar no mapa, que significa nao lida.
+ */
+export interface SceneDescription {
+  /** O sentimento dominante, uma palavra. */
+  emocao: string
+  /** O que acontece, poucas palavras. */
+  acao: string
+  /** Onde se passa, poucas palavras. */
+  cenario: string
+  /** close, medio, aberto ou detalhe. */
+  plano: string
+}
+
+export interface DangaiBridge {
+  /** Resolve o caminho real de um File soltado na janela (Electron >= 32). */
+  pathForFile(file: File): string
+  analyzeAudio(path: string): Promise<IpcResult<AudioAnalysis>>
+  /**
+   * A onda FINA de um arquivo de audio, para a linha do tempo com zoom: 100
+   * picos (e RMS) por segundo. Nao vai para o projeto -- e refeita ao abrir.
+   */
+  ondaDetalhada(path: string): Promise<IpcResult<{ peaks: number[]; rms: number[]; durationSec: number }>>
+  /** `focus` so vem preenchido ao abrir projeto salvo, para o recorte sair certo de primeira. */
+  importImages(
+    paths: readonly string[],
+    focus?: readonly { focusX: number; focusY: number; focusAuto?: boolean }[],
+    /** A parte de cada arquivo, quando o usuario soltou pastas. null = sem parte. */
+    sections?: readonly ({ index: number; name: string } | null)[],
+  ): Promise<IpcResult<ImageAsset[]>>
+  /** Recorta de novo com outro enquadramento. Resolve com a URL da nova versao. */
+  reframeImage(args: ReframeArgs): Promise<IpcResult<string>>
+  /**
+   * Resolve o que foi solto: pasta vira parte, arquivo continua arquivo.
+   *
+   * Mora no main porque so ele pode olhar o disco -- o renderer recebe caminhos
+   * como texto e nao tem como saber se um deles e uma pasta.
+   */
+  expandDrop(paths: readonly string[]): Promise<IpcResult<DropExpansion>>
+  /** Le um .txt de roteiro do disco. */
+  readScript(path: string): Promise<IpcResult<string>>
+  /**
+   * Le a biblioteca de cenas do AnCut e devolve o indice inteiro.
+   *
+   * Le, nunca escreve. Episodio ja conhecido sai do cache, entao chamar isto de
+   * novo custa quase nada -- e por isso que "sincronizar" e um botao e nao um
+   * vigia de pasta rodando o tempo todo em cima de milhares de arquivos.
+   */
+  scanLibrary(): Promise<IpcResult<LibraryIndex>>
+  /** Dialogo para apontar a raiz da biblioteca. null = fechou sem escolher. */
+  pickLibraryDir(): Promise<IpcResult<string | null>>
+  /** Publica um clipe no servidor local, so quando ele vai mesmo ser tocado. */
+  libraryClipUrl(path: string): Promise<IpcResult<string>>
+  /**
+   * A tira de quadros que o cartao percorre com o mouse. Gerada uma vez por
+   * clipe e guardada; ver `tiraDoClipe` em electron/services/clips.ts.
+   */
+  libraryClipStrip(path: string): Promise<IpcResult<TiraDaCena>>
+  sincronizarLegendas(audioPath: string, palavras: readonly string[]): Promise<IpcResult<LegendasSincronizadas>>
+  /**
+   * Prepara um arquivo para a faixa de video: devolve a URL que toca (o .mov
+   * vira WebM com transparencia), o tipo, a duracao e o aspecto.
+   */
+  prepararSobreposicao(path: string): Promise<
+    IpcResult<{ url: string; tipo: 'video' | 'image'; durationSec: number; aspecto: number }>
+  >
+  /** Dialogo de escolher pasta. null = fechou sem escolher. */
+  escolherPasta(titulo: string): Promise<IpcResult<string | null>>
+  /** Salva um arquivo de texto onde ele escolher. null = fechou o dialogo. */
+  exportarTexto(args: { titulo: string; nome: string; extensao: string; descricao: string; conteudo: string }): Promise<IpcResult<string | null>>
+  /** Abre um arquivo de texto que ele escolher (ate 1 MB). null = fechou o dialogo. */
+  importarTexto(args: { titulo: string; extensoes: string[]; descricao: string }): Promise<IpcResult<{ nome: string; conteudo: string } | null>>
+  /** Os arquivos de midia (audio, video, imagem) de uma pasta e das subpastas. */
+  listarPasta(pasta: string): Promise<IpcResult<ArquivoDaBin[]>>
+  /** Quais destes caminhos ainda existem no disco. */
+  existemArquivos(paths: readonly string[]): Promise<IpcResult<boolean[]>>
+  /**
+   * Dialogo do "video pronto": UM video e, se ele marcar junto, o roteiro
+   * (.txt/.md). null = fechou.
+   */
+  escolherVideo(): Promise<IpcResult<{ video: string; roteiro: string | null } | null>>
+  /**
+   * Junta cenas SEGUIDAS de um episodio num clipe so, como o AnCut faz (e
+   * atualiza o banco dele). Os pedacos vao para a _lixeira do episodio.
+   */
+  mesclarClipes(paths: readonly string[]): Promise<
+    IpcResult<{ path: string; pedacos: string[]; ancut: 'atualizado' | 'sem-banco' | 'episodio-nao-encontrado'; segundos: number }>
+  >
+  /** Medidas, duracao e se o video tem audio. */
+  sondarVideo(path: string): Promise<IpcResult<{ width: number; height: number; durationSec: number; temAudio: boolean }>>
+  /**
+   * Andamento da varredura. So fala quando ha episodio novo para preparar --
+   * a primeira varredura de um acervo grande leva perto de um minuto gerando as
+   * miniaturas locais, e um minuto sem sinal na tela parece travamento.
+   */
+  onLibraryProgress(listener: (mensagem: string) => void): () => void
+  /** Apelidos cadastrados, por serie. */
+  readNicknames(): Promise<IpcResult<Record<string, Nickname[]>>>
+  /** Grava a lista INTEIRA de uma serie. Lista vazia apaga a serie. */
+  saveNicknames(series: string, list: readonly Nickname[]): Promise<IpcResult<Record<string, Nickname[]>>>
+  /**
+   * Pede sugestoes ao modelo local, se houver um.
+   *
+   * Sugestao, nunca decisao: medido, ele acerta o apelido famoso e erra o menos
+   * famoso. Errar aqui nao custa nada porque o usuario confirma item a item.
+   */
+  suggestNicknames(series: string, characters: readonly string[]): Promise<IpcResult<NicknameSuggestion[]>>
+  /**
+   * Monta o video sozinho a partir da narracao.
+   *
+   * Devolve uma PROPOSTA -- um clipe aplicado por bloco e cinco na fita --, e
+   * nunca escreve nada: quem aplica e o renderer, pela porta do arraste.
+   */
+  automount(request: AutomountRequest): Promise<IpcResult<AutomountResult>>
+  /**
+   * Quebra a narracao em frases com tempo medido, sem escolher cena nenhuma.
+   *
+   * E o que deixa a Biblioteca mostrar o roteiro ao vivo: ele le a frase, marca
+   * as cenas dela e ve na hora quanto tempo cada uma vai durar.
+   */
+  /**
+   * Descobre o que aparece em cada cena e guarda.
+   *
+   * Incremental: so etiqueta o que ainda nao tem etiqueta, entao o episodio da
+   * semana custa segundos. O andamento vem pelo mesmo canal da varredura.
+   */
+  tagLibrary(): Promise<IpcResult<Record<string, string[]>>>
+  /** As etiquetas ja guardadas. Vazio antes da primeira etiquetagem. */
+  readTags(): Promise<IpcResult<Record<string, string[]>>>
+  /**
+   * Le o que cada cena mostra: emocao, acao, cenario e plano.
+   *
+   * Passe o nome do anime para ler so ele. O acervo inteiro leva horas -- um
+   * anime por vez e o uso esperado. null le tudo que ainda falta.
+   */
+  describeLibrary(anime: string | null): Promise<IpcResult<Record<string, SceneDescription>>>
+  /** O que ja foi lido. Vazio antes da primeira leitura. */
+  readDescriptions(): Promise<IpcResult<Record<string, SceneDescription>>>
+  /** Ids das cenas favoritadas. O anime esta dentro do proprio id. */
+  readFavorites(): Promise<IpcResult<string[]>>
+  /** Liga ou desliga um favorito. Devolve a lista inteira depois da troca. */
+  toggleFavorite(id: string): Promise<IpcResult<string[]>>
+  scriptBlocks(request: {
+    audioPath: string
+    subtitlePath: string | null
+    script: string | null
+    /**
+     * A transcricao que a tela JA tem, quando tem.
+     *
+     * A importacao ja ouviu esta narracao inteira. Sem este campo, abrir a
+     * Biblioteca mandava o Whisper passar de novo pelo mesmo audio para chegar
+     * ao mesmo texto -- minutos de espera por nada, que e o que ele reclamou.
+     */
+    transcript: Transcript | null
+  }): Promise<IpcResult<ScriptBlocksResult>>
+  /** Nomes dos arquivos de som na pasta de SFX em uso. */
+  listSfx(): Promise<IpcResult<string[]>>
+  /** Abre a pasta de SFX no explorador, para o usuario largar os arquivos dele. */
+  openSfxDir(): Promise<IpcResult<null>>
+  /**
+   * As fontes que ele largou na pasta, ja publicadas no servidor local.
+   *
+   * A URL vem junto porque o Chrome do render nao enxerga as fontes do Windows
+   * nem o disco: ele busca o arquivo pelo mesmo 127.0.0.1 que serve os clipes.
+   */
+  listFontes(): Promise<IpcResult<{ nome: string; url: string }[]>>
+  /** Abre a pasta de fontes no explorador. */
+  openFontesDir(): Promise<IpcResult<null>>
+  /**
+   * Melhora as cenas antes do render e devolve, por id, a URL do arquivo novo.
+   *
+   * O arquivo sai com as MESMAS medidas do recorte de sempre, entao quem chama
+   * so precisa trocar a `url` do asset e seguir o caminho de sempre.
+   */
+  upscaleAssets(
+    assets: readonly ImageAsset[],
+    /** Ate que segundo de cada clipe o video chega, por id do asset. */
+    limites: Readonly<Record<string, number>>,
+    /** null = cancelado no meio pelo usuario. */
+  ): Promise<IpcResult<Record<string, string> | null>>
+  /**
+   * Escolhe um MP4 pronto e o passa inteiro pelo upscale. Devolve o caminho do
+   * arquivo novo; null se ele fechou o dialogo ou cancelou no meio.
+   */
+  upscaleVideoPronto(): Promise<IpcResult<string | null>>
+  /** Interrompe o upscale que estiver rodando, do render ou do video pronto. */
+  cancelarUpscale(): Promise<IpcResult<null>>
+  onVideoProntoProgress(listener: (p: { feitos: number; total: number; nome: string }) => void): () => void
+  /** Liga ou desliga o tocar de tras para frente de um clipe. Devolve o asset novo. */
+  inverterClipe(asset: ImageAsset, invertido: boolean): Promise<IpcResult<ImageAsset>>
+  /** Versao instalada, para a interface mostrar. */
+  appVersion(): Promise<IpcResult<string>>
+  /** Fecha e instala a atualizacao ja baixada. */
+  installUpdate(): Promise<IpcResult<null>>
+  /** Procura atualizacao agora, a pedido do usuario. O resultado vem por onUpdateStatus. */
+  checkUpdate(): Promise<IpcResult<null>>
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void
+  pickFiles(): Promise<IpcResult<string[]>>
+  /** Escolhe a faixa de fundo. null se o usuario fechou o dialogo. */
+  pickMusic(): Promise<IpcResult<MusicPick | null>>
+  /** Republica no servidor local uma faixa que veio de projeto salvo. */
+  loadMusic(path: string): Promise<IpcResult<MusicPick>>
+  /** Titulo, descricao e hashtags a partir do roteiro. Precisa da chave da API. */
+  generateMetadata(texto: string): Promise<IpcResult<Metadata>>
+  /** Copia texto para a area de transferencia pelo Electron. */
+  copyText(text: string): Promise<IpcResult<null>>
+  /** Resolve com o caminho do MP4, ou com null se o usuario cancelou. */
+  startRender(args: StartRenderArgs): Promise<IpcResult<string | null>>
+  cancelRender(): Promise<IpcResult<null>>
+  /**
+   * Interrompe a leitura da narracao em andamento.
+   *
+   * Existe porque ate 12/09/2026 nao havia saida: com o Whisper preso, a unica
+   * forma de recuperar a maquina era o Gerenciador de Tarefas -- e o app
+   * morria junto, levando o que ainda nao tinha sido salvo.
+   */
+  cancelAnalyze(): Promise<IpcResult<null>>
+  /**
+   * Onde o rosto esta, em cada instante pedido de um clipe.
+   *
+   * Uma entrada por instante, com null onde nao houve rosto confiavel -- a
+   * posicao importa, porque achar so no comeco ainda serve para metade do
+   * trabalho e a tela precisa poder dizer isso.
+   */
+  faceAt(
+    path: string,
+    instantes: readonly number[],
+  ): Promise<IpcResult<({ centroX: number; centroY: number; area: number } | null)[]>>
+  /**
+   * Segue uma caixa do clipe ao longo de um trecho, por fluxo optico.
+   *
+   * `caixa` e `centroX`/`centroY` estao em fracao do quadro. `ateOnde` diz ate
+   * que fracao do trecho a perseguicao se sustentou -- ela PARA quando perde o
+   * alvo em vez de continuar chutando, e quem chamou precisa poder dizer isso.
+   */
+  /**
+   * Avisa ao main qual e o formato do projeto aberto.
+   *
+   * O recorte das imagens, a janela do upscale e a geometria do rosto acontecem
+   * la, e todos precisam saber o quadro. Sem isto o main assumiria vertical em
+   * silencio e devolveria recorte 9:16 num projeto horizontal.
+   */
+  setFormato(formato: 'short' | 'long'): Promise<IpcResult<null>>
+  trackBox(
+    path: string,
+    inicio: number,
+    duracao: number,
+    caixa: { x: number; y: number; width: number; height: number },
+  ): Promise<
+    IpcResult<{
+      caminho: { t: number; centroX: number; centroY: number; pontos: number }[]
+      ateOnde: number
+      quadros: number
+    }>
+  >
+  revealFile(path: string): Promise<IpcResult<null>>
+  analyze(args: AnalyzeArgs): Promise<IpcResult<AnalysisResult>>
+  /** Grava o .dangai. Resolve com o caminho usado, ou null se cancelou o dialogo. */
+  saveProject(args: SaveProjectArgs): Promise<IpcResult<string | null>>
+  /** Abre um .dangai. `path` null abre o dialogo; null de volta significa cancelado. */
+  openProject(path: string | null): Promise<IpcResult<OpenedProject | null>>
+  /** Rede de seguranca silenciosa no userData. Guarda de qual .dangai o trabalho veio. */
+  autosaveProject(file: ProjectFile, projectPath: string | null): Promise<IpcResult<null>>
+  /** O que sobrou da ultima sessao, se ainda abrir. */
+  readAutosave(): Promise<IpcResult<OpenedProject | null>>
+  clearAutosave(): Promise<IpcResult<null>>
+  getSettings(): Promise<IpcResult<PublicSettings>>
+  saveSettings(patch: SettingsPatch): Promise<IpcResult<PublicSettings>>
+  /** Assina o progresso do render. Devolve a funcao para cancelar a assinatura. */
+  onRenderProgress(listener: (progress: RenderProgress) => void): () => void
+  onAnalyzeProgress(listener: (message: string) => void): () => void
+}

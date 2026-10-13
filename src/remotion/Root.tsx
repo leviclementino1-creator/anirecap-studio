@@ -1,0 +1,70 @@
+import { Composition } from 'remotion'
+import {
+  CAPTION_ANIMATION_DEFAULT,
+  CAPTION_ANIMATION_FRAMES_DEFAULT,
+  CURVA_DA_ENTRADA_PADRAO,
+  CAPTION_MARK_DEFAULT,
+  CAPTION_SHADOW_DEFAULT,
+  CAPTION_STROKE_DEFAULT,
+  CAPTION_COLOR_DEFAULT,
+  CAPTION_SCALE_DEFAULT,
+  CAPTION_Y_DEFAULT,
+  VIDEO_FPS,
+  FORMATO_PADRAO,
+  medidasDo,
+  type RenderProps,
+} from '@shared/contract'
+import { Video } from './Video'
+
+export const COMPOSITION_ID = 'dangai'
+
+/**
+ * Duracao e cenas chegam por inputProps no momento do render; os valores aqui
+ * sao so o que o Remotion Studio precisa para abrir sem props.
+ */
+const FALLBACK_PROPS: RenderProps = {
+  formato: FORMATO_PADRAO,
+  scenes: [],
+  captions: [],
+  cards: [],
+  captionColor: CAPTION_COLOR_DEFAULT,
+  captionY: CAPTION_Y_DEFAULT,
+  captionScale: CAPTION_SCALE_DEFAULT,
+  captionFont: null,
+  captionAnimation: CAPTION_ANIMATION_DEFAULT,
+  captionAnimationFrames: CAPTION_ANIMATION_FRAMES_DEFAULT,
+  captionAnimationCurve: CURVA_DA_ENTRADA_PADRAO,
+  sobreposicoes: [],
+  captionMark: CAPTION_MARK_DEFAULT,
+  captionShadow: CAPTION_SHADOW_DEFAULT,
+  captionStroke: CAPTION_STROKE_DEFAULT,
+}
+
+export function RemotionRoot() {
+  return (
+    <Composition
+      id={COMPOSITION_ID}
+      component={Video}
+      // Arredondado: o Remotion exige duracao inteira, e 23.976 * 10 nao e.
+      durationInFrames={Math.round(VIDEO_FPS * 10)}
+      fps={VIDEO_FPS}
+      /*
+       * As MEDIDAS SAEM DAS PROPS, e nao de uma constante.
+       *
+       * O formato e do projeto, e chega junto com as cenas. Fixar 1080x1920
+       * aqui faria o projeto horizontal ser renderizado no quadro vertical --
+       * com tudo dentro dele recortado, e sem nada na tela dizendo por que.
+       *
+       * Os valores abaixo sao so o que o Studio precisa para abrir sem props.
+       */
+      calculateMetadata={({ props }) => {
+        const { width, height } = medidasDo(props.formato)
+        return { width, height }
+      }}
+      width={1080}
+      height={1920}
+      defaultProps={FALLBACK_PROPS}
+      // O render passa a duracao real via calculateMetadata do lado do main.
+    />
+  )
+}

@@ -1,0 +1,2577 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Combine,
+  Eye,
+  FolderOpen,
+  Loader2,
+  Maximize2,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Star,
+  Tags,
+  X,
+} from 'lucide-react'
+import type { LibraryClip, TiraDaCena } from '@shared/channels'
+import { medidasDo } from '@shared/contract'
+import { coberturaDaFonte } from '@shared/camera'
+import { blocosQueSaem } from '@shared/remontar'
+import {
+  MAIS_SUGESTOES,
+  SUGESTOES,
+  personagensDoBloco,
+  seriesDoRoteiro,
+  sugerirParaBloco,
+} from '@shared/suggest'
+import type { SelectionCandidate } from '@shared/selection'
+import { TAGS_PT } from '@shared/tags-pt'
+import { useProject } from '@/store/project'
+import { ScriptColumn } from '@/components/ScriptColumn'
+import { Nicknames } from './Nicknames'
+
+/**
+ * Busca na biblioteca de cenas que o AnCut HUB ja cortou.
+ *
+ * Resolve a dor declarada -- "encontrar material manualmente e extremamente
+ * demorado" -- sem tocar em nada do que ja funciona: aqui so se ESCOLHE o
+ * material. Quando ele sai daqui vira caminho de arquivo e entra pela mesma
+ * porta do arraste, com a mesma analise e o mesmo render.
+ *
+ * Nao existe modelo, download nem GPU nesta tela. Tudo que ela mostra ja estava
+ * no disco do usuario antes de o Dangai abrir.
+ */
+
+/** Largura alvo de cada miniatura. Define quantas colunas cabem. */
+const ITEM_ALVO = 190
+/*
+ * O TAMANHO DOS CARTOES: "poder aumentar e reduzir o tamanho dos clipes, em
+ * alguns casos e muito dificil ver o que ta acontecendo". A largura-alvo de
+ * cada cartao vai de 120 a 520px; fica lembrada nesta maquina.
+ */
+const TAMANHO_MIN = 120
+const TAMANHO_MAX = 520
+function lerTamanho(): number {
+  try {
+    const v = Number(localStorage.getItem('dangai.biblioteca.tamanho'))
+    return v >= TAMANHO_MIN && v <= TAMANHO_MAX ? v : ITEM_ALVO
+  } catch {
+    return ITEM_ALVO
+  }
+}
+function gravarTamanho(v: number): void {
+  try {
+    localStorage.setItem('dangai.biblioteca.tamanho', String(v))
+  } catch {
+    /* vale so nesta sessao */
+  }
+}
+/** "0010" -> [10, 10]; "0010-0012" -> [10, 12]. O mesmo nome que o AnCut da. */
+function faixaDaCena(shot: string): [number, number] | null {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(shot)
+  if (!m) return null
+  const a = Number(m[1])
+  return [a, m[2] === undefined ? a : Number(m[2])]
+}
+const GAP = 10
+/** Altura da faixa de texto embaixo da miniatura. */
+const RODAPE = 26
+/** Linhas desenhadas fora da vista, de cada lado, para o scroll nao piscar. */
+const FOLGA = 3
+
+export function Library() {
+  const open = useProject((s) => s.libraryOpen)
+  const openLibrary = useProject((s) => s.openLibrary)
+  const library = useProject((s) => s.library)
+  const busy = useProject((s) => s.libraryBusy)
+  /*
+   * O trabalho GERAL do app, que e o que acontece ao montar: preparar os clipes
+   * roda no main e leva dezenas de segundos. `libraryBusy` e outra coisa -- e a
+   * varredura da pasta.
+   */
+  const trabalhando = useProject((s) => s.busy)
+  const error = useProject((s) => s.libraryError)
+  const syncLibrary = useProject((s) => s.syncLibrary)
+  const addFromLibrary = useProject((s) => s.addFromLibrary)
+  const images = useProject((s) => s.images)
+  const nicknames = useProject((s) => s.nicknames)
+  const audio = useProject((s) => s.audio)
+  const blocos = useProject((s) => s.scriptBlocks)
+  const transcript = useProject((s) => s.transcript)
+  const activeBlock = useProject((s) => s.activeBlock)
+  const setActiveBlock = useProject((s) => s.setActiveBlock)
+  const blockClips = useProject((s) => s.blockClips)
+  const toggleBlockClip = useProject((s) => s.toggleBlockClip)
+  const favorites = useProject((s) => s.favorites)
+  const toggleFavorite = useProject((s) => s.toggleFavorite)
+  const tags = useProject((s) => s.tags)
+  const replaceTarget = useProject((s) => s.replaceTarget)
+  const replaceSceneWith = useProject((s) => s.replaceSceneWith)
+  const taggerBusy = useProject((s) => s.taggerBusy)
+  const tagLibrary = useProject((s) => s.tagLibrary)
+  const descriptions = useProject((s) => s.descriptions)
+  const describeBusy = useProject((s) => s.describeBusy)
+  const describeLibrary = useProject((s) => s.describeLibrary)
+  const applyBlockClips = useProject((s) => s.applyBlockClips)
+  const cancelAnalyze = useProject((s) => s.cancelAnalyze)
+
+  /*
+   * Com narracao carregada, marcar cena e marcar cena DE UMA FRASE.
+   *
+   * Nao ha modo escondido: a coluna do roteiro esta ali do lado, a frase aberta
+   * esta destacada, e o cartao marcado mostra o numero dela. Sem narracao nada
+   * disso existe e a Biblioteca continua exatamente como era.
+   */
+  const porRoteiro = audio !== null && blocos !== null
+
+  const [texto, setTexto] = useState('')
+  const [anime, setAnime] = useState<string | null>(null)
+  /*
+   * A pre-selecao acontece uma vez POR ROTEIRO, e nunca depois.
+   *
+   * A trava e o proprio roteiro, e nao um booleano de abertura: com a
+   * Biblioteca aberta ele pode largar outra narracao na janela, e uma trava
+   * por abertura deixaria o roteiro novo sem pre-selecao nenhuma -- foi o que
+   * o teste pegou. Guardando QUAL roteiro ja foi atendido, trocar de roteiro
+   * re-arma sozinho.
+   *
+   * E continua sendo so ponto de partida: clicar em "Todos" ou em outro
+   * episodio vale a partir dali, porque o roteiro nao mudou.
+   */
+  const preSelecionadoPara = useRef<unknown>(null)
+  /*
+   * Ja avisou que existem trechos vazios?
+   *
+   * O aviso e um passo, nao uma janela -- a spec dele nao tem modal fora do
+   * ⌘K e das configuracoes. Primeiro clique explica o que vai acontecer,
+   * segundo clique monta. Trecho vazio nao trava nada: as vezes ele quer
+   * mesmo que a cena anterior estique.
+   */
+  const [avisouVazios, setAvisouVazios] = useState(false)
+  /*
+   * Ja avisou que remontar vai TIRAR blocos da timeline?
+   *
+   * Sao os que a selecao nao conhece -- imagem inserida direto na timeline.
+   * Remontar os descarta, e isso nao pode acontecer sem ele ter visto o
+   * numero. Mesmo passo do aviso de trechos vazios: primeiro clique explica,
+   * segundo monta.
+   */
+  const [avisouSaida, setAvisouSaida] = useState(false)
+  const planoAtual = useProject((s) => s.plan)
+  /**
+   * Episodio escolhido, como "S17E42".
+   *
+   * Existe porque a biblioteca dele cresce por EPISODIO -- ele corta um no
+   * AnCut e vem montar o recap dele aqui. Sem este nivel, chegar nas 300 cenas
+   * do episodio da semana era rolar 13 mil.
+   */
+  const [episodio, setEpisodio] = useState<string | null>(null)
+  const [personagem, setPersonagem] = useState<string | null>(null)
+  const [minSec, setMinSec] = useState(0)
+  const [maxSec, setMaxSec] = useState(0)
+  // A fila vive no store, e nao aqui: e ela que vai para o .dangai.
+  const escolhidos = useProject((s) => s.escolhidos)
+  const alternarEscolhido = useProject((s) => s.alternarEscolhido)
+  const removerEscolhido = useProject((s) => s.removerEscolhido)
+  const limparEscolhidos = useProject((s) => s.limparEscolhidos)
+  const [apelidosAbertos, setApelidosAbertos] = useState(false)
+  const [soFavoritos, setSoFavoritos] = useState(false)
+  /*
+   * A faixa de sugestoes aberta em grade, com bem mais cenas.
+   *
+   * Fica ligada de um trecho para o outro de proposito: quem abriu para ver
+   * mais num trecho quase sempre quer ver mais no seguinte tambem, e fechar
+   * sozinho a cada troca seria um clique a mais por trecho, trinta vezes.
+   */
+  const [maisSugestoes, setMaisSugestoes] = useState(false)
+  const [tamanho, setTamanho] = useState(lerTamanho)
+  const mudarTamanho = useCallback((v: number) => {
+    const t = Math.round(Math.min(Math.max(v, TAMANHO_MIN), TAMANHO_MAX))
+    setTamanho(t)
+    gravarTamanho(t)
+  }, [])
+  /** O "player" grande: a cena aberta, ou null. */
+  const [tocador, setTocador] = useState<LibraryClip | null>(null)
+  /*
+   * MESCLAR: Ctrl+clique marca as cenas, a barra de baixo junta. "No AnCut eu
+   * seleciono alguns clipes e mesclo... quero a mesma opcao aqui." Ver
+   * mesclarCenas no store e electron/services/mesclar.
+   */
+  const [paraMesclar, setParaMesclar] = useState<string[]>([])
+  const [confirmandoMescla, setConfirmandoMescla] = useState(false)
+  const [recadoDaMescla, setRecadoDaMescla] = useState<string | null>(null)
+  const mesclarCenas = useProject((s) => s.mesclarCenas)
+  const paraMesclarRef = useRef<string[]>([])
+  paraMesclarRef.current = paraMesclar
+  const alternarMescla = useCallback((id: string) => {
+    setConfirmandoMescla(false)
+    setRecadoDaMescla(null)
+    setParaMesclar((atual) => (atual.includes(id) ? atual.filter((x) => x !== id) : [...atual, id]))
+  }, [])
+
+  /*
+   * IR ATE O CLIPE: "um botao onde eu clique e me leve exatamente para onde
+   * esta aquele clip (episodio e posicao na biblioteca)". O pedido vem do
+   * store (mostrarNaBiblioteca): poe o anime e o episodio do clipe, tira os
+   * filtros que poderiam esconde-lo, e a grade rola ate ele e acende.
+   */
+  const irParaClipe = useProject((s) => s.irParaClipe)
+  const esquecerIrParaClipe = useProject((s) => s.esquecerIrParaClipe)
+  const [destaque, setDestaque] = useState<string | null>(null)
+  useEffect(() => {
+    if (!open || !irParaClipe || !library) return
+    const clip = library.clips.find((c) => c.path === irParaClipe)
+    esquecerIrParaClipe()
+    if (!clip) return
+    setTexto('')
+    setPersonagem(null)
+    setSoFavoritos(false)
+    setMinSec(0)
+    setMaxSec(0)
+    setAnime(clip.anime)
+    setEpisodio(chaveEpisodio(clip))
+    setDestaque(clip.id)
+  }, [open, irParaClipe, library, esquecerIrParaClipe])
+  // O brilho dura o bastante para o olho achar o cartao, e some.
+  useEffect(() => {
+    if (!destaque) return
+    const t = setTimeout(() => setDestaque(null), 2600)
+    return () => clearTimeout(t)
+  }, [destaque])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (paraMesclarRef.current.length > 0) {
+          setParaMesclar([])
+          setConfirmandoMescla(false)
+          return
+        }
+        void openLibrary(false)
+        return
+      }
+
+      /*
+       * Teclado para andar pelo roteiro sem largar o mouse da grade.
+       *
+       * Sao ~39 trechos por video, e ate agora trocar de trecho era ir ate a
+       * coluna da esquerda e voltar. Com as setas a mao do mouse nunca sai da
+       * grade. Nada disso vale quando ele esta digitando na busca, ou o "j"
+       * de "jaqueta" viraria um pulo de trecho.
+       */
+      const alvo = event.target as HTMLElement | null
+      if (alvo && (alvo.tagName === 'INPUT' || alvo.tagName === 'TEXTAREA' || alvo.isContentEditable)) return
+      if (!porRoteiro || !blocos || blocos.length === 0) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      const atual = activeBlock ?? 0
+      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+        event.preventDefault()
+        setActiveBlock(Math.min(atual + 1, blocos.length - 1))
+      } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+        event.preventDefault()
+        setActiveBlock(Math.max(atual - 1, 0))
+      } else if (event.key === 'Tab') {
+        /*
+         * Tab pula para o proximo trecho AINDA VAZIO, dando a volta no fim.
+         *
+         * E o gesto que fecha o trabalho: no fim da passada ele aperta Tab e,
+         * se nada acontecer, e porque nao falta nenhum.
+         */
+        event.preventDefault()
+        const total = blocos.length
+        for (let passo = 1; passo <= total; passo++) {
+          const i = (atual + passo) % total
+          if ((blockClips[i] ?? []).length === 0) {
+            setActiveBlock(i)
+            break
+          }
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, openLibrary, porRoteiro, blocos, activeBlock, blockClips, setActiveBlock])
+
+  /*
+   * Fechar zera os FILTROS. A escolha fica.
+   *
+   * A tela nao desmonta quando fecha -- ela devolve null e o estado sobreviveria
+   * junto. Reabrir com o "ichigo" que o usuario digitou meia hora antes esconde
+   * o acervo inteiro atras de um filtro que ele nao lembra de ter posto, e por
+   * isso os filtros continuam morrendo aqui.
+   *
+   * A SELECAO DEIXOU DE MORRER. Ela morria pelo medo de "cenas entrando no
+   * projeto sem ele ter marcado nesta visita" -- medo razoavel quando a lista
+   * era invisivel e so dava para desmarcar caçando o cartao na grade. Com a
+   * fita de marcadas embaixo, o que esta escolhido aparece inteiro e sai com
+   * um clique, entao esconder deixou de proteger de alguma coisa.
+   *
+   * E, principalmente, ele pediu o contrario: marcar as cenas de um video leva
+   * a tarde, e perder isso por ter fechado a tela era o custo mais caro do
+   * app. Agora a escolha e do PROJETO -- vai no .dangai e volta com ele.
+   */
+  useEffect(() => {
+    if (open) return
+    setApelidosAbertos(false)
+    setTexto('')
+    /*
+     * O ANIME E O EPISODIO FICAM. "Sempre que clicar em Selecao de novo,
+     * quero que ja abra com a pasta do anime selecionada -- vale o mesmo para
+     * trocar de cena na biblioteca." Fechar e abrir de novo volta na mesma
+     * pasta; e a pre-selecao pelo roteiro nao re-arma ao fechar (so quando o
+     * roteiro muda), senao ela passaria por cima da escolha dele.
+     */
+    setAvisouVazios(false)
+    setAvisouSaida(false)
+    setPersonagem(null)
+    setMinSec(0)
+    setMaxSec(0)
+    setSoFavoritos(false)
+    setMaisSugestoes(false)
+  }, [open])
+
+  /*
+   * O contexto que o motor de sugestao precisa, montado uma vez.
+   *
+   * Sao os mesmos dados que a montagem automatica usa -- personagens da
+   * biblioteca, apelidos dele, o que cada cena mostra --, so que aqui servem
+   * para ORDENAR, nunca para decidir.
+   */
+  const contexto = useMemo(() => {
+    if (!porRoteiro || !library || !blocos) return null
+    return {
+      blocks: blocos,
+      clips: library.clips,
+      characters: library.characters,
+      nicknames: Object.values(nicknames).flat(),
+      descriptions,
+    }
+  }, [porRoteiro, library, blocos, nicknames, descriptions])
+
+  /*
+   * Abrir ja no anime que o roteiro cita.
+   *
+   * Só quando a deducao aponta para UMA serie: roteiro que mistura duas -- ou
+   * que nao cita ninguem -- nao pre-seleciona nada, porque escolher errado por
+   * ele custaria mais do que nao escolher. E acontece uma vez so, entao clicar
+   * em "Todos" ou em outro episodio vale a partir dali.
+   */
+  /*
+   * A TRAVA E A TRANSCRICAO, e nao a lista de trechos.
+   *
+   * Ela era a lista, e a lista passou a mudar sem o roteiro mudar: juntar dois
+   * trechos cria uma lista nova. Com a trava nela, cada juncao re-armava a
+   * pre-selecao e jogava a grade de volta para o anime do roteiro -- no meio
+   * de ele estar olhando outro. A transcricao so muda quando o roteiro ou a
+   * narracao mudam de verdade, que e exatamente quando re-armar faz sentido.
+   */
+  useEffect(() => {
+    const trava = transcript ?? contexto?.blocks
+    if (!open || !contexto || preSelecionadoPara.current === trava) return
+    preSelecionadoPara.current = trava
+    const series = seriesDoRoteiro(contexto)
+    if (series.length === 1) setAnime(series[0]!)
+  }, [open, contexto, transcript])
+
+  const favoritosSet = useMemo(() => new Set(favorites), [favorites])
+
+  /*
+   * O texto buscavel de cada cena, montado UMA vez por leva de etiquetas.
+   *
+   * Sao 13 mil cenas com ~13 etiquetas cada, e cada etiqueta traz ate tres
+   * termos em portugues: refazer essa juncao a cada tecla digitada seria meio
+   * milhao de concatenacoes por letra.
+   */
+  const buscavel = useMemo(() => {
+    const cache = new Map<string, string>()
+    return (id: string): string => {
+      const pronto = cache.get(id)
+      if (pronto !== undefined) return pronto
+      const etiquetas = tags[id] ?? []
+      /*
+       * As etiquetas e o que a cena MOSTRA entram no MESMO campo de busca.
+       *
+       * Dois campos separados obrigariam ele a saber de antemao se "tristeza"
+       * e etiqueta ou emocao -- que e detalhe de implementacao, nao decisao de
+       * edicao. Ele digita a palavra e a cena aparece, venha de onde vier.
+       */
+      const d = descriptions[id]
+      const texto = [
+        ...etiquetas.flatMap((e) => [e, ...(TAGS_PT[e] ?? [])]),
+        ...(d ? [d.emocao, d.acao, d.cenario, d.plano] : []),
+      ]
+        .join(' ')
+        .toLowerCase()
+      cache.set(id, texto)
+      return texto
+    }
+  }, [tags, descriptions])
+
+  /*
+   * A Biblioteca nao abre despejando o acervo.
+   *
+   * Sem filtro nenhum a grade mostrava as 21 mil cenas na ordem do disco --
+   * comeca em Avatar, que quase nunca e o que ele veio buscar. Palavras dele:
+   * "a pagina inicial da biblioteca eu nao queria que ficasse mostrando os
+   * clipes logo de cara".
+   *
+   * Com roteiro carregado isso quase nunca aparece: o anime ja vem deduzido do
+   * proprio roteiro, entao um filtro ja esta ativo na primeira tela.
+   */
+  const semFiltro =
+    !anime && !episodio && !personagem && texto.trim() === '' && !soFavoritos && replaceTarget === null
+
+  const filtrados = useMemo(() => {
+    if (!library) return []
+    const busca = texto.trim().toLowerCase()
+    return library.clips.filter((clip) => {
+      if (anime && clip.anime !== anime) return false
+      if (episodio && chaveEpisodio(clip) !== episodio) return false
+      if (soFavoritos && !favoritosSet.has(clip.id)) return false
+      if (personagem && !clip.characters.includes(personagem)) return false
+      if (minSec > 0 && clip.duration < minSec) return false
+      if (maxSec > 0 && clip.duration > maxSec) return false
+      if (!busca) return true
+      /*
+       * A etiqueta entra na busca junto com o resto, em portugues E em ingles.
+       *
+       * E o que finalmente alcanca as 8.171 cenas sem personagem: ate agora
+       * "floresta" nao achava nada porque cenario nao tem nome no shots.json.
+       * O modelo so fala ingles, entao cada etiqueta viaja com os termos que
+       * ele digitaria -- ver shared/tags-pt.
+       */
+      return textoDe(clip).includes(busca) || buscavel(clip.id).includes(busca)
+    })
+  }, [library, texto, anime, episodio, personagem, minSec, maxSec, soFavoritos, favoritosSet, buscavel])
+
+  /*
+   * Quantos favoritos existem NO ANIME em uso, e nao no total.
+   *
+   * Palavras dele: "Tensura tem seus clipes favoritos, Mushoku Tensei os seus,
+   * e Bleach os seus. nao e legal ficar misturado". A separacao ja existe de
+   * graca -- o anime esta dentro do id da cena --, entao o que faltava era o
+   * numero dizer de qual pilha ele esta falando.
+   */
+  /** Quantas cenas ja tem etiqueta, para o botao dizer o quanto falta. */
+  const etiquetadas = Object.keys(tags).length
+
+  /*
+   * Quantas cenas DO ANIME ABERTO ja foram lidas.
+   *
+   * Do anime e nao do acervo porque a leitura e por anime: sao ~4,9s por cena,
+   * um episodio leva meia hora e o acervo inteiro passa de 24. Uma porcentagem
+   * do total inteiro ficaria em 3% por semanas e nao diria nada a ele.
+   */
+  const { lidas, doAnime } = useMemo(() => {
+    if (!library) return { lidas: 0, doAnime: 0 }
+    const alvo = anime ? library.clips.filter((c) => c.anime === anime) : library.clips
+    return { lidas: alvo.filter((c) => descriptions[c.id]).length, doAnime: alvo.length }
+  }, [library, anime, descriptions])
+
+  const totalFavoritos = useMemo(() => {
+    if (!library) return 0
+    return library.clips.filter(
+      (clip) => favoritosSet.has(clip.id) && (!anime || clip.anime === anime),
+    ).length
+  }, [library, favoritosSet, anime])
+
+  // Quantas partes o projeto ja tem, para o botao dizer qual sera a proxima.
+  const partesNoProjeto = new Set(
+    images.map((image) => image.section).filter((s): s is number => s !== null),
+  ).size
+
+  /*
+   * Cenas ja gastas em OUTRA frase.
+   *
+   * Trocar de frase troca o que aparece marcado, entao uma cena usada tres
+   * frases atras volta a parecer livre -- e repetir a mesma cena num video
+   * curto e o tipo de erro que so aparece depois de renderizar.
+   *
+   * Fica ANTES do `if (!open) return null`, junto das sugestoes que dependem
+   * dela: hook depois de saida antecipada e o que derruba o React inteiro com
+   * "Rendered more hooks than during the previous render".
+   */
+  const usadasEmOutras = useMemo(() => {
+    if (!porRoteiro || !library) return new Set<string>()
+    const porPath = new Map(library.clips.map((c) => [c.path, c.id]))
+    const fora = new Set<string>()
+    for (const [chave, paths] of Object.entries(blockClips)) {
+      if (Number(chave) === activeBlock) continue
+      for (const p of paths) {
+        const id = porPath.get(p)
+        if (id) fora.add(id)
+      }
+    }
+    return fora
+  }, [porRoteiro, library, blockClips, activeBlock])
+
+  /**
+   * Id -> clipe, para a fita de marcadas montar sem varrer o acervo por item.
+   *
+   * Sao ~20 mil clipes e a fita redesenha a cada marcacao; um `find` por cena
+   * marcada transformaria um clique numa varredura de centenas de milhares de
+   * comparacoes.
+   */
+  const porIdClip = useMemo(
+    () => new Map((library?.clips ?? []).map((c) => [c.id, c])),
+    [library],
+  )
+
+  /*
+   * As cenas mais provaveis para o trecho aberto.
+   *
+   * Medido no acervo dele (20.693 cenas): 5ms por trecho, entao recalcular a
+   * cada troca de trecho e barato. Cena ja marcada em OUTRO trecho sai da
+   * frente -- ver no topo o que ele acabou de usar seria convite a repetir.
+   */
+  /** Trechos sem cena nenhuma. O tempo deles e absorvido pelo anterior. */
+  /** Blocos da timeline que a selecao nao conhece, e que remontar tiraria. */
+  const blocosSaem =
+    porRoteiro && blocos && planoAtual
+      ? blocosQueSaem(
+          blocos.flatMap((_, i) => blockClips[i] ?? []),
+          images,
+          planoAtual,
+        )
+      : 0
+  const remontando = planoAtual !== null && planoAtual.scenes.length > 0
+
+  const trechosVazios = blocos
+    ? blocos.reduce((n, _, i) => n + ((blockClips[i] ?? []).length === 0 ? 1 : 0), 0)
+    : 0
+
+  const sugestoes = useMemo(() => {
+    if (!contexto || activeBlock === null || replaceTarget !== null) return []
+    return sugerirParaBloco(
+      contexto,
+      activeBlock,
+      usadasEmOutras,
+      maisSugestoes ? MAIS_SUGESTOES : SUGESTOES,
+    )
+  }, [contexto, activeBlock, replaceTarget, usadasEmOutras, maisSugestoes])
+
+  /*
+   * As pastas dos personagens que o trecho cita -- todos, e nao so o primeiro.
+   *
+   * "O LYE ESCREVEU UMA CARTA DE AMOR PRA RAM?!" cita dois, e qualquer um
+   * dos dois pode ser a cena certa. Ate tres, porque um trecho que cita mais
+   * que isso quase nunca e sobre um deles.
+   *
+   * O anime sai do proprio acervo: nome de personagem nao colide entre as
+   * series dele (medido: zero colisoes em 96 personagens de 7 series), entao
+   * a primeira cena que o tem diz de onde ele e.
+   */
+  const pastasDoTrecho = useMemo(() => {
+    if (!contexto || !library || activeBlock === null) return []
+    return personagensDoBloco(contexto, activeBlock)
+      .slice(0, 3)
+      .map((nome) => ({ nome, anime: library.clips.find((c) => c.characters.includes(nome))?.anime }))
+      .filter((p): p is { nome: string; anime: string } => p.anime !== undefined)
+  }, [contexto, library, activeBlock])
+
+  if (!open) return null
+
+  const escolher = (id: string): void => {
+    /*
+     * Substituir vem ANTES de tudo: e um gesto de um clique so, e enquanto ele
+     * esta ativo a Biblioteca nao esta montando nada -- esta respondendo uma
+     * pergunta especifica ("qual cena vai neste bloco?").
+     */
+    if (replaceTarget !== null) {
+      const path = library?.clips.find((c) => c.id === id)?.path
+      if (path) void replaceSceneWith(path)
+      return
+    }
+    if (porRoteiro) {
+      const path = library?.clips.find((c) => c.id === id)?.path
+      if (path) toggleBlockClip(path)
+      return
+    }
+    alternarEscolhido(id)
+  }
+
+  /** Ids marcados na frase aberta, para a grade poder numerar os cartoes. */
+  const marcadosNaFrase = (): string[] => {
+    if (!porRoteiro || activeBlock === null || !library) return []
+    const porPath = new Map(library.clips.map((c) => [c.path, c.id]))
+    return (blockClips[activeBlock] ?? [])
+      .map((p) => porPath.get(p))
+      .filter((id): id is string => id !== undefined)
+  }
+
+  const totalMarcado = Object.values(blockClips).reduce((n, c) => n + c.length, 0)
+
+
+  /**
+   * A ordem e a de CLIQUE, e nao a da grade.
+   *
+   * Vale para os dois usos e por motivos diferentes. Em recap a grade ja esta em
+   * ordem cronologica, entao clicar da esquerda para a direita da no mesmo. Em
+   * teoria a ordem e a do argumento, que nenhuma ordenacao de acervo conhece --
+   * e ali a ordem de clique e a unica informacao que existe.
+   */
+  const adicionar = (parte?: string): void => {
+    if (!library) return
+    const porId = new Map(library.clips.map((c) => [c.id, c.path]))
+    const caminhos = escolhidos
+      .map((id) => porId.get(id))
+      .filter((p): p is string => p !== undefined)
+    limparEscolhidos()
+    void addFromLibrary(caminhos, parte)
+  }
+
+  /**
+   * O nome da parte sai do filtro em uso.
+   *
+   * "Kurosaki, Ichigo" diz mais do que "Parte 2" na hora de conferir a barra de
+   * status, e nao custa nada: e o que ele acabou de escolher no rail.
+   */
+  const nomeDaLeva = (): string => {
+    const pedacos = [anime, episodio, personagem, texto.trim()].filter((p): p is string => !!p)
+    return pedacos.length > 0 ? pedacos.join(' · ') : `${escolhidos.length} cenas`
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex flex-col bg-bg">
+      <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-line px-5">
+        <h2 className="text-[15px] font-semibold text-ink">Biblioteca</h2>
+        {library && (
+          <span className="tnum text-[11px] text-ink-3">
+            {library.clips.length.toLocaleString('pt-BR')} cenas · {library.episodes} episodios
+          </span>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {/*
+            Aparece so com uma serie escolhida: apelido e por serie, e sem serie
+            nao ha lista de personagens para apontar.
+          */}
+          {anime && (
+            <button
+              type="button"
+              onClick={() => setApelidosAbertos(true)}
+              title="Como voce chama esses personagens no roteiro sem usar o nome"
+              className="lift flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-1 text-[12px] text-ink-2 hover:text-ink"
+            >
+              <Tags size={12} strokeWidth={1.5} />
+              Apelidos
+              <span className="tnum text-[10px] text-ink-3">
+                {(nicknames[anime] ?? []).length}
+              </span>
+            </button>
+          )}
+          {/*
+            Etiquetar e um botao e nao acontece sozinho: a primeira vez baixa
+            379 MB e ocupa a GPU por uns treze minutos. Depois e incremental --
+            so o que chegou de novo --, mas quem manda comecar e ele.
+          */}
+          <button
+            type="button"
+            onClick={() => void tagLibrary()}
+            disabled={taggerBusy || busy !== null}
+            title={
+              etiquetadas > 0
+                ? `${etiquetadas.toLocaleString('pt-BR')} cenas ja descritas. Etiqueta as que faltam.`
+                : 'Descobre o que aparece em cada cena (cenario, objetos, acao) para a busca alcancar as cenas sem personagem'
+            }
+            className="lift flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-1 text-[12px] text-ink-2 hover:text-ink disabled:opacity-40"
+          >
+            {taggerBusy ? (
+              <Loader2 size={12} strokeWidth={1.5} className="animate-spin text-accent" />
+            ) : (
+              <Sparkles size={12} strokeWidth={1.5} className="text-accent" />
+            )}
+            Etiquetar
+            {etiquetadas > 0 && (
+              <span className="tnum text-[10px] text-ink-3">
+                {Math.round((etiquetadas / Math.max(library?.clips.length ?? 1, 1)) * 100)}%
+              </span>
+            )}
+          </button>
+          {/*
+            Ler cenas e SEMPRE do anime aberto, nunca do acervo.
+
+            Sao ~4,9s por cena: um episodio leva meia hora, o acervo inteiro
+            passa de 24 horas. Um botao que so funcionasse "para tudo" seria um
+            botao que ele nunca clicaria. Com o anime aberto ele le o que vai
+            usar hoje e monta hoje.
+          */}
+          <button
+            type="button"
+            onClick={() => void describeLibrary(anime)}
+            disabled={describeBusy || busy !== null || doAnime === 0}
+            title={
+              anime
+                ? `Le emocao, acao e cenario das cenas de ${anime}. ${lidas.toLocaleString('pt-BR')} de ${doAnime.toLocaleString('pt-BR')} ja lidas. Precisa do Ollama aberto.`
+                : 'Abra um anime na lista ao lado para ler as cenas dele. Ler o acervo inteiro levaria mais de 24 horas.'
+            }
+            className="lift flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-1 text-[12px] text-ink-2 hover:text-ink disabled:opacity-40"
+          >
+            {describeBusy ? (
+              <Loader2 size={12} strokeWidth={1.5} className="animate-spin text-accent" />
+            ) : (
+              <Eye size={12} strokeWidth={1.5} className="text-accent" />
+            )}
+            Ler cenas
+            {doAnime > 0 && (
+              <span className="tnum text-[10px] text-ink-3">
+                {Math.round((lidas / doAnime) * 100)}%
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void syncLibrary()}
+            disabled={busy !== null}
+            title="Procura episodios novos na pasta"
+            className="lift flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-1 text-[12px] text-ink-2 hover:text-ink disabled:opacity-40"
+          >
+            {busy ? (
+              <Loader2 size={12} strokeWidth={1.5} className="animate-spin text-accent" />
+            ) : (
+              <RefreshCw size={12} strokeWidth={1.5} />
+            )}
+            Sincronizar
+          </button>
+          <button
+            type="button"
+            onClick={() => void openLibrary(false)}
+            aria-label="Fechar"
+            className="grid size-6 place-items-center rounded-sm text-ink-3 hover:text-ink"
+          >
+            <X size={13} strokeWidth={1.5} />
+          </button>
+        </div>
+      </header>
+
+      {/*
+        Uma faixa, e nao um modo escondido: entrar aqui pela seta do card e sair
+        pelo Escape sao dois caminhos, e sem dizer o que esta acontecendo o
+        proximo clique viraria surpresa.
+      */}
+      {replaceTarget !== null && (
+        <div className="flex h-[34px] shrink-0 items-center justify-between border-b border-accent bg-accent-dim px-5">
+          <span className="text-[12px] text-ink">
+            Escolha a cena que entra {replaceTarget.metade === 'baixo' ? 'na metade de baixo do' : 'no'}{' '}
+            bloco {replaceTarget.scene + 1} — um clique substitui
+          </span>
+          <button
+            type="button"
+            onClick={() => void openLibrary(false)}
+            className="rounded-sm px-2 py-0.5 text-[11px] text-ink-2 hover:text-ink"
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
+      {error ? (
+        <SemBiblioteca mensagem={error} />
+      ) : !library ? (
+        <div className="grid flex-1 place-items-center text-[13px] text-ink-3">
+          <span className="flex items-center gap-2">
+            <Loader2 size={14} strokeWidth={1.5} className="animate-spin text-accent" />
+            {busy ?? 'Lendo a biblioteca...'}
+          </span>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          {replaceTarget === null && (porRoteiro || audio) ? <ScriptColumn /> : null}
+          <Rail
+            /*
+             * Com o filtro de favoritos ligado, o rail conta FAVORITOS por
+             * anime -- que e o que ele pediu: "Tensura tem seus clipes
+             * favoritos, Mushoku Tensei os seus". Sem isso o rail diria 3.211
+             * cenas de Mushoku enquanto a grade mostra as quatro marcadas.
+             */
+            clips={soFavoritos ? library.clips.filter((c) => favoritosSet.has(c.id)) : library.clips}
+            anime={anime}
+            episodio={episodio}
+            personagem={personagem}
+            /*
+             * Trocar de anime limpa o personagem, e escolher um personagem
+             * assume o anime dele. Sem isso as duas colunas brigariam: pedir
+             * "Tensura" com o Ichigo ainda marcado devolveria zero resultado, e
+             * o motivo estaria escondido dois filtros acima.
+             */
+            onAnime={(serie) => {
+              setAnime(serie)
+              setPersonagem(null)
+              // Trocar de serie zera o episodio: "S17E42" nao quer dizer nada
+              // dentro de Tensura.
+              setEpisodio(null)
+            }}
+            onEpisodio={(chave, doAnime) => {
+              setEpisodio(chave)
+              // Escolher um episodio assume a serie dele, como o personagem ja
+              // fazia -- pedir a serie de novo seria pedir duas vezes o mesmo.
+              if (chave !== null) setAnime(doAnime)
+              setPersonagem(null)
+            }}
+            onPersonagem={(nome, doAnime) => {
+              setPersonagem(nome)
+              if (nome !== null) setAnime(doAnime)
+            }}
+          />
+
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            <Filtros
+              texto={texto}
+              onTexto={setTexto}
+              minSec={minSec}
+              maxSec={maxSec}
+              onFaixa={(min, max) => {
+                setMinSec(min)
+                setMaxSec(max)
+              }}
+              favoritos={soFavoritos}
+              totalFavoritos={totalFavoritos}
+              onFavoritos={() => setSoFavoritos((v) => !v)}
+              total={filtrados.length}
+              tamanho={tamanho}
+              onTamanho={mudarTamanho}
+            />
+            {/*
+              As sugestoes ficam ACIMA da grade, nunca no lugar dela.
+
+              O custo do modo manual e varrer 20 mil cenas 39 vezes, uma por
+              trecho. Isto corta o palheiro sem tirar nada: a biblioteca
+              inteira continua logo abaixo, com todos os filtros de sempre. E
+              e sugestao mesmo -- nada entra no video sem ele clicar.
+            */}
+            {anime !== null && (
+              <PersonagensDoAnime
+                clips={soFavoritos ? library.clips.filter((c) => favoritosSet.has(c.id)) : library.clips}
+                anime={anime}
+                episodio={episodio}
+                personagem={personagem}
+                onPersonagem={setPersonagem}
+              />
+            )}
+            {sugestoes.length > 0 && (
+              <Sugestoes
+                candidatos={sugestoes}
+                escolhidos={porRoteiro ? marcadosNaFrase() : escolhidos}
+                favoritos={favoritosSet}
+                onFavoritar={(id) => void toggleFavorite(id)}
+                onEscolher={escolher}
+                expandida={maisSugestoes}
+                onExpandir={() => setMaisSugestoes((v) => !v)}
+                /*
+                 * A pasta abre a PASTA INTEIRA do personagem.
+                 *
+                 * Por isso limpa episodio, busca e so-favoritos: qualquer um
+                 * deles faria "todas" virar "algumas", com o motivo escondido
+                 * num filtro que ele nem lembra de ter posto. O resto e o que o
+                 * rail ja faz ao clicar no personagem.
+                 */
+                pastas={pastasDoTrecho
+                  .filter((p) => personagem !== p.nome)
+                  .map((p) => ({
+                    nome: p.nome,
+                    abrir: () => {
+                      setAnime(p.anime)
+                      setPersonagem(p.nome)
+                      setEpisodio(null)
+                      setTexto('')
+                      setSoFavoritos(false)
+                    },
+                  }))}
+              />
+            )}
+
+            {semFiltro ? (
+              <Comeco animes={library.animes.length} cenas={library.clips.length} />
+            ) : (
+              <Grade
+                clips={filtrados}
+                chave={[texto.trim(), anime, episodio, personagem, minSec, maxSec, soFavoritos].join('|')}
+                escolhidos={replaceTarget !== null ? [] : porRoteiro ? marcadosNaFrase() : escolhidos}
+                usadas={usadasEmOutras}
+                favoritos={favoritosSet}
+                onFavoritar={(id) => void toggleFavorite(id)}
+                onEscolher={escolher}
+                destaque={destaque}
+                tamanho={tamanho}
+                onTamanho={mudarTamanho}
+                paraMesclar={paraMesclar}
+                onMesclar={alternarMescla}
+                onAbrir={setTocador}
+              />
+            )}
+            {(paraMesclar.length > 0 || recadoDaMescla) && library && (
+              <BarraDeMescla
+                ids={paraMesclar}
+                clips={library.clips}
+                confirmando={confirmandoMescla}
+                recado={recadoDaMescla}
+                onConfirmar={() => setConfirmandoMescla(true)}
+                onCancelar={() => {
+                  setParaMesclar([])
+                  setConfirmandoMescla(false)
+                  setRecadoDaMescla(null)
+                }}
+                onMesclar={async (paths) => {
+                  const r = await mesclarCenas(paths)
+                  setConfirmandoMescla(false)
+                  setRecadoDaMescla(r.recado)
+                  if (r.ok) setParaMesclar([])
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+      {tocador && library && (
+        <Tocador
+          clip={tocador}
+          lista={filtrados.length > 0 ? filtrados : [tocador]}
+          favorito={favoritosSet.has(tocador.id)}
+          onFavoritar={() => void toggleFavorite(tocador.id)}
+          onEscolher={() => escolher(tocador.id)}
+          marcado={(replaceTarget !== null ? [] : porRoteiro ? marcadosNaFrase() : escolhidos).includes(tocador.id)}
+          onIr={setTocador}
+          onFechar={() => setTocador(null)}
+        />
+      )}
+
+      {/*
+        Enquanto prepara as cenas, uma cortina por cima de tudo.
+        Preparar doze clipes leva dezenas de segundos de ffmpeg, e ate agora a
+        tela ficava igual -- ele achava que o app tinha travado e cogitava
+        fechar. A cortina tambem impede um segundo clique em "Montar" no meio
+        do trabalho.
+      */}
+      {trabalhando !== null && (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-bg/85">
+          <div className="flex flex-col items-center gap-3">
+            <span className="flex items-center gap-2.5 text-[13px] text-ink">
+              <Loader2 size={16} strokeWidth={1.5} className="animate-spin text-accent" />
+              {trabalhando}
+            </span>
+            {/*
+              A saida, e nao so o aviso.
+              A cortina dizia "estou trabalhando" e deixava o usuario sem nada
+              para fazer alem de esperar ou matar o app -- e matar o app levava
+              junto o que ainda nao tinha sido salvo. Cancelar aqui mata o
+              processo la no main e devolve a tela.
+            */}
+            <button
+              type="button"
+              onClick={() => void cancelAnalyze()}
+              className="rounded border border-line px-3 py-1 text-[12px] text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {apelidosAbertos && anime && (
+        <Nicknames series={anime} onClose={() => setApelidosAbertos(false)} />
+      )}
+
+      {/*
+        A fita do que esta marcado, logo acima do rodape.
+
+        Em "substituir" ela nao aparece: ali nao ha fila nenhuma -- o proximo
+        clique responde uma pergunta e fecha a tela.
+      */}
+      {replaceTarget === null && (
+        <Marcadas
+          clips={(porRoteiro ? marcadosNaFrase() : escolhidos)
+            .map((id) => porIdClip.get(id))
+            .filter((c): c is LibraryClip => c !== undefined)}
+          rotulo={porRoteiro ? 'Nesta frase' : 'Na fila'}
+          onRemover={(clip) =>
+            porRoteiro ? toggleBlockClip(clip.path) : removerEscolhido(clip.id)
+          }
+        />
+      )}
+
+      {replaceTarget !== null ? null : porRoteiro ? (
+        <footer className="flex h-[52px] shrink-0 items-center justify-between border-t border-line px-5">
+          <span className="tnum text-[12px] text-ink-2">
+            {blocosSaem > 0 && avisouSaida ? (
+              <span className="text-accent">
+                {blocosSaem} {blocosSaem === 1 ? 'bloco da timeline nao esta' : 'blocos da timeline nao estao'} na
+                selecao e {blocosSaem === 1 ? 'vai sair' : 'vao sair'}. Os outros mantem os ajustes.
+              </span>
+            ) : trechosVazios > 0 && avisouVazios ? (
+              <span className="text-accent">
+                {trechosVazios} {trechosVazios === 1 ? 'trecho esta' : 'trechos estao'} sem cena — o tempo{' '}
+                {trechosVazios === 1 ? 'dele vai' : 'deles vai'} para a cena anterior. Tab pula para{' '}
+                {trechosVazios === 1 ? 'ele' : 'o proximo'}.
+              </span>
+            ) : totalMarcado > 0 ? (
+              `${totalMarcado} ${totalMarcado === 1 ? 'cena marcada' : 'cenas marcadas'} em ${Object.values(blockClips).filter((c) => c.length > 0).length} de ${blocos.length} trechos`
+            ) : (
+              'Escolha um trecho do roteiro e marque as cenas dele'
+            )}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={totalMarcado === 0}
+              onClick={() => {
+                if (trechosVazios > 0 && !avisouVazios) {
+                  setAvisouVazios(true)
+                  return
+                }
+                if (blocosSaem > 0 && !avisouSaida) {
+                  setAvisouSaida(true)
+                  return
+                }
+                void applyBlockClips()
+              }}
+              title={
+                remontando
+                  ? 'Refaz o video com esta selecao. Os blocos cuja cena nao mudou mantem os ajustes -- camera, efeito, curva, trecho do clipe e enquadramento.'
+                  : 'Cada frase se divide entre as cenas que voce marcou nela'
+              }
+              className="lift rounded-sm border border-accent bg-accent-dim px-3.5 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
+            >
+              {(trechosVazios > 0 && avisouVazios) || (blocosSaem > 0 && avisouSaida)
+                ? `${remontando ? 'Remontar' : 'Montar'} assim mesmo`
+                : `${remontando ? 'Remontar' : 'Montar'} com essas cenas`}
+            </button>
+          </div>
+        </footer>
+      ) : (escolhidos.length > 0 || partesNoProjeto > 0) && (
+        <footer className="flex h-[52px] shrink-0 items-center justify-between border-t border-line px-5">
+          <span className="tnum text-[12px] text-ink-2">
+            {escolhidos.length > 0
+              ? `${escolhidos.length} ${escolhidos.length === 1 ? 'cena marcada' : 'cenas marcadas'}`
+              : 'Nada marcado'}
+            {partesNoProjeto > 0 && (
+              <span className="ml-2 text-ink-3">
+                · {partesNoProjeto} {partesNoProjeto === 1 ? 'parte' : 'partes'} no projeto
+              </span>
+            )}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={escolhidos.length === 0}
+              onClick={() => limparEscolhidos()}
+              className="rounded-sm px-2.5 py-1.5 text-[12px] text-ink-3 hover:text-ink disabled:opacity-40"
+            >
+              Limpar
+            </button>
+            {/*
+              Duas acoes, e nenhum modo escondido: o botao diz o que faz.
+              Parte so existe quando o usuario pede, porque cena vinda da busca
+              nao tem pasta para servir de gesto como no arraste.
+            */}
+            <button
+              type="button"
+              disabled={escolhidos.length === 0}
+              onClick={() => adicionar(nomeDaLeva())}
+              title="Vira uma parte do roteiro. A tela fica aberta para voce montar a proxima."
+              className="lift rounded-sm border border-line bg-elevated px-3 py-1.5 text-[12px] text-ink-2 hover:text-ink disabled:opacity-40"
+            >
+              Adicionar como parte {partesNoProjeto + 1}
+            </button>
+            <button
+              type="button"
+              disabled={escolhidos.length === 0}
+              onClick={() => adicionar()}
+              title="Entra no fim da fila, na ordem em que voce marcou"
+              className="lift rounded-sm border border-accent bg-accent-dim px-3.5 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
+            >
+              Adicionar ao projeto
+            </button>
+          </div>
+        </footer>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Tudo que a busca por texto enxerga de uma cena.
+ *
+ * O titulo do AnCut entra aqui mesmo sem agrupar nada: quem lembra de "Sennen
+ * Kessen" ou de "Slime Datta Ken" tem que achar, ainda que a pasta se chame
+ * "Bleach - Thousand Year Blood War" ou "Tensura".
+ */
+function textoDe(clip: LibraryClip): string {
+  return `${clip.anime} ${clip.animeTitle} ${clip.characters.join(' ')} s${clip.season}e${clip.episode} ${clip.shot}`.toLowerCase()
+}
+
+// ------------------------------------------------------------------ sem pasta
+
+function SemBiblioteca({ mensagem }: { mensagem: string }) {
+  const syncLibrary = useProject((s) => s.syncLibrary)
+
+  const escolher = async (): Promise<void> => {
+    const result = await window.dangai.pickLibraryDir()
+    if (result.ok && result.value) await syncLibrary()
+  }
+
+  return (
+    <div className="grid flex-1 place-items-center p-6">
+      <div className="max-w-[420px] text-center">
+        <p className="mb-4 text-[13px] leading-relaxed text-ink-2">{mensagem}</p>
+        <button
+          type="button"
+          onClick={() => void escolher()}
+          className="lift inline-flex items-center gap-2 rounded-sm border border-line bg-elevated px-3 py-1.5 text-[13px] text-ink"
+        >
+          <FolderOpen size={13} strokeWidth={1.5} />
+          Escolher a pasta da biblioteca
+        </button>
+        <p className="mt-3 text-[11px] leading-relaxed text-ink-3">
+          E a pasta onde o AnCut grava, a que contem uma pasta por anime. O Dangai so le: ele
+          nunca renomeia, move nem apaga nada la dentro.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------- rail
+
+interface RailProps {
+  clips: readonly LibraryClip[]
+  anime: string | null
+  /** Chave "S17E42", ou null para o anime inteiro. */
+  episodio: string | null
+  personagem: string | null
+  onAnime: (v: string | null) => void
+  onEpisodio: (chave: string | null, doAnime: string) => void
+  onPersonagem: (nome: string | null, doAnime: string | null) => void
+}
+
+/** A etiqueta do episodio, na mesma forma que a pasta do AnCut usa. */
+export function chaveEpisodio(clip: LibraryClip): string {
+  return `S${pad(clip.season)}E${pad(clip.episode)}`
+}
+
+/**
+ * Animes, e os personagens DENTRO de cada anime.
+ *
+ * A lista corrida nao servia: com seis series o rail virava cem nomes em uma
+ * coluna so, com Rimuru, Rudeus e Ichigo lado a lado ordenados por contagem. O
+ * personagem pertence a uma serie -- a lista tem que dizer isso.
+ *
+ * A contagem nao e enfeite: e ela que mostra de cara que dois tercos das cenas
+ * nao tem personagem nenhum identificado, que e o buraco que so o passo 2 fecha.
+ */
+function Rail({
+  clips,
+  anime,
+  episodio,
+  personagem,
+  onAnime,
+  onEpisodio,
+  onPersonagem,
+}: RailProps) {
+  // Grupo aberto na mao. O do anime selecionado abre sozinho, entao aqui so
+  // entra o que o usuario abriu por conta.
+  const [abertos, setAbertos] = useState<readonly string[]>([])
+  const [episodiosAbertos, setEpisodiosAbertos] = useState<readonly string[]>([])
+
+  const { animes, porAnime, episodios, semRosto } = useMemo(() => {
+    const contagemAnime = new Map<string, number>()
+    /** anime -> personagem -> quantas cenas */
+    const dentro = new Map<string, Map<string, number>>()
+    /** anime -> episodio -> quantas cenas */
+    const eps = new Map<string, Map<string, number>>()
+    let sem = 0
+
+    for (const clip of clips) {
+      contagemAnime.set(clip.anime, (contagemAnime.get(clip.anime) ?? 0) + 1)
+      if (clip.characters.length === 0) sem += 1
+
+      const doAnime = dentro.get(clip.anime) ?? new Map<string, number>()
+      for (const nome of clip.characters) {
+        doAnime.set(nome, (doAnime.get(nome) ?? 0) + 1)
+      }
+      dentro.set(clip.anime, doAnime)
+
+      const chave = chaveEpisodio(clip)
+      const osEps = eps.get(clip.anime) ?? new Map<string, number>()
+      osEps.set(chave, (osEps.get(chave) ?? 0) + 1)
+      eps.set(clip.anime, osEps)
+    }
+
+    const ordenar = (m: Map<string, number>): [string, number][] =>
+      [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'pt-BR'))
+
+    return {
+      animes: ordenar(contagemAnime),
+      porAnime: new Map([...dentro].map(([serie, nomes]) => [serie, ordenar(nomes)])),
+      /*
+       * Episodio ordenado do MAIOR para o menor, e nao por contagem.
+       *
+       * A ordem existe para um uso so, dito por ele: "eu vou fazer o corte dele
+       * la e na hora de montar o recap aqui no dangai eu vou ir direto no ep
+       * recem cortado". O recem-cortado e sempre o de numero maior, entao ele
+       * fica na primeira linha sem depender de nenhuma data.
+       */
+      episodios: new Map(
+        [...eps].map(([serie, mapa]) => [
+          serie,
+          [...mapa.entries()].sort((a, b) => b[0].localeCompare(a[0], 'en')),
+        ]),
+      ),
+      semRosto: sem,
+    }
+  }, [clips])
+
+  const alternar = (serie: string): void => {
+    setAbertos((atual) =>
+      atual.includes(serie) ? atual.filter((s) => s !== serie) : [...atual, serie],
+    )
+  }
+
+  const alternarEpisodios = (serie: string): void => {
+    setEpisodiosAbertos((atual) =>
+      atual.includes(serie) ? atual.filter((s) => s !== serie) : [...atual, serie],
+    )
+  }
+
+  return (
+    <nav className="w-[210px] shrink-0 overflow-y-auto border-r border-line p-3">
+      <Titulo>Anime</Titulo>
+      <Item ativo={anime === null && episodio === null} onClick={() => onAnime(null)} contagem={clips.length}>
+        Todos
+      </Item>
+      {animes.map(([nome, n]) => {
+        const eps = episodios.get(nome) ?? []
+        /*
+         * O anime escolhido abre os episodios sozinho, pelo mesmo motivo do
+         * grupo de personagem: escolher a serie e dizer "e daqui que eu quero".
+         */
+        const aberto = episodiosAbertos.includes(nome) || anime === nome
+
+        return (
+          <div key={nome}>
+            <div className="flex items-center">
+              {/*
+                A seta e o nome sao alvos SEPARADOS: abrir a lista de episodios
+                e escolher a serie inteira sao duas intencoes, e juntar as duas
+                obrigaria a escolher a serie so para dar uma espiada nos
+                episodios dela.
+              */}
+              <button
+                type="button"
+                onClick={() => alternarEpisodios(nome)}
+                aria-label={aberto ? `Fechar os episodios de ${nome}` : `Ver os episodios de ${nome}`}
+                className="grid size-5 shrink-0 place-items-center rounded-sm text-ink-3 hover:text-ink"
+              >
+                {aberto ? (
+                  <ChevronDown size={11} strokeWidth={1.5} />
+                ) : (
+                  <ChevronRight size={11} strokeWidth={1.5} />
+                )}
+              </button>
+              <div className="min-w-0 flex-1">
+                <Item ativo={anime === nome && episodio === null} onClick={() => onAnime(nome)} contagem={n}>
+                  {nome}
+                </Item>
+              </div>
+            </div>
+
+            {aberto &&
+              eps.map(([chave, quantas]) => (
+                <Item
+                  key={`${nome}/${chave}`}
+                  ativo={episodio === chave && anime === nome}
+                  onClick={() => onEpisodio(episodio === chave && anime === nome ? null : chave, nome)}
+                  contagem={quantas}
+                  recuado
+                >
+                  {chave}
+                </Item>
+              ))}
+          </div>
+        )
+      })}
+
+      {/*
+        Com um anime aberto, os personagens viram BOTOES em cima das sugestoes
+        (ver PersonagensDoAnime) -- "melhor do que aquela lista enorme la
+        embaixo que ate se mistura com outros animes". A lista por serie fica
+        so para o "Todos", onde ela e o unico jeito de achar alguem.
+      */}
+      {anime === null && (
+        <>
+      <div className="my-3 h-px bg-line" />
+
+      <Titulo>Personagem</Titulo>
+      <Item ativo={personagem === null} onClick={() => onPersonagem(null, anime)} contagem={clips.length}>
+        Qualquer
+      </Item>
+
+      {animes.map(([serie]) => {
+        const nomes = porAnime.get(serie) ?? []
+        if (nomes.length === 0) return null
+
+        /*
+         * O grupo da serie escolhida abre sozinho: escolher o anime e, na
+         * pratica, dizer "e daqui que eu quero o personagem". Ter que clicar de
+         * novo para expandir seria pedir duas vezes a mesma coisa.
+         */
+        const aberto = abertos.includes(serie) || anime === serie
+        const temEscolhido = nomes.some(([nome]) => nome === personagem)
+
+        return (
+          <div key={serie}>
+            <button
+              type="button"
+              onClick={() => alternar(serie)}
+              className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11px] text-ink-2 transition-colors duration-150 hover:text-ink"
+            >
+              {aberto ? (
+                <ChevronDown size={11} strokeWidth={1.5} className="shrink-0 text-ink-3" />
+              ) : (
+                <ChevronRight size={11} strokeWidth={1.5} className="shrink-0 text-ink-3" />
+              )}
+              <span className="min-w-0 flex-1 truncate">{serie}</span>
+              {/* Ponto quando o personagem escolhido esta num grupo fechado --
+                  sem ele o filtro ativo ficaria invisivel. */}
+              {!aberto && temEscolhido && <span className="size-1.5 shrink-0 rounded-full bg-accent" />}
+              <span className="tnum shrink-0 text-[10px] text-ink-3">{nomes.length}</span>
+            </button>
+
+            {aberto &&
+              nomes.map(([nome, n]) => (
+                <Item
+                  key={`${serie}/${nome}`}
+                  ativo={personagem === nome}
+                  onClick={() => onPersonagem(personagem === nome ? null : nome, serie)}
+                  contagem={n}
+                  recuado
+                >
+                  {nome}
+                </Item>
+              ))}
+          </div>
+        )
+      })}
+        </>
+      )}
+
+      <p className="mt-3 px-1.5 text-[10px] leading-relaxed text-ink-3">
+        {semRosto.toLocaleString('pt-BR')} cenas sem personagem identificado — cenario, planos
+        abertos e detalhes. Chegue nelas pelo episodio, ou buscando o que aparece
+        (&ldquo;floresta&rdquo;, &ldquo;noite&rdquo;).
+      </p>
+    </nav>
+  )
+}
+
+/**
+ * Os personagens do anime aberto, como BOTOES, em cima das sugestoes.
+ *
+ * So os DESTE anime -- e, com um episodio escolhido, so os que aparecem nele
+ * --, do que mais aparece para o que menos. Clicar filtra a grade; clicar de
+ * novo solta.
+ */
+function PersonagensDoAnime({
+  clips,
+  anime,
+  episodio,
+  personagem,
+  onPersonagem,
+}: {
+  clips: readonly LibraryClip[]
+  anime: string
+  episodio: string | null
+  personagem: string | null
+  onPersonagem: (nome: string | null) => void
+}) {
+  const nomes = useMemo(() => {
+    const conta = new Map<string, number>()
+    for (const clip of clips) {
+      if (clip.anime !== anime) continue
+      if (episodio && chaveEpisodio(clip) !== episodio) continue
+      for (const nome of clip.characters) conta.set(nome, (conta.get(nome) ?? 0) + 1)
+    }
+    // Em ordem ALFABETICA ("organize os nomes por ordem alfabetica"): achar um
+    // nome numa fileira de trinta e mais facil pelo alfabeto do que pela
+    // contagem, que muda de episodio para episodio.
+    return [...conta.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt-BR', { sensitivity: 'base' }))
+  }, [clips, anime, episodio])
+
+  if (nomes.length === 0) return null
+
+  const botao = (ativo: boolean): string =>
+    [
+      'flex h-6 items-center gap-1.5 rounded-sm border px-2 text-[11px] transition-colors duration-150',
+      ativo ? 'border-accent bg-accent-dim text-ink' : 'border-line bg-elevated text-ink-2 hover:text-ink',
+    ].join(' ')
+
+  return (
+    <div className="flex shrink-0 items-start gap-2 border-b border-line px-3 py-2">
+      <span className="shrink-0 pt-1 text-[11px] uppercase tracking-wide text-ink-3">
+        {episodio ? `Personagens do ${episodio}` : 'Personagens'}
+      </span>
+      <div className="flex max-h-[52px] min-w-0 flex-1 flex-wrap gap-1 overflow-y-auto">
+        <button type="button" onClick={() => onPersonagem(null)} className={botao(personagem === null)}>
+          Todos
+        </button>
+        {nomes.map(([nome, n]) => (
+          <button
+            key={nome}
+            type="button"
+            onClick={() => onPersonagem(personagem === nome ? null : nome)}
+            className={botao(personagem === nome)}
+          >
+            {nome}
+            <span className="tnum text-[10px] text-ink-3">{n.toLocaleString('pt-BR')}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Titulo({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="mb-1.5 px-1.5 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+      {children}
+    </h3>
+  )
+}
+
+function Item({
+  ativo,
+  onClick,
+  contagem,
+  recuado = false,
+  children,
+}: {
+  ativo: boolean
+  onClick: () => void
+  contagem: number
+  /** Personagem dentro do grupo do anime. */
+  recuado?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        'flex w-full items-center gap-2 rounded-sm py-1 pr-1.5 text-left text-[12px] transition-colors duration-150',
+        recuado ? 'pl-5' : 'pl-1.5',
+        ativo ? 'bg-accent-dim text-ink' : 'text-ink-2 hover:text-ink',
+      ].join(' ')}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {/*
+        A contagem cede o peso visual para o NOME.
+        Ela continua ali -- e ela que mostra de cara que dois tercos das cenas
+        nao tem personagem --, mas "21017" com o mesmo peso de "Tensura" fazia
+        a coluna inteira parecer uma planilha.
+      */}
+      <span className="tnum shrink-0 text-[10px] text-ink-3/60">
+        {contagem.toLocaleString('pt-BR')}
+      </span>
+    </button>
+  )
+}
+
+// ------------------------------------------------------------------- filtros
+
+interface FiltrosProps {
+  /** So favoritos. */
+  favoritos: boolean
+  /** Quantos favoritos existem no recorte de anime em uso. */
+  totalFavoritos: number
+  onFavoritos: () => void
+  texto: string
+  onTexto: (v: string) => void
+  minSec: number
+  maxSec: number
+  onFaixa: (min: number, max: number) => void
+  total: number
+  tamanho: number
+  onTamanho: (v: number) => void
+}
+
+/**
+ * As faixas de duracao sao as do uso real: um bloco de narracao tem ~1.3s, e a
+ * cena mediana da biblioteca tem 2.3s. "Curta" e "media" e o corte que decide se
+ * o clipe cabe no bloco sem congelar o ultimo frame.
+ */
+const FAIXAS: readonly { nome: string; min: number; max: number }[] = [
+  { nome: 'Qualquer', min: 0, max: 0 },
+  { nome: 'ate 2s', min: 0, max: 2 },
+  { nome: '2 a 5s', min: 2, max: 5 },
+  { nome: 'mais de 5s', min: 5, max: 0 },
+]
+
+function Filtros({
+  texto,
+  onTexto,
+  minSec,
+  maxSec,
+  onFaixa,
+  favoritos,
+  totalFavoritos,
+  onFavoritos,
+  total,
+  tamanho,
+  onTamanho,
+}: FiltrosProps) {
+  return (
+    <div className="flex h-[46px] shrink-0 items-center gap-3 border-b border-line px-4">
+      <div className="relative min-w-0 flex-1">
+        <Search
+          size={12}
+          strokeWidth={1.5}
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3"
+        />
+        <input
+          value={texto}
+          onChange={(event) => onTexto(event.target.value)}
+          onKeyDown={(event) => event.stopPropagation()}
+          placeholder="Buscar por anime, personagem ou episodio (ex.: ichigo, s01e42)"
+          spellCheck={false}
+          className="w-full select-text rounded-sm border border-line bg-elevated py-1.5 pl-7 pr-2.5 text-[12px] text-ink placeholder:text-ink-3 focus:border-line-strong focus:outline-none"
+        />
+      </div>
+
+      {/*
+        Uma lista que abre e recolhe, e nao quatro botoes lado a lado.
+        Ele so escolhe faixa de vez em quando, e enquanto nao escolhe os quatro
+        botoes gastavam largura permanente da barra -- largura que a busca, que
+        ele usa o tempo todo, estava perdendo.
+      */}
+      {/* O tamanho dos cartoes (tambem com Ctrl+roda em cima da grade). */}
+      <div className="flex shrink-0 items-center gap-1.5" title="Tamanho das cenas na grade (Ctrl+roda tambem muda)">
+        <button
+          type="button"
+          onClick={() => onTamanho(tamanho / 1.25)}
+          aria-label="Cenas menores"
+          className="grid size-5 place-items-center rounded-sm text-ink-3 hover:text-ink"
+        >
+          <span className="text-[13px] leading-none">−</span>
+        </button>
+        <input
+          type="range"
+          min={TAMANHO_MIN}
+          max={TAMANHO_MAX}
+          step={10}
+          value={tamanho}
+          onChange={(e) => onTamanho(Number(e.target.value))}
+          aria-label="Tamanho das cenas"
+          className="dangai-range w-[84px]"
+        />
+        <button
+          type="button"
+          onClick={() => onTamanho(tamanho * 1.25)}
+          aria-label="Cenas maiores"
+          className="grid size-5 place-items-center rounded-sm text-ink-3 hover:text-ink"
+        >
+          <span className="text-[13px] leading-none">+</span>
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={onFavoritos}
+        title={favoritos ? 'Mostrando so os favoritos' : 'Mostrar so os favoritos'}
+        className={[
+          'lift flex shrink-0 items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11px] transition-colors duration-150',
+          favoritos
+            ? 'border-accent bg-accent-dim text-ink'
+            : 'border-line bg-elevated text-ink-2 hover:text-ink',
+        ].join(' ')}
+      >
+        <Star
+          size={12}
+          strokeWidth={1.5}
+          className={favoritos ? 'fill-accent text-accent' : 'text-ink-3'}
+        />
+        Favoritos
+        <span className="tnum text-[10px] text-ink-3">{totalFavoritos}</span>
+      </button>
+
+      <select
+        value={`${minSec}-${maxSec}`}
+        onChange={(event) => {
+          const [min, max] = event.target.value.split('-')
+          onFaixa(Number(min), Number(max))
+        }}
+        title="Duracao da cena"
+        className="shrink-0 rounded-sm border border-line bg-elevated px-2 py-1 text-[11px] text-ink-2 focus:border-line-strong focus:outline-none"
+      >
+        {FAIXAS.map((faixa) => (
+          <option key={faixa.nome} value={`${faixa.min}-${faixa.max}`}>
+            {faixa.nome}
+          </option>
+        ))}
+      </select>
+
+      <span className="tnum shrink-0 text-[11px] text-ink-3">
+        {total.toLocaleString('pt-BR')} {total === 1 ? 'resultado' : 'resultados'}
+      </span>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------- grade
+
+interface GradeProps {
+  clips: readonly LibraryClip[]
+  /** O filtro em uso. Mudar ESTA chave, e nao a lista, e o que volta ao topo. */
+  chave: string
+  escolhidos: readonly string[]
+  /** Cenas ja marcadas em OUTRA frase do roteiro. Vazio no uso sem roteiro. */
+  usadas?: ReadonlySet<string>
+  favoritos: ReadonlySet<string>
+  onFavoritar: (id: string) => void
+  onEscolher: (id: string) => void
+  /** A cena para onde rolar e acender ("ir ate o clipe"). */
+  destaque?: string | null
+  /** Largura-alvo de cada cartao, em px. */
+  tamanho?: number
+  onTamanho?: (v: number) => void
+  /** Cenas marcadas para mesclar (Ctrl+clique). */
+  paraMesclar?: readonly string[]
+  onMesclar?: (id: string) => void
+  /** Abre o player grande. */
+  onAbrir?: (clip: LibraryClip) => void
+}
+
+/**
+ * Grade com janela de rolagem.
+ *
+ * Nove mil miniaturas de uma vez seriam nove mil nos no DOM e nove mil pedidos
+ * ao servidor local. Desenhar so as linhas visiveis mantem isso em algumas
+ * dezenas, e o espacador de cima e de baixo faz a barra de rolagem continuar
+ * dizendo a verdade sobre o tamanho do acervo.
+ */
+function Grade({
+  clips,
+  chave,
+  escolhidos,
+  usadas,
+  favoritos,
+  onFavoritar,
+  onEscolher,
+  destaque,
+  tamanho = ITEM_ALVO,
+  onTamanho,
+  paraMesclar = [],
+  onMesclar,
+  onAbrir,
+}: GradeProps) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [largura, setLargura] = useState(0)
+  const [altura, setAltura] = useState(0)
+  const [scroll, setScroll] = useState(0)
+
+  /*
+   * A medida sai antes da pintura, e nao so pelo observador.
+   *
+   * A primeira entrega do ResizeObserver depende do ciclo de renderizacao do
+   * Chrome, e ela ATRASA quando a janela nao esta pintando -- foi medido: a
+   * grade ficava vazia porque `largura` seguia zero. Medindo aqui, o primeiro
+   * quadro ja sai certo e o observador cuida so do que vier depois.
+   */
+  useLayoutEffect(() => {
+    const alvo = ref.current
+    if (!alvo) return
+    const medir = (): void => {
+      setLargura(alvo.clientWidth)
+      setAltura(alvo.clientHeight)
+    }
+    medir()
+    const observer = new ResizeObserver(medir)
+    observer.observe(alvo)
+    return () => observer.disconnect()
+  }, [])
+
+  /*
+   * Filtro novo devolve a rolagem ao topo -- e SO filtro novo.
+   *
+   * Isto escutava a lista, e a lista e recriada por coisas que nao mudam o
+   * que ele esta vendo: sincronizar a biblioteca traz um objeto novo, e
+   * favoritar uma cena cria outro conjunto de favoritos. As duas jogavam a
+   * grade de volta ao topo no meio de uma busca -- "quando sincroniza
+   * biblioteca ou favorita um clipe ele volta ao topo, eu quero que continue
+   * onde eu estava". A chave e o que ELE pediu para ver, e so ela reinicia.
+   */
+  useEffect(() => {
+    ref.current?.scrollTo({ top: 0 })
+    setScroll(0)
+  }, [chave])
+
+  // Ctrl+roda na grade muda o tamanho dos cartoes, como o zoom de um editor.
+  const tamanhoRef = useRef(tamanho)
+  tamanhoRef.current = tamanho
+  useEffect(() => {
+    const alvo = ref.current
+    if (!alvo || !onTamanho) return
+    const roda = (event: WheelEvent): void => {
+      if (!event.ctrlKey) return
+      event.preventDefault()
+      onTamanho(tamanhoRef.current * Math.exp(-event.deltaY * 0.0015))
+    }
+    alvo.addEventListener('wheel', roda, { passive: false })
+    return () => alvo.removeEventListener('wheel', roda)
+  }, [onTamanho])
+
+  const colunas = Math.max(1, Math.floor((largura + GAP) / (tamanho + GAP)))
+  const itemW = colunas > 0 && largura > 0 ? (largura - GAP * (colunas - 1) - 24) / colunas : 0
+  const linhaH = Math.round((itemW * 9) / 16) + RODAPE + GAP
+  const linhas = Math.ceil(clips.length / colunas)
+
+  /*
+   * Rola ate a cena em destaque, no MEIO da vista. Depois do efeito de volta
+   * ao topo (a troca de episodio muda a chave) -- os dois rodam no mesmo
+   * ciclo, e este vem por ultimo.
+   */
+  useEffect(() => {
+    if (!destaque || linhaH <= 0 || colunas <= 0) return
+    const indice = clips.findIndex((c) => c.id === destaque)
+    if (indice < 0) return
+    const topo = Math.max(0, Math.floor(indice / colunas) * linhaH - altura / 2 + linhaH / 2)
+    ref.current?.scrollTo({ top: topo })
+    setScroll(topo)
+  }, [destaque, clips, colunas, linhaH, altura, chave])
+
+  const primeira = Math.max(0, Math.floor(scroll / linhaH) - FOLGA)
+  const ultima = Math.min(linhas, Math.ceil((scroll + altura) / linhaH) + FOLGA)
+  const visiveis = clips.slice(primeira * colunas, ultima * colunas)
+
+  // Posicao de cada escolhida, para o cartao mostrar o numero em vez de so uma
+  // borda. Sem o numero visivel, "a ordem e a de clique" e uma promessa que o
+  // usuario tem que acreditar; com ele, da para conferir antes de adicionar.
+  const ordens = new Map(escolhidos.map((id, i) => [id, i + 1]))
+
+  if (clips.length === 0) {
+    return (
+      <div className="grid flex-1 place-items-center text-[13px] text-ink-3">
+        Nenhuma cena com esses filtros.
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={ref}
+      onScroll={(event) => setScroll(event.currentTarget.scrollTop)}
+      className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+    >
+      <div style={{ height: linhas * linhaH, position: 'relative' }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: primeira * linhaH,
+            left: 0,
+            right: 0,
+            display: 'grid',
+            gridTemplateColumns: `repeat(${colunas}, minmax(0, 1fr))`,
+            gap: GAP,
+          }}
+        >
+          {itemW > 0 &&
+            visiveis.map((clip) => (
+              <Cartao
+                key={clip.id}
+                clip={clip}
+                ordem={ordens.get(clip.id) ?? 0}
+                usada={usadas?.has(clip.id) ?? false}
+                favorito={favoritos.has(clip.id)}
+                onFavoritar={() => onFavoritar(clip.id)}
+                onClick={(event) => {
+                  // Ctrl+clique: marcar para mesclar, sem escolher a cena.
+                  if (event && (event.ctrlKey || event.metaKey) && onMesclar) onMesclar(clip.id)
+                  else onEscolher(clip.id)
+                }}
+                destacado={clip.id === destaque}
+                paraMesclar={paraMesclar.indexOf(clip.id) + 1}
+                onAbrir={onAbrir ? () => onAbrir(clip) : undefined}
+              />
+            ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Uma cena na grade.
+ *
+ * Passar o mouse percorre o clipe no lugar da miniatura -- a posicao do mouse
+ * na largura do cartao e a posicao no clipe. E o que separa "ver uma imagem
+ * parada" de "saber se a cena serve": num acervo de anime metade das
+ * miniaturas de um mesmo plano sao quase iguais, e o movimento e o que
+ * distingue uma da outra.
+ */
+/**
+ * A faixa de sugestoes do trecho aberto.
+ *
+ * Rola na horizontal e usa o MESMO cartao da grade -- prever, favoritar e
+ * marcar funcionam igual, e o numero de ordem aparece igual. Um cartao
+ * diferente aqui faria parecer outra coisa, e nao e: sao as mesmas cenas da
+ * biblioteca, so que ordenadas pelo que o trecho pede.
+ */
+/**
+ * A primeira tela da Biblioteca, sem filtro nenhum.
+ *
+ * Melhor que 21 mil miniaturas na ordem do disco: elas comecavam em Avatar,
+ * que quase nunca e o que ele veio buscar, e a rolagem nao levava a lugar
+ * nenhum. Aqui o proximo passo esta escrito, e a coluna da esquerda -- que ja
+ * lista anime, episodio e personagem -- e o caminho.
+ */
+function Comeco({ animes, cenas }: { animes: number; cenas: number }) {
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center px-8">
+      <div className="max-w-[380px] text-center">
+        <p className="text-[13px] text-ink-2">
+          {cenas.toLocaleString('pt-BR')} cenas em {animes} {animes === 1 ? 'anime' : 'animes'}.
+        </p>
+        <p className="mt-1.5 text-[12px] leading-relaxed text-ink-3">
+          Escolha um anime ou episodio na coluna ao lado, ou busque pelo que aparece na cena —
+          um personagem, um cenario, uma emocao.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function Sugestoes({
+  candidatos,
+  escolhidos,
+  favoritos,
+  onFavoritar,
+  onEscolher,
+  expandida,
+  onExpandir,
+  pastas,
+}: {
+  candidatos: readonly SelectionCandidate[]
+  escolhidos: readonly string[]
+  favoritos: ReadonlySet<string>
+  onFavoritar: (id: string) => void
+  onEscolher: (id: string) => void
+  /** Aberta em grade, com MAIS_SUGESTOES cenas em vez das doze da faixa. */
+  expandida: boolean
+  onExpandir: () => void
+  /**
+   * As pastas dos personagens citados. Some a de quem ja esta aberto na grade:
+   * ali o botao nao faria nada, e botao que nao faz nada e pior que nenhum.
+   */
+  pastas: { nome: string; abrir: () => void }[]
+}) {
+  const ordens = new Map(escolhidos.map((id, i) => [id, i + 1]))
+
+  /*
+   * O motivo aparece UMA vez, no cabecalho -- nao um por cartao.
+   *
+   * Os doze costumam entrar pela mesma razao ("Natsuki, Subaru, so ele em
+   * cena"), entao repetir doze vezes a mesma frase truncada nao informava
+   * nada: so enchia a faixa de texto. Quando os motivos divergem, o cabecalho
+   * cala e cada cartao continua explicando no proprio tooltip.
+   */
+  const contagem = new Map<string, number>()
+  for (const c of candidatos) contagem.set(c.reason, (contagem.get(c.reason) ?? 0) + 1)
+  const [motivo, quantos] = [...contagem].sort((a, b) => b[1] - a[1])[0] ?? ['', 0]
+  const comum = quantos >= candidatos.length / 2 ? motivo : ''
+
+  /*
+   * "Ver mais" so aparece quando ha mais para ver. A faixa pede doze; se o
+   * motor devolveu menos, o acervo do trecho acabou ali, e o botao so abriria
+   * a mesma coisa em outro formato.
+   */
+  const temMais = expandida || candidatos.length >= SUGESTOES
+
+  const cartao = (c: SelectionCandidate) => (
+    <Cartao
+      clip={c.clip}
+      ordem={ordens.get(c.clip.id) ?? 0}
+      favorito={favoritos.has(c.clip.id)}
+      onFavoritar={() => onFavoritar(c.clip.id)}
+      onClick={() => onEscolher(c.clip.id)}
+    />
+  )
+
+  return (
+    <div className="border-b border-line px-3 pb-3 pt-2">
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <span className="shrink-0 text-[11px] uppercase tracking-wide text-ink-3">Sugestoes para este trecho</span>
+        {comum && <span className="min-w-0 truncate text-[11px] text-ink-3">· {comum}</span>}
+        <span className="ml-auto flex shrink-0 items-baseline gap-3">
+          {pastas.map((p) => (
+            <button
+              key={p.nome}
+              type="button"
+              onClick={p.abrir}
+              title={`Abre a pasta inteira de ${p.nome} na grade abaixo`}
+              className="flex items-center gap-0.5 text-[11px] text-ink-3 transition-colors duration-150 hover:text-accent"
+            >
+              Pasta de {nomeCurto(p.nome)}
+              <ChevronRight size={11} strokeWidth={1.5} />
+            </button>
+          ))}
+          {temMais && (
+            <button
+              type="button"
+              onClick={onExpandir}
+              title={
+                expandida
+                  ? 'Voltar para as doze mais provaveis, numa faixa'
+                  : `Mostrar as ${MAIS_SUGESTOES} mais provaveis para este trecho, ainda em ordem`
+              }
+              className="flex items-center gap-1 rounded-sm border border-line px-2 py-0.5 text-[11px] text-ink-2 transition-colors duration-150 hover:border-accent hover:text-ink"
+            >
+              {expandida ? 'Ver menos' : 'Ver mais sugestoes'}
+              {expandida ? (
+                <ChevronDown size={11} strokeWidth={1.5} className="rotate-180" />
+              ) : (
+                <ChevronDown size={11} strokeWidth={1.5} />
+              )}
+            </button>
+          )}
+        </span>
+      </div>
+      {/*
+        ABERTA, em grade e com altura presa. Sem o teto, sessenta cartoes
+        empurrariam a grade da biblioteca para fora da tela -- e ela continua
+        sendo o caminho quando nem as sessenta servem.
+      */}
+      {expandida ? (
+        <div className="grid max-h-[46vh] grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2 overflow-y-auto pb-1 pr-1">
+          {candidatos.map((c) => (
+            <div key={c.clip.id} title={c.reason}>
+              {cartao(c)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {candidatos.map((c) => (
+            <div key={c.clip.id} className="w-[168px] shrink-0" title={c.reason}>
+              {cartao(c)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** "Batenakaitos, Lye" -> "Lye". O botao e pequeno, e o nome proprio e o que ele escreve. */
+function nomeCurto(nome: string): string {
+  const virgula = nome.indexOf(',')
+  return virgula >= 0 ? nome.slice(virgula + 1).trim() : nome
+}
+
+function Cartao({
+  clip,
+  ordem,
+  usada,
+  favorito,
+  onFavoritar,
+  onClick,
+  destacado = false,
+  paraMesclar = 0,
+  onAbrir,
+}: {
+  clip: LibraryClip
+  /** Posicao na fila, comecando em 1. Zero quando nao foi escolhida. */
+  ordem: number
+  /** Acabou de ser procurada ("ir ate o clipe"): acende por um instante. */
+  destacado?: boolean
+  /** Posicao na selecao de mesclar (1, 2...), ou 0. */
+  paraMesclar?: number
+  /** Abre o player grande. */
+  onAbrir?: () => void
+  /** Ja foi gasta em outra frase. Nao impede -- so avisa. */
+  usada?: boolean
+  favorito: boolean
+  onFavoritar: () => void
+  onClick: (event?: React.MouseEvent) => void
+}) {
+  const marcado = ordem > 0
+  const formato = useProject((s) => s.formato)
+  const [dentro, setDentro] = useState(false)
+  const timer = useRef<number | null>(null)
+
+  /*
+   * O MOUSE E A AGULHA DO CLIPE -- sobre uma TIRA de quadros, e nao um video.
+   *
+   * "Eu quero navegar pelo clipe inteiro passando o mouse, em vez de so deixar
+   * o mouse parado e ele passar todos os segundos." A primeira versao fazia
+   * isso com um <video>, atribuindo `currentTime` a cada movimento -- e ficou
+   * "muito lagado e bugado": os clipes do AnCut tem UM quadro-chave so, no
+   * inicio, e cada busca para o meio decodificava tudo desde o quadro zero.
+   * No primeiro hover, com o arquivo ainda chegando, cada busca nova cancelava
+   * a anterior e nenhuma pintava.
+   *
+   * Agora o main decodifica o clipe uma vez, em sequencia, e devolve 24
+   * quadros numa grade (ver `tiraDoClipe`). Percorrer o clipe e so trocar qual
+   * pedaco da imagem aparece: custo zero por movimento. Medido: ~200ms para
+   * montar a tira na primeira vez, menos de 1ms do cache depois.
+   */
+  const [tira, setTira] = useState<TiraDaCena | null>(null)
+  const [fracao, setFracao] = useState<number | null>(null)
+  const pedindo = useRef(false)
+
+  const apontar = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const caixa = event.currentTarget.getBoundingClientRect()
+    setFracao(Math.min(Math.max((event.clientX - caixa.left) / caixa.width, 0), 1))
+  }, [])
+
+  const entrar = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      setDentro(true)
+      apontar(event)
+      if (tira || pedindo.current) return
+      /*
+       * Uma espera curta antes de pedir a tira, para nao montar uma para cada
+       * cartao que o mouse atravessa a caminho de outro. Curta porque a tira e
+       * barata -- a espera velha, de 350ms, existia para o video.
+       */
+      timer.current = window.setTimeout(() => {
+        pedindo.current = true
+        void window.dangai.libraryClipStrip(clip.path).then((result) => {
+          if (!result.ok) {
+            // Sem tira o cartao continua com a miniatura -- previa a menos,
+            // mas nada quebra.
+            pedindo.current = false
+            return
+          }
+          /*
+           * A imagem carrega ANTES de aparecer. Trocar a miniatura por uma tira
+           * que ainda nao chegou piscaria o cartao em branco.
+           */
+          const img = new Image()
+          img.onload = () => setTira(result.value)
+          img.onerror = () => {
+            pedindo.current = false
+          }
+          img.src = result.value.url
+        })
+      }, 120)
+    },
+    [clip.path, apontar, tira],
+  )
+
+  const sair = useCallback(() => {
+    setDentro(false)
+    setFracao(null)
+    if (timer.current !== null) window.clearTimeout(timer.current)
+  }, [])
+
+  useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current)
+  }, [])
+
+  /** Qual quadro da tira a posicao do mouse aponta. */
+  const quadroDaTira =
+    tira && fracao !== null ? Math.min(tira.quadros - 1, Math.round(fracao * (tira.quadros - 1))) : 0
+
+  /*
+   * A FATIA QUE SOBRA NO VIDEO, desenhada por cima.
+   *
+   * "Ao passar o mouse, eu ter um mini preview de como aquela cena ficaria em
+   * 9:16". A cena da biblioteca e deitada e o short e em pe: dois tercos da
+   * largura vao embora. Escurecer o que sai mostra NA HORA se o personagem cabe
+   * -- antes de importar, e sem sair da grade. O que fica escuro ainda aparece,
+   * de proposito: ver o que se perde tambem e informacao.
+   *
+   * A conta e a mesma do render (`coberturaDaFonte`). O cartao corta a cena em
+   * 16:9 para caber na grade, entao a janela e medida contra o que o cartao
+   * MOSTRA, e nao contra o arquivo inteiro. A proporcao da fonte chega com a
+   * tira; ate la vale 16:9, que e a de quase todo anime.
+   *
+   * O foco aqui e o CENTRO. Ao importar, o app ainda procura o rosto e pode
+   * mover o recorte para ele -- entao a previa e o pior caso, nunca o melhor.
+   */
+  const aspecto = tira?.aspecto ?? 16 / 9
+  const { width: quadroW, height: quadroH } = medidasDo(formato)
+  const cobertura = coberturaDaFonte(aspecto, quadroW / quadroH).largura
+  const visivel = Math.min(1, 16 / 9 / aspecto)
+  const janela = cobertura / visivel
+  const mostraJanela = dentro && janela < 0.98
+
+  /*
+   * <div role="button">, e nao <button>.
+   *
+   * A estrela de favorito e um segundo alvo clicavel dentro do cartao, e
+   * elemento interativo dentro de <button> e invalido -- o teclado e o leitor
+   * de tela param de enxergar o de dentro. Mesma correcao que a timeline ja
+   * tinha precisado ao ganhar o botao de excluir bloco.
+   */
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={(event) => onClick(event)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onClick()
+      }}
+      onMouseEnter={entrar}
+      onMouseMove={apontar}
+      onMouseLeave={sair}
+      /*
+       * Tudo que e texto vive AQUI, no tooltip, e nao embaixo da miniatura.
+       *
+       * Sao ~40 cartoes na tela: uma legenda por cartao virava 40 linhas de
+       * texto truncado disputando com as imagens. Palavras dele: "escolho pela
+       * imagem, pode tirar tudo". Quem precisa do episodio ou do personagem
+       * passa o mouse -- e a previa em video ja toca no mesmo gesto.
+       */
+      title={`${clip.animeTitle || clip.anime} · S${pad(clip.season)}E${pad(clip.episode)} · cena ${clip.shot} · ${clip.duration.toFixed(1)}s${clip.characters.length > 0 ? ` · ${clip.characters.join(', ')}` : ''}${usada ? ' · ja usada em outra frase' : ''}
+Ctrl+clique: marcar para mesclar com outras cenas seguidas`}
+      className={[
+        'group flex cursor-pointer flex-col overflow-hidden rounded-sm border text-left transition-colors duration-150',
+        destacado ? 'animate-pulse ring-2 ring-accent shadow-[0_0_18px_rgba(255,62,128,0.7)]' : '',
+        marcado
+          ? 'border-accent'
+          : usada
+            ? 'border-line opacity-45 hover:opacity-100'
+            : 'border-line hover:border-line-strong',
+      ].join(' ')}
+    >
+      <div className="relative aspect-video w-full overflow-hidden bg-elevated">
+        <img
+          src={clip.thumbUrl}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="size-full object-cover"
+        />
+        {dentro && tira && (
+          <span
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage: `url(${tira.url})`,
+              backgroundSize: `${tira.colunas * 100}% ${tira.linhas * 100}%`,
+              // Porcentagem de sprite: p% alinha o ponto p% da imagem ao p% da
+              // caixa, entao coluna/(colunas-1) cai exatamente na celula.
+              backgroundPosition: `${tira.colunas > 1 ? ((quadroDaTira % tira.colunas) / (tira.colunas - 1)) * 100 : 0}% ${tira.linhas > 1 ? (Math.floor(quadroDaTira / tira.colunas) / (tira.linhas - 1)) * 100 : 0}%`,
+            }}
+          />
+        )}
+        {mostraJanela && (
+          <>
+            <span
+              className="pointer-events-none absolute inset-y-0 left-0 bg-black/55"
+              style={{ width: `${((1 - janela) / 2) * 100}%` }}
+            />
+            <span
+              className="pointer-events-none absolute inset-y-0 right-0 bg-black/55"
+              style={{ width: `${((1 - janela) / 2) * 100}%` }}
+            />
+            <span
+              className="pointer-events-none absolute inset-y-0 border-x border-white/70"
+              style={{ left: `${((1 - janela) / 2) * 100}%`, width: `${janela * 100}%` }}
+            />
+          </>
+        )}
+        {/* Onde o mouse esta no clipe. Sem isto, "a borda direita e o fim" e
+            uma regra que ele teria que adivinhar. */}
+        {fracao !== null && (
+          <span className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-black/50">
+            <span className="block h-full bg-accent" style={{ width: `${fracao * 100}%` }} />
+          </span>
+        )}
+        <span className="tnum absolute bottom-1 right-1 rounded-sm bg-black/70 px-1 py-0.5 text-[10px] text-white">
+          {clip.duration.toFixed(1)}s
+        </span>
+        {/*
+          A estrela mora DENTRO do cartao mas fora do clique dele: marcar
+          favorito e escolher a cena para o video sao duas intencoes diferentes,
+          e juntar as duas no mesmo alvo faria uma virar acidente da outra.
+          Some quando o mouse sai, para nao poluir uma grade de cinquenta
+          cartoes -- menos quando ja esta marcada, que e a informacao.
+        */}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={favorito ? 'Desfavoritar esta cena' : 'Favoritar esta cena'}
+          title={favorito ? 'Desfavoritar' : 'Favoritar'}
+          onClick={(event) => {
+            event.stopPropagation()
+            onFavoritar()
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            event.stopPropagation()
+            onFavoritar()
+          }}
+          className={[
+            'absolute right-1 top-1 grid size-[20px] cursor-pointer place-items-center rounded-sm bg-black/60 transition-opacity duration-150',
+            favorito ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+          ].join(' ')}
+        >
+          <Star
+            size={12}
+            strokeWidth={1.5}
+            className={favorito ? 'fill-accent text-accent' : 'text-white'}
+          />
+        </span>
+        {/* O PLAYER GRANDE: ver a cena em tamanho de verdade, com som. */}
+        {onAbrir && (
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label="Abrir esta cena no player"
+            title="Abrir no player (grande, com som)"
+            onClick={(event) => {
+              event.stopPropagation()
+              onAbrir()
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              event.stopPropagation()
+              onAbrir()
+            }}
+            className="absolute bottom-1 left-1 grid size-[20px] cursor-pointer place-items-center rounded-sm bg-black/60 text-white opacity-0 transition-opacity duration-150 hover:bg-accent group-hover:opacity-100"
+          >
+            <Maximize2 size={11} strokeWidth={1.75} />
+          </span>
+        )}
+        {paraMesclar > 0 && (
+          <>
+            <span className="pointer-events-none absolute inset-0 border-2 border-dashed border-white bg-white/10" />
+            <span className="tnum absolute right-1 bottom-6 flex items-center gap-0.5 rounded-sm bg-white px-1 text-[10px] font-semibold text-black">
+              <Combine size={10} strokeWidth={2} />
+              {paraMesclar}
+            </span>
+          </>
+        )}
+        {marcado && (
+          <>
+            <span className="absolute inset-0 border-2 border-accent bg-accent-dim/30" />
+            <span className="tnum absolute left-1 top-1 grid size-[18px] place-items-center rounded-full bg-accent text-[10px] font-semibold text-white">
+              {ordem}
+            </span>
+          </>
+        )}
+        {/*
+          Ja usada em outra frase: apagada, nao proibida. Repetir cena as vezes
+          e escolha (o mesmo plano voltando fecha uma ideia); repetir sem
+          perceber e erro, e so aparece depois de renderizar.
+        */}
+        {!marcado && usada && (
+          <span className="absolute left-1 top-1 grid size-[18px] place-items-center rounded-full bg-black/70 text-[10px] text-white">
+            ✓
+          </span>
+        )}
+      </div>
+
+    </div>
+  )
+}
+
+/**
+ * A FITA DO QUE ESTA MARCADO: a ordem inteira, e a saida.
+ *
+ * Desmarcar so existia de um jeito -- achar o cartao na grade e clicar nele de
+ * novo. Entre 20 mil cenas, depois de ter trocado de filtro ou de episodio,
+ * isso e uma busca e nao um clique, e as vezes o cartao nem esta mais na tela.
+ * Palavras dele: "quero a opcao de remover um clipe selecionado, nao so tendo
+ * que clicar manualmente no clipe novamente".
+ *
+ * E ela mostra a ORDEM de uma vez so, que e o que decide o video: a sequencia
+ * em que as cenas entram (sem roteiro) ou como o trecho se reparte entre elas
+ * (com roteiro). O numero ja existia, mas no canto de cartoes espalhados pela
+ * grade -- dava para saber que uma cena era a quarta, nao para ler a fila.
+ */
+function Marcadas({
+  clips,
+  rotulo,
+  onRemover,
+}: {
+  clips: readonly LibraryClip[]
+  rotulo: string
+  onRemover: (clip: LibraryClip) => void
+}) {
+  if (clips.length === 0) return null
+
+  return (
+    <div className="flex shrink-0 items-center gap-3 border-t border-line px-5 py-2">
+      <span className="shrink-0 text-[11px] text-ink-3">
+        {rotulo} <span className="tnum text-ink-2">{clips.length}</span>
+      </span>
+      {/*
+        Rola na horizontal em vez de quebrar linha: o rodape tem altura fixa, e
+        uma fita que cresce para cima comeria a grade a cada cena marcada.
+      */}
+      <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+        {clips.map((clip, i) => (
+          // A chave leva a posicao junto porque a mesma cena pode aparecer
+          // duas vezes no trecho -- duplicar uma cena e um gesto que existe.
+          <div
+            key={`${clip.id}-${i}`}
+            title={`${clip.animeTitle || clip.anime} · S${pad(clip.season)}E${pad(clip.episode)} · cena ${clip.shot} · ${clip.duration.toFixed(1)}s`}
+            className="group relative shrink-0 overflow-hidden rounded-sm border border-line"
+          >
+            <img src={clip.thumbUrl} alt="" className="h-[40px] w-[71px] object-cover" />
+            <span className="tnum absolute left-0 top-0 bg-bg/75 px-1 text-[10px] text-ink">
+              {i + 1}
+            </span>
+            <button
+              type="button"
+              onClick={() => onRemover(clip)}
+              title="Tirar da fila"
+              className="absolute inset-0 grid place-items-center bg-bg/70 opacity-0 transition-opacity duration-150 hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <X size={14} strokeWidth={2} className="text-danger" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+// ------------------------------------------------------------------- mesclar
+
+/**
+ * A barra de MESCLAR, embaixo da grade, enquanto ha cenas marcadas com
+ * Ctrl+clique. Diz na hora se da para mesclar (mesmo episodio, cenas seguidas)
+ * e pede uma confirmacao antes -- os pedacos saem da pasta shots.
+ */
+function BarraDeMescla({
+  ids,
+  clips,
+  confirmando,
+  recado,
+  onConfirmar,
+  onCancelar,
+  onMesclar,
+}: {
+  ids: readonly string[]
+  clips: readonly LibraryClip[]
+  confirmando: boolean
+  recado: string | null
+  onConfirmar: () => void
+  onCancelar: () => void
+  onMesclar: (paths: string[]) => Promise<void>
+}) {
+  const [indo, setIndo] = useState(false)
+  const porId = useMemo(() => new Map(clips.map((c) => [c.id, c])), [clips])
+  const escolhidas = ids.map((id) => porId.get(id)).filter((c): c is LibraryClip => c !== undefined)
+
+  /*
+   * O mesmo que o servico confere -- dito ANTES de clicar. O nome do clipe
+   * mesclado ("0010-0012") diz ao indexador quais cenas estao dentro, entao um
+   * buraco no meio deixaria duracao e personagens errados.
+   */
+  let problema: string | null = null
+  const episodio = escolhidas[0] ? `${escolhidas[0].anime}|${chaveEpisodio(escolhidas[0])}` : ''
+  if (escolhidas.length < 2) problema = 'Ctrl+clique em mais uma cena para mesclar.'
+  else if (escolhidas.some((c) => `${c.anime}|${chaveEpisodio(c)}` !== episodio)) problema = 'As cenas precisam ser do mesmo episodio.'
+  else {
+    const faixas = escolhidas.map((c) => faixaDaCena(c.shot)).sort((a, b) => (a?.[0] ?? 0) - (b?.[0] ?? 0))
+    if (faixas.some((f) => f === null)) problema = 'Alguma dessas cenas nao veio do corte do AnCut.'
+    else {
+      for (let k = 1; k < faixas.length; k++) {
+        if (faixas[k]![0] !== faixas[k - 1]![1] + 1) {
+          problema = 'So da para mesclar cenas SEGUIDAS do episodio (ex.: 0010, 0011, 0012).'
+          break
+        }
+      }
+    }
+  }
+  const segundos = escolhidas.reduce((n, c) => n + c.duration, 0)
+
+  return (
+    <div className="glass enter absolute bottom-4 left-1/2 z-30 flex max-w-[680px] -translate-x-1/2 items-center gap-3 rounded-md px-3 py-2 text-[12px]">
+      <Combine size={14} strokeWidth={1.75} className="shrink-0 text-accent" />
+      {ids.length === 0 && recado ? (
+        <span className="text-ink-2">{recado}</span>
+      ) : (
+        <span className="min-w-0 text-ink-2">
+          <span className="text-ink">{escolhidas.length} cenas para mesclar</span>
+          {escolhidas.length > 0 && <span className="tnum text-ink-3"> · {segundos.toFixed(1)}s</span>}
+          {(problema || recado) && <span className="block text-[11px] text-ink-3">{problema ?? recado}</span>}
+          {confirmando && !problema && (
+            <span className="block text-[11px] text-ink-3">
+              Viram um clipe so; os pedacos vao para a _lixeira do episodio e o AnCut e atualizado junto.
+            </span>
+          )}
+        </span>
+      )}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {ids.length > 0 && !problema && (
+          <button
+            type="button"
+            disabled={indo}
+            onClick={() => {
+              if (!confirmando) {
+                onConfirmar()
+                return
+              }
+              setIndo(true)
+              void onMesclar(escolhidas.map((c) => c.path)).finally(() => setIndo(false))
+            }}
+            className="flex items-center gap-1.5 rounded-sm border border-accent bg-accent-dim px-2.5 py-1 text-ink hover:bg-accent disabled:opacity-50"
+          >
+            {indo && <Loader2 size={12} className="animate-spin" />}
+            {confirmando ? 'Confirmar mescla' : 'Mesclar'}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onCancelar}
+          className="rounded-sm border border-line bg-elevated px-2.5 py-1 text-ink-2 hover:text-ink"
+        >
+          {ids.length === 0 ? 'Ok' : 'Cancelar'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ------------------------------------------------------------------- player
+
+/**
+ * O PLAYER GRANDE: "um player que abre pra poder ver em alta escala". A cena
+ * em tamanho de verdade, com som e controles; setas andam pela grade (na
+ * ordem dos filtros), Esc fecha. Escolher daqui faz o mesmo que clicar no
+ * cartao.
+ */
+function Tocador({
+  clip,
+  lista,
+  favorito,
+  marcado,
+  onFavoritar,
+  onEscolher,
+  onIr,
+  onFechar,
+}: {
+  clip: LibraryClip
+  lista: readonly LibraryClip[]
+  favorito: boolean
+  marcado: boolean
+  onFavoritar: () => void
+  onEscolher: () => void
+  onIr: (clip: LibraryClip) => void
+  onFechar: () => void
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  const indice = lista.findIndex((c) => c.id === clip.id)
+  const anterior = indice > 0 ? lista[indice - 1] : undefined
+  const proximo = indice >= 0 && indice < lista.length - 1 ? lista[indice + 1] : undefined
+
+  useEffect(() => {
+    let vivo = true
+    setUrl(null)
+    void window.dangai.libraryClipUrl(clip.path).then((r) => {
+      if (vivo && r.ok) setUrl(r.value)
+    })
+    return () => {
+      vivo = false
+    }
+  }, [clip.path])
+
+  /*
+   * O teclado do player vem ANTES do da Biblioteca (fase de captura): o Esc
+   * aqui fecha o player, e nao a Biblioteca inteira; as setas andam pelas
+   * cenas, e nao pelos trechos do roteiro.
+   */
+  useEffect(() => {
+    const tecla = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onFechar()
+      else if (event.key === 'ArrowRight' && proximo) onIr(proximo)
+      else if (event.key === 'ArrowLeft' && anterior) onIr(anterior)
+      else return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    window.addEventListener('keydown', tecla, true)
+    return () => window.removeEventListener('keydown', tecla, true)
+  }, [onFechar, onIr, anterior, proximo])
+
+  return (
+    <div className="fixed inset-0 z-[80] flex flex-col items-center justify-center bg-black/85 p-6" onClick={onFechar}>
+      <div className="flex max-h-full w-full max-w-[1400px] flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 text-[12px] text-ink-2">
+          <span className="min-w-0 flex-1 truncate">
+            <span className="text-ink">{clip.animeTitle || clip.anime}</span> · S{pad(clip.season)}E{pad(clip.episode)} · cena{' '}
+            {clip.shot} · <span className="tnum">{clip.duration.toFixed(1)}s</span>
+            {clip.characters.length > 0 && <span className="text-ink-3"> · {clip.characters.join(', ')}</span>}
+          </span>
+          <span className="tnum text-ink-3">
+            {indice + 1} de {lista.length}
+          </span>
+          <button type="button" onClick={onFechar} aria-label="Fechar o player" className="text-ink-3 hover:text-ink">
+            <X size={16} strokeWidth={1.75} />
+          </button>
+        </div>
+        <div className="relative flex min-h-0 items-center justify-center">
+          <button
+            type="button"
+            disabled={!anterior}
+            onClick={() => anterior && onIr(anterior)}
+            aria-label="Cena anterior"
+            className="absolute left-2 z-10 grid size-10 place-items-center rounded-full bg-black/60 text-white hover:bg-accent disabled:opacity-20"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          {url ? (
+            <video
+              key={url}
+              src={url}
+              autoPlay
+              loop
+              controls
+              className="max-h-[78vh] w-full rounded-md bg-black object-contain"
+            />
+          ) : (
+            <div className="grid aspect-video w-full place-items-center rounded-md bg-black">
+              <Loader2 size={20} className="animate-spin text-ink-3" />
+            </div>
+          )}
+          <button
+            type="button"
+            disabled={!proximo}
+            onClick={() => proximo && onIr(proximo)}
+            aria-label="Proxima cena"
+            className="absolute right-2 z-10 grid size-10 place-items-center rounded-full bg-black/60 text-white hover:bg-accent disabled:opacity-20"
+          >
+            <ChevronRight size={20} />
+          </button>
+        </div>
+        <div className="flex items-center justify-center gap-2 text-[12px]">
+          <button
+            type="button"
+            onClick={onFavoritar}
+            className="flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-3 py-1.5 text-ink-2 hover:text-ink"
+          >
+            <Star size={13} strokeWidth={1.5} className={favorito ? 'fill-accent text-accent' : ''} />
+            {favorito ? 'Favorita' : 'Favoritar'}
+          </button>
+          <button
+            type="button"
+            onClick={onEscolher}
+            className={[
+              'rounded-sm border px-3 py-1.5',
+              marcado ? 'border-accent bg-accent-dim text-ink' : 'border-accent text-ink hover:bg-accent-dim',
+            ].join(' ')}
+          >
+            {marcado ? 'Escolhida (clique para tirar)' : 'Escolher esta cena'}
+          </button>
+          <span className="text-[11px] text-ink-3">← → outra cena · Esc fecha</span>
+        </div>
+      </div>
+    </div>
+  )
+}

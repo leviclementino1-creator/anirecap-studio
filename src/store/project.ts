@@ -97,7 +97,12 @@ import {
   totalFrames,
 } from '@shared/plan'
 import type { CaptionBlock } from '@shared/contract'
-import { PROJECT_FILE_VERSION, type ProjectFile } from '@shared/project-file'
+import {
+  ehProjetoDoDangai,
+  PROJECT_FILE_VERSION,
+  semExtensaoDeProjeto,
+  type ProjectFile,
+} from '@shared/project-file'
 import { herdarAjustes, reaproveitar } from '@shared/remontar'
 import { retemporizar } from '@shared/legendas'
 import { abrirEspaco, removerCena, repararMetadesDeBaixo } from '@shared/indices'
@@ -3816,7 +3821,7 @@ export const useProject = create<ProjectState>((set, get) => ({
     /*
      * O ROTEIRO SEGUE A MESCLA: um trecho que usava os pedacos passa a usar o
      * clipe novo (uma vez so), e a fila de escolhidas tambem -- senao os dois
-     * apontariam para arquivos que foram para a lixeira.
+     * apontariam para cenas que sairam da grade.
      */
     set((state) => {
       const blockClips: Record<number, string[]> = {}
@@ -3842,16 +3847,12 @@ export const useProject = create<ProjectState>((set, get) => ({
       return { blockClips, escolhidos, busy: null }
     })
     await get().syncLibrary()
-    const banco =
-      r.value.ancut === 'atualizado'
-        ? 'O AnCut ja ve o mesmo.'
-        : r.value.ancut === 'episodio-nao-encontrado'
-          ? 'O AnCut nao conhece este episodio, entao so os arquivos mudaram.'
-          : 'Nao deu para atualizar o banco do AnCut (ele esta aberto?); os arquivos ja mudaram.'
+    // O Studio mescla na pasta dele e nunca mexe no AnCut (r.value.ancut vem
+    // sempre 'sem-banco'), entao nao ha banco para relatar.
     return {
       ok: true,
       path: novo,
-      recado: `${paths.length} cenas viraram ${nomeNovo} (${r.value.segundos.toFixed(1)}s). Os pedacos foram para a _lixeira do episodio. ${banco}`,
+      recado: `${paths.length} cenas viraram ${nomeNovo} (${r.value.segundos.toFixed(1)}s). Os arquivos do AnCut ficaram como estavam.`,
     }
   },
 
@@ -4592,10 +4593,23 @@ export const useProject = create<ProjectState>((set, get) => ({
       return
     }
 
+    /*
+     * Projeto aberto do Dangai: o primeiro save vira "Salvar como".
+     *
+     * O .dangai fica intacto para o Dangai, e o dialogo ja abre na mesma pasta
+     * com o mesmo nome em .anirecap. Trocar a extensao em silencio podia cobrir
+     * um .anirecap mais novo que estivesse ao lado sem ninguem ver.
+     */
+    const doDangai = state.projectPath !== null && ehProjetoDoDangai(state.projectPath)
     const result = await window.dangai.saveProject({
-      path: comoNovo ? null : state.projectPath,
+      path: comoNovo || doDangai ? null : state.projectPath,
       file,
-      suggestedName: state.audio.fileName.replace(/\.[^.]+$/, ''),
+      // Com o caminho inteiro, o dialogo abre na pasta do .dangai, e nao na
+      // ultima pasta que o Windows lembrar.
+      suggestedName:
+        doDangai && !comoNovo && state.projectPath
+          ? semExtensaoDeProjeto(state.projectPath)
+          : state.audio.fileName.replace(/\.[^.]+$/, ''),
     })
 
     if (!result.ok) {
@@ -4671,7 +4685,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       .filter((path) => !existentes.has(path))
       .map((path) => ({
         path,
-        fileName: path.split(/[\\/]/).pop()?.replace(/\.dangai$/i, '') ?? path,
+        fileName: semExtensaoDeProjeto(path.split(/[\\/]/).pop() ?? path),
         status: 'pendente' as const,
         output: null,
         error: null,

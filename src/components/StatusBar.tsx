@@ -201,9 +201,9 @@ function UpdateChip({ appVersion }: { appVersion: string }) {
           'A versao ja esta baixada e conferida. O que o sistema barra e o instalador,' +
             ' por ser um executavel novo e sem assinatura -- o app em si ele deixa abrir.',
           'Para atualizar sem instalador:' +
-            `\n1. baixe Dangai-${update.version}-win-x64.zip nesta release` +
-            '\n2. FECHE o Dangai (o Windows nao substitui arquivo em uso)' +
-            '\n3. extraia por cima de %LOCALAPPDATA%\\Programs\\Dangai',
+            `\n1. baixe AniRecap-Studio-${update.version}-win-x64.zip nesta release` +
+            '\n2. FECHE o AniRecap Studio (o Windows nao substitui arquivo em uso)' +
+            '\n3. extraia por cima de %LOCALAPPDATA%\\Programs\\AniRecap Studio',
         ].join('\n\n')}
         className="flex shrink-0 items-center gap-1.5 rounded-sm border border-danger px-2 py-0.5 text-[11px] text-danger transition-colors duration-150 hover:bg-danger/10"
       >

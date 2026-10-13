@@ -5,10 +5,13 @@ import { useProject } from "@/store/project";
 import { Atalhos } from "./Atalhos";
 
 /**
- * Um campo que importa: a chave da API. O resto e escolha rara.
+ * Um campo que importa: a chave da IA. O resto e escolha rara.
  *
  * A chave nunca volta do main por inteiro -- so um hint com os quatro ultimos
  * caracteres, o suficiente para reconhecer qual chave esta salva.
+ *
+ * O Gemini vem primeiro porque e o padrao e tem cota gratis; a Anthropic fica
+ * como opcao para quem ja tem a chave.
  */
 export function Settings() {
   const open = useProject((s) => s.settingsOpen);
@@ -19,12 +22,23 @@ export function Settings() {
 
   const [settings, setSettings] = useState<PublicSettings | null>(null);
   const [keyInput, setKeyInput] = useState("");
+  const [geminiInput, setGeminiInput] = useState("");
   const [saving, setSaving] = useState(false);
+  // A lista vem do "Testar": o main so conhece os modelos depois de falar com
+  // o Google usando a chave.
+  const [modelos, setModelos] = useState<string[]>([]);
+  const [testando, setTestando] = useState(false);
+  const [teste, setTeste] = useState<{
+    tipo: "ok" | "aviso" | "erro";
+    texto: string;
+  } | null>(null);
   const [aba, setAba] = useState<"geral" | "atalhos">("geral");
 
   useEffect(() => {
     if (!open) return;
     setKeyInput("");
+    setGeminiInput("");
+    setTeste(null);
     void window.dangai.getSettings().then((result) => {
       if (result.ok) setSettings(result.value);
     });
@@ -75,6 +89,57 @@ export function Settings() {
     }
   };
 
+  const saveGeminiKey = async () => {
+    const trimmed = geminiInput.trim();
+    if (trimmed.length === 0) return;
+    if (await save({ geminiApiKey: trimmed })) {
+      setGeminiInput("");
+      setTeste(null);
+      // Mesmo motivo da chave da Anthropic: a IA acabou de ser habilitada.
+      void analyze();
+    }
+  };
+
+  // Testa a chave digitada, se houver; senao a salva, que fica no main.
+  const testarGemini = async () => {
+    setTestando(true);
+    setTeste(null);
+    const result = await window.dangai.testarGemini(geminiInput.trim() || null);
+    setTestando(false);
+    if (!result.ok) {
+      setTeste({ tipo: "erro", texto: result.error });
+      return;
+    }
+    setModelos(result.value.modelos);
+    setTeste(
+      result.value.aviso
+        ? { tipo: "aviso", texto: `A chave vale, mas: ${result.value.aviso}` }
+        : { tipo: "ok", texto: `Funcionando com ${result.value.modelo}.` },
+    );
+  };
+
+  // Quem atende de verdade: a preferida so se tiver chave, como no main.
+  const emUso = !settings
+    ? null
+    : settings.iaProvedor === "gemini"
+      ? settings.hasGeminiKey
+        ? "gemini"
+        : settings.hasApiKey
+          ? "anthropic"
+          : null
+      : settings.hasApiKey
+        ? "anthropic"
+        : settings.hasGeminiKey
+          ? "gemini"
+          : null;
+
+  // O modelo salvo aparece mesmo antes de testar, ou o select mostraria
+  // "Automatico" mentindo.
+  const opcoesDeModelo =
+    settings?.geminiModelo && !modelos.includes(settings.geminiModelo)
+      ? [settings.geminiModelo, ...modelos]
+      : modelos;
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-6"
@@ -123,6 +188,123 @@ export function Settings() {
           ) : (
             <>
               <label className="mb-1.5 block text-[11px] font-medium text-ink-2">
+                Inteligencia artificial
+              </label>
+              <div className="flex gap-1.5">
+                {(
+                  [
+                    ["gemini", "Gemini (gratis)"],
+                    ["anthropic", "Anthropic"],
+                  ] as const
+                ).map(([qual, nome]) => (
+                  <button
+                    key={qual}
+                    type="button"
+                    onClick={() => void save({ iaProvedor: qual })}
+                    className={[
+                      "lift flex-1 rounded-sm border px-2 py-1.5 text-[13px]",
+                      settings?.iaProvedor === qual
+                        ? "border-accent bg-accent-dim text-ink"
+                        : "border-line bg-elevated text-ink-2",
+                    ].join(" ")}
+                  >
+                    {nome}
+                  </button>
+                ))}
+              </div>
+              {settings && emUso !== settings.iaProvedor && (
+                <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+                  {emUso === null
+                    ? "Sem nenhuma chave: as cenas sao distribuidas pelas pausas da narracao."
+                    : emUso === "anthropic"
+                      ? "Sem a chave do Gemini, o app usa a da Anthropic."
+                      : "Sem a chave da Anthropic, o app usa a do Gemini."}
+                </p>
+              )}
+
+              <div className="mt-4 mb-1.5 flex items-baseline gap-2">
+                <label className="block text-[11px] font-medium text-ink-2">
+                  Chave do Gemini
+                </label>
+                <span className="flex-1" />
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Pegar uma chave gratis
+                </a>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={geminiInput}
+                  onChange={(event) => setGeminiInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void saveGeminiKey();
+                    event.stopPropagation();
+                  }}
+                  placeholder={
+                    settings?.hasGeminiKey ? settings.geminiKeyHint : "AIza..."
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="min-w-0 flex-1 select-text rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-line-strong focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveGeminiKey()}
+                  disabled={saving || geminiInput.trim().length === 0}
+                  className="lift shrink-0 rounded-sm border border-line bg-elevated px-3 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void testarGemini()}
+                  disabled={
+                    testando ||
+                    (geminiInput.trim().length === 0 && !settings?.hasGeminiKey)
+                  }
+                  className="lift shrink-0 rounded-sm border border-line bg-elevated px-3 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
+                >
+                  {testando ? "Testando..." : "Testar"}
+                </button>
+              </div>
+              {teste && (
+                <p
+                  className={[
+                    "mt-2 select-text text-[11px] leading-relaxed",
+                    teste.tipo === "ok" ? "text-ink-2" : "text-danger",
+                  ].join(" ")}
+                >
+                  {teste.texto}
+                </p>
+              )}
+
+              <label className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">
+                Modelo do Gemini
+              </label>
+              <select
+                value={settings?.geminiModelo ?? ""}
+                onChange={(event) => void save({ geminiModelo: event.target.value })}
+                className="w-full rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-[13px] text-ink"
+              >
+                <option value="">Automatico</option>
+                {opcoesDeModelo.map((modelo) => (
+                  <option key={modelo} value={modelo}>
+                    {modelo}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+                {modelos.length === 0
+                  ? "Teste a chave para ver os modelos. No automatico, o app usa o gemini-2.5-flash, ou o melhor flash que a chave tiver."
+                  : "No automatico, o app usa o gemini-2.5-flash, ou o melhor flash que a chave tiver."}
+              </p>
+
+              <label className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">
                 Chave da API da Anthropic
               </label>
               <div className="flex gap-2">
@@ -151,8 +333,10 @@ export function Settings() {
                 </button>
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-                Fica so nesta maquina. Sem ela, as cenas sao distribuidas pelas
-                pausas da narracao.
+                Opcional, e paga. As chaves ficam so nesta maquina
+                {settings?.chavesProtegidas ? ", cifradas pelo sistema" : ""}.
+                Sem nenhuma, as cenas sao distribuidas pelas pausas da
+                narracao.
               </p>
 
               <div className="my-5 h-px bg-line" />
@@ -224,7 +408,7 @@ export function Settings() {
                 </span>
               </button>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-                A pasta onde o AnCut grava as cenas. O Dangai so le: nunca
+                A pasta onde o AnCut grava as cenas. O AniRecap Studio so le: nunca
                 renomeia, move nem apaga nada ai dentro. Ctrl+B abre a busca.
               </p>
             </>

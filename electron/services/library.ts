@@ -15,6 +15,7 @@ import { basename, join } from 'node:path'
 import sharp from 'sharp'
 import type { LibraryClip, LibraryIndex } from '@shared/channels'
 import { canonizar } from '@shared/nomes'
+import { configurarMesclas, lerMesclas, mesclasQueValem, mesmoCaminho, type Mescla } from './mesclas-studio'
 
 /**
  * Le a biblioteca de cenas que o AnCut HUB ja produziu.
@@ -23,6 +24,10 @@ import { canonizar } from '@shared/nomes'
  * grava tudo em `metadata/shots.json`. Nada disso precisa ser refeito aqui: este
  * servico so LE. Ele nunca escreve, move ou renomeia nada dentro da biblioteca
  * do usuario -- se o Dangai sumir amanha, a pasta fica exatamente como estava.
+ *
+ * As mesclas feitas no Studio tambem nao entram la: moram no perfil (ver
+ * mesclas-studio) e sao aplicadas aqui, na leitura -- os pedacos saem da grade
+ * e o clipe mesclado entra no lugar, igual ao que o Dangai mostrava.
  *
  * A pasta de um episodio processado e assim:
  *
@@ -49,6 +54,12 @@ interface CachedEpisode {
   mtimeMs: number
   /** Quantos arquivos existiam em shots/. A lixeira mexe aqui sem tocar no json. */
   fileCount: number
+  /**
+   * Assinatura das mesclas do Studio aplicadas. Mesclar ou desfazer nao toca no
+   * json nem em shots/, entao sem isto o cache serviria a grade de antes.
+   * Ausente nos caches antigos = nenhuma mescla, que e o que eles eram.
+   */
+  mesclas?: string
   clips: StoredClip[]
 }
 
@@ -94,6 +105,7 @@ let thumbsDir: string | null = null
 export function configureLibrary(userDataDir: string): void {
   cachePath = join(userDataDir, 'library-cache.json')
   thumbsDir = join(userDataDir, 'thumbs')
+  configurarMesclas(userDataDir)
 }
 
 /**
@@ -118,6 +130,8 @@ export async function scanLibrary(
   let scanned = 0
 
   const episodios = [...episodiosEm(root, 0)]
+  // O registro e lido uma vez por varredura, nao uma por episodio.
+  const registro = lerMesclas()
 
   for (const [posicao, dir] of episodios.entries()) {
     const jsonPath = join(dir, 'metadata', 'shots.json')
@@ -135,11 +149,20 @@ export async function scanLibrary(
     // de perceber que o usuario descartou algo sem reler o json toda vez.
     const naPasta = arquivosEm(join(dir, 'shots'))
 
+    // Conferidas a cada varredura: um pedaco que sumiu do disco, ou o clipe do
+    // Studio apagado, derruba a mescla e os pedacos que sobraram voltam soltos.
+    const mesclas = mesclasQueValem(
+      registro.filter((m) => mesmoCaminho(m.episodio, dir)),
+      naPasta,
+    )
+    const assinatura = mesclas.map((m) => `${m.arquivo}@${m.criadoEm}`).join('|')
+
     const anterior = cache.episodes[dir]
     const aproveitavel =
       anterior &&
       anterior.mtimeMs === mtimeMs &&
       anterior.fileCount === naPasta.size &&
+      (anterior.mesclas ?? '') === assinatura &&
       // Uma conferida so por episodio: se alguem limpou o userData, as
       // miniaturas sumiram e a grade viria com os quadros quebrados. Refazer sai
       // mais barato do que 9 mil statSync a cada sincronizacao.
@@ -151,10 +174,10 @@ export async function scanLibrary(
       )
     }
 
-    const guardados = aproveitavel ? anterior.clips : await lerEpisodio(dir, root, naPasta)
+    const guardados = aproveitavel ? anterior.clips : await lerEpisodio(dir, root, naPasta, mesclas)
     if (!aproveitavel) scanned += 1
 
-    proximos[dir] = { mtimeMs, fileCount: naPasta.size, clips: guardados }
+    proximos[dir] = { mtimeMs, fileCount: naPasta.size, mesclas: assinatura, clips: guardados }
 
     for (const clip of guardados) {
       const { thumb, ...resto } = clip
@@ -243,11 +266,17 @@ interface RawShot {
  * Iterando os arquivos e consultando o json isso se resolve sozinho, e a conta
  * fecha exata com o que o AnCut mostra na tela: no S01E42 sao 522 linhas no
  * json, menos 4 na lixeira, menos 5 absorvidas por juncao, igual a 513.
+ *
+ * As mesclas do Studio entram como se estivessem em shots/: os pedacos saem da
+ * lista e o `0010-0012.mp4` entra no lugar, so com o caminho apontando para o
+ * perfil. Dali para frente e o mesmo caminho de uma juncao do AnCut -- id,
+ * keyframe e inicio da primeira, o vao inteiro e os personagens de todas.
  */
 async function lerEpisodio(
   dir: string,
   root: string,
   naPasta: ReadonlySet<string>,
+  mesclas: readonly Mescla[] = [],
 ): Promise<StoredClip[]> {
   let cru: unknown
   try {
@@ -298,7 +327,15 @@ async function lerEpisodio(
 
   const saida: StoredClip[] = []
 
-  for (const nomeMp4 of [...naPasta].sort(naturalmente)) {
+  const doStudio = new Map<string, string>()
+  const escondidos = new Set(mesclas.flatMap((m) => m.pedacos.map((p) => `${p}.mp4`.toLowerCase())))
+  const visiveis = [...naPasta].filter((nome) => !escondidos.has(nome.toLowerCase()))
+  for (const m of mesclas) {
+    doStudio.set(basename(m.arquivo), m.arquivo)
+    visiveis.push(basename(m.arquivo))
+  }
+
+  for (const nomeMp4 of visiveis.sort(naturalmente)) {
     if (!nomeMp4.toLowerCase().endsWith('.mp4')) continue
 
     const shot = nomeMp4.slice(0, -4)
@@ -317,7 +354,7 @@ async function lerEpisodio(
 
     saida.push({
       id: `${prefixo}/${shot}`,
-      path: join(dir, 'shots', nomeMp4),
+      path: doStudio.get(nomeMp4) ?? join(dir, 'shots', nomeMp4),
       thumb,
       // Guardado ANTES de reduzirMiniaturas trocar `thumb` pela copia de 320px:
       // o etiquetador prefere a resolucao cheia quando ela ainda esta no disco.

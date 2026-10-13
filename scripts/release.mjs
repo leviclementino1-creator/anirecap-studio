@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Publica uma versão do Dangai no GitHub Releases.
+ * Publica uma versão do AniRecap Studio no GitHub Releases.
  *
  *   npm run release
  *   npm run release -- --dry-run     monta e confere, sem publicar
@@ -42,7 +42,10 @@ const DRY = process.argv.includes('--dry-run')
 
 const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const TAG = `v${version}`
-const EXE = `Dangai-${version}-win-x64.exe`
+// O mesmo nome do artifactName do electron-builder.yml, sem o espaço do
+// productName: com espaço, o GitHub, o latest.yml e o disco teriam três nomes.
+const EXE = `AniRecap-Studio-${version}-win-x64.exe`
+const REPO = 'leviclementino1-creator/anirecap-studio'
 
 function log(msg) {
   process.stdout.write(`  • ${msg}\n`)
@@ -198,7 +201,7 @@ if (jaExiste) {
   log(`release ${TAG} já existe, subindo os arquivos nela`)
 } else {
   log(`criando a release ${TAG}`)
-  run('gh', ['release', 'create', TAG, '--title', version, '--notes', `Dangai ${version}`])
+  run('gh', ['release', 'create', TAG, '--title', version, '--notes', `AniRecap Studio ${version}`])
 }
 
 log('subindo .exe, .blockmap e latest.yml')
@@ -220,7 +223,7 @@ run('gh', [
  * como "latest". Só este endpoint diz a verdade.
  */
 const latest = JSON.parse(
-  run('gh', ['api', 'repos/faahpla/dangai/releases/latest'], { quiet: true }),
+  run('gh', ['api', `repos/${REPO}/releases/latest`], { quiet: true }),
 )
 const nomes = latest.assets.map((a) => a.name)
 
@@ -231,5 +234,5 @@ for (const preciso of [EXE, `${EXE}.blockmap`, 'latest.yml']) {
   if (!nomes.includes(preciso)) morre(`faltou ${preciso} na release publicada.`)
 }
 
-log(`publicado: https://github.com/faahpla/dangai/releases/tag/${TAG}`)
+log(`publicado: https://github.com/${REPO}/releases/tag/${TAG}`)
 log('os apps instalados percebem sozinhos em algumas horas, ou na próxima abertura')

@@ -1,8 +1,10 @@
 {
-  "name": "dangai",
-  "version": "1.65.0",
+  "name": "anirecap-studio",
+  "productName": "AniRecap Studio",
+  "version": "0.1.0",
   "private": true,
-  "description": "Maquina de fazer shorts de recap de anime",
+  "description": "Recap de anime com IA: do episodio ao short editavel. Base no Dangai.",
+  "author": "Levi Clementino",
   "main": "out/main/main.js",
   "scripts": {
     "dev": "electron-vite dev",

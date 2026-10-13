@@ -1,6 +1,8 @@
-appId: com.kintay.dangai
-productName: Dangai
-copyright: Kintay
+appId: com.leviclementino.anirecapstudio
+# O nome do produto tem espaco. Ele vira o nome da pasta de instalacao e do
+# userData, mas nao entra no nome dos arquivos publicados (ver artifactName).
+productName: AniRecap Studio
+copyright: Levi Clementino
 
 directories:
   output: release
@@ -8,12 +10,14 @@ directories:
 
 # As atualizacoes vem das releases deste repositorio. O app instalado consulta
 # aqui, baixa em segundo plano e troca de versao quando o usuario mandar.
-# Repositorio publico de proposito: privado exigiria um token do GitHub embutido
-# no instalador, de onde qualquer pessoa conseguiria extrair.
+# Repositorio publico desde o comeco, de proposito: privado exigiria um token do
+# GitHub embutido no instalador, de onde qualquer pessoa conseguiria extrair.
+# Repo proprio, e nao o do Dangai: o app instalado nunca pode se "atualizar"
+# para o Dangai. A busca fica desligada ate a 1a release (ver updater.ts).
 publish:
   provider: github
-  owner: faahpla
-  repo: dangai
+  owner: leviclementino1-creator
+  repo: anirecap-studio
   # Publicada, e nao rascunho: o updater so enxerga release publicada, e um
   # rascunho esquecido significaria ninguem recebendo atualizacao nenhuma.
   releaseType: release
@@ -63,7 +67,11 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  artifactName: ${productName}-${version}-win-${arch}.${ext}
+  # Nome fixo, sem o espaco do productName. O GitHub troca espaco por ponto no
+  # nome do arquivo enviado, e o electron-builder escreve no latest.yml um nome
+  # com hifen: com "${productName}" os tres nomes divergiriam e o updater
+  # procuraria um .exe que a release nao tem. O release.mjs usa este mesmo nome.
+  artifactName: AniRecap-Studio-${version}-win-${arch}.${ext}
 
 nsis:
   installerIcon: build/icon.ico
@@ -80,7 +88,7 @@ mac:
     - target: dmg
       arch: [arm64, x64]
   category: public.app-category.video
-  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  artifactName: AniRecap-Studio-${version}-mac-${arch}.${ext}
 
 # Sem assinatura: nao ha certificado neste projeto. O instalador funciona, mas
 # o SmartScreen do Windows avisa na primeira execucao.

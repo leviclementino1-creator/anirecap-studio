@@ -1,9 +1,18 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, relative } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { basename, dirname, join } from 'node:path'
 import { ffmpegPath } from './ffmpeg-path'
+import {
+  apagarMesclado,
+  assinaturaDoPedaco,
+  gravarMesclas,
+  lerMesclas,
+  mesclasQueValem,
+  mesmoCaminho,
+  pastaDasMesclas,
+  type Mescla,
+} from './mesclas-studio'
 
 /**
  * MESCLAR CENAS DA BIBLIOTECA, como o AnCut faz.
@@ -11,20 +20,21 @@ import { ffmpegPath } from './ffmpeg-path'
  * "No AnCut eu tenho a opcao de selecionar alguns clipes e mesclar... quero a
  * mesma opcao no Dangai, pra nao ter que voltar la, mesclar e sincronizar."
  *
- * Espelha o `_merge_shots` do motor do AnCut (ancut-hub-engine/app/headless.py)
- * para os dois programas continuarem vendo a mesma biblioteca:
+ * Para quem usa, continua igual ao Dangai: o clipe novo se chama
+ * `<primeira>-<ultima>.mp4`, a grade mostra uma cena so no lugar dos pedacos, e
+ * a saida tem a qualidade do corte do AnCut:
  *
- * - o arquivo novo e `shots/<primeira>-<ultima>.mp4` -- o nome que o AnCut da e
- *   que o indexador do Dangai ja entende (ve as cenas 0010..0012 no json);
  * - episodio cortado em modo "compat"/"intra" e REENCODADO com os mesmos
  *   parametros do corte (render_output_params): emendar sem reencodar quebra o
- *   CFR, e o AnCut mediu isso. Em "off", emenda sem reencodar (-c copy);
- * - no banco do AnCut (index.db) as cenas mescladas saem e entra uma no lugar,
- *   com o idx e o keyframe da primeira e o inicio dela + a soma das duracoes.
+ *   CFR, e o AnCut mediu isso. Em "off", emenda sem reencodar (-c copy).
  *
- * Diferenca de proposito: o AnCut APAGA os pedacos; aqui eles vao para a
- * `_lixeira/<data-hora>/` do episodio (a mesma pasta que a lixeira do AnCut
- * usa), para um engano ter volta.
+ * O que mudou no Studio e ONDE a mescla mora. O Dangai escrevia o clipe em
+ * shots/, movia os pedacos para a _lixeira e reescrevia o index.db do AnCut --
+ * que aqui e o banco do Corte Cenas do usuario, com um esquema que ja divergiu.
+ * Agora nada e criado, movido ou apagado na pasta do episodio e o banco nunca e
+ * aberto: o clipe vai para a pasta do Studio e uma linha no registro diz quais
+ * pedacos ele substitui (ver mesclas-studio). Quem aplica isso na grade e a
+ * varredura (library.ts). Desfazer e tirar a linha e apagar o clipe nosso.
  *
  * So CENAS SEGUIDAS: o nome "0010-0015" diz ao indexador que as cenas 11 a 14
  * estao dentro -- mesclar 10 com 15 pularia as do meio e a duracao e os
@@ -32,11 +42,14 @@ import { ffmpegPath } from './ffmpeg-path'
  */
 
 export interface ResultadoDaMescla {
-  /** O caminho do clipe mesclado. */
+  /** O caminho do clipe mesclado (na pasta do Studio). */
   path: string
-  /** Os caminhos que sairam (foram para a lixeira). */
+  /** Os caminhos que sairam da grade. Continuam no disco, so deixam de aparecer. */
   pedacos: string[]
-  /** O que aconteceu no banco do AnCut. */
+  /**
+   * O que aconteceu no banco do AnCut. No Studio e sempre 'sem-banco': o banco
+   * nao e tocado. O tipo continua o mesmo porque e o contrato do IPC.
+   */
   ancut: 'atualizado' | 'sem-banco' | 'episodio-nao-encontrado'
   segundos: number
 }
@@ -80,76 +93,6 @@ function rodarFfmpeg(args: string[]): Promise<void> {
   })
 }
 
-/** Onde mora o index.db do AnCut: o cache_dir da config dele, ou o padrao. */
-function bancoDoAncut(): string | null {
-  const base = process.env['LOCALAPPDATA']
-  if (!base) return null
-  const pasta = join(base, 'CorteCenas', 'CorteCenas')
-  let cache = join(pasta, 'cache')
-  try {
-    const cfg = JSON.parse(readFileSync(join(pasta, 'config.json'), 'utf8')) as { cache_dir?: unknown }
-    if (typeof cfg.cache_dir === 'string' && cfg.cache_dir) cache = cfg.cache_dir
-  } catch {
-    /* sem config: o padrao */
-  }
-  const banco = join(cache, 'index.db')
-  return existsSync(banco) ? banco : null
-}
-
-const normal = (p: string): string => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
-
-function atualizarAncut(
-  episodio: string,
-  pedacos: readonly string[],
-  novo: string,
-): ResultadoDaMescla['ancut'] {
-  const caminho = bancoDoAncut()
-  if (!caminho) return 'sem-banco'
-  const db = new DatabaseSync(caminho)
-  try {
-    db.exec('PRAGMA foreign_keys = ON')
-    db.exec('PRAGMA busy_timeout = 5000')
-    const ep = (db.prepare('SELECT id, output_root FROM episode').all() as { id: number; output_root: string | null }[])
-      .find((e) => e.output_root && normal(e.output_root) === normal(episodio))
-    if (!ep) return 'episodio-nao-encontrado'
-    const rels = pedacos.map((p) => relative(episodio, p))
-    const linhas = (db.prepare('SELECT id, idx, file, keyframe, start, duration FROM shot WHERE episode_id = ?').all(ep.id) as {
-      id: number
-      idx: number
-      file: string
-      keyframe: string | null
-      start: number
-      duration: number
-    }[])
-      .filter((r) => rels.some((rel) => normal(rel) === normal(r.file)))
-      .sort((a, b) => a.idx - b.idx)
-    if (linhas.length === 0) return 'episodio-nao-encontrado'
-    const primeira = linhas[0]!
-    const soma = linhas.reduce((n, r) => n + r.duration, 0)
-    db.exec('BEGIN')
-    try {
-      const apagar = db.prepare('DELETE FROM shot WHERE id = ?')
-      for (const r of linhas) apagar.run(r.id)
-      db.prepare('INSERT INTO shot (episode_id, idx, file, keyframe, start, end, duration) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-        ep.id,
-        primeira.idx,
-        relative(episodio, novo),
-        primeira.keyframe,
-        primeira.start,
-        primeira.start + soma,
-        soma,
-      )
-      db.exec('COMMIT')
-    } catch (err) {
-      db.exec('ROLLBACK')
-      throw err
-    }
-    return 'atualizado'
-  } finally {
-    db.close()
-  }
-}
-
 /** Duracao de um mp4, pelo ffmpeg (so para dizer quantos segundos ficou). */
 function duracao(path: string): Promise<number> {
   return new Promise((resolve) => {
@@ -166,34 +109,79 @@ function duracao(path: string): Promise<number> {
   })
 }
 
+/** Os arquivos de shots/, pelo nome em minusculas -> o nome de verdade. */
+function arquivosDe(shots: string): Map<string, string> {
+  try {
+    return new Map(
+      readdirSync(shots, { withFileTypes: true })
+        .filter((e) => e.isFile() && !e.name.startsWith('.'))
+        .map((e) => [e.name.toLowerCase(), e.name]),
+    )
+  } catch {
+    return new Map()
+  }
+}
+
 export async function mesclarClipes(paths: readonly string[]): Promise<ResultadoDaMescla> {
   if (paths.length < 2) throw new Error('Escolha pelo menos duas cenas para mesclar.')
 
-  const shots = dirname(paths[0]!)
+  // Uma cena da grade e um clipe do AnCut (em shots/) ou uma mescla nossa. A
+  // nossa vale pelos pedacos dela, que continuam no episodio: e deles que o
+  // clipe novo sai, para mesclar de novo nao reencodar duas vezes.
+  const registro = lerMesclas()
+  const resolvidos = paths.map((p) => {
+    const nossa = registro.find((m) => mesmoCaminho(m.arquivo, p)) ?? null
+    return nossa
+      ? { p, shots: join(nossa.episodio, 'shots'), pedacos: nossa.pedacos, nossa }
+      : { p, shots: dirname(p), pedacos: [basename(p).replace(/\.mp4$/i, '')], nossa }
+  })
+
+  const shots = resolvidos[0]!.shots
   if (basename(shots).toLowerCase() !== 'shots') throw new Error('So da para mesclar cenas cortadas pelo AnCut (pasta shots).')
-  if (paths.some((p) => normal(dirname(p)) !== normal(shots))) {
+  if (resolvidos.some((r) => !mesmoCaminho(r.shots, shots))) {
     throw new Error('As cenas precisam ser do mesmo episodio.')
   }
   const episodio = dirname(shots)
 
-  const itens = paths
-    .map((p) => ({ p, faixa: faixaDoNome(basename(p)) }))
+  const itens = resolvidos
+    .map((r) => ({ ...r, faixa: faixaDoNome(basename(r.p)) }))
     .sort((a, b) => (a.faixa?.[0] ?? 0) - (b.faixa?.[0] ?? 0))
   if (itens.some((i) => i.faixa === null)) throw new Error('Alguma cena tem um nome que o AnCut nao gera.')
   for (let k = 1; k < itens.length; k++) {
     if (itens[k]!.faixa![0] !== itens[k - 1]!.faixa![1] + 1) {
       throw new Error(
-        'So da para mesclar cenas SEGUIDAS do episodio (ex.: 0010, 0011, 0012). O nome do clipe mesclado diz ao Dangai quais cenas estao dentro, e um buraco no meio deixaria duracao e personagens errados.',
+        'So da para mesclar cenas SEGUIDAS do episodio (ex.: 0010, 0011, 0012). O nome do clipe mesclado diz ao Studio quais cenas estao dentro, e um buraco no meio deixaria duracao e personagens errados.',
       )
     }
   }
-  const faltando = itens.find((i) => !existsSync(i.p))
-  if (faltando) throw new Error(`Essa cena nao esta mais no disco: ${basename(faltando.p)}`)
+
+  const naPasta = arquivosDe(shots)
+  const pedacos = itens.flatMap((i) => i.pedacos)
+  const faltando = pedacos.find((p) => !naPasta.has(`${p}.mp4`.toLowerCase()))
+  if (faltando !== undefined) throw new Error(`Essa cena nao esta mais no disco: ${faltando}.mp4`)
+  // Tiradas ANTES do ffmpeg ler: se o AnCut regravar um pedaco no meio da
+  // mescla, a assinatura ja nao bate e ela cai na proxima varredura. O '' de
+  // um pedaco que sumiu agora nunca bate: os pedacos ficam soltos.
+  const assinaturas = pedacos.map((p) => assinaturaDoPedaco(episodio, p) ?? '')
+
+  // Um pedaco escondido por outra mescla que esta valendo nao entra em duas:
+  // a grade so mostraria uma e a outra viraria um clipe fantasma.
+  const doEpisodio = registro.filter((m) => mesmoCaminho(m.episodio, episodio))
+  const escolhidos = new Set(pedacos.map((p) => p.toLowerCase()))
+  const ocupada = mesclasQueValem(doEpisodio, new Set(naPasta.values())).find(
+    (m) => !itens.some((i) => i.nossa === m) && m.pedacos.some((p) => escolhidos.has(p.toLowerCase())),
+  )
+  if (ocupada) throw new Error(`Essa cena ja esta mesclada em ${basename(ocupada.arquivo)}.`)
 
   const de = itens[0]!.faixa![0]
   const ate = itens.at(-1)!.faixa![1]
-  const destino = join(shots, `${quatro(de)}-${quatro(ate)}.mp4`)
-  if (existsSync(destino)) throw new Error(`Ja existe ${basename(destino)} nesse episodio.`)
+  const nome = `${quatro(de)}-${quatro(ate)}.mp4`
+  if (naPasta.has(nome.toLowerCase())) throw new Error(`Ja existe ${nome} nesse episodio.`)
+  const pasta = pastaDasMesclas(episodio)
+  mkdirSync(pasta, { recursive: true })
+  // Se sobrou um arquivo com este nome sem linha no registro (o app caiu no
+  // meio), ele e lixo nosso: o ffmpeg escreve por cima.
+  const destino = join(pasta, nome)
 
   let modo = 'off'
   try {
@@ -203,8 +191,9 @@ export async function mesclarClipes(paths: readonly string[]): Promise<Resultado
   }
 
   // A lista do demuxer concat num arquivo; aspa simples se escapa fechando a string.
+  const entradas = pedacos.map((p) => join(shots, naPasta.get(`${p}.mp4`.toLowerCase())!))
   const lista = join(tmpdir(), `dangai-mescla-${Date.now()}.txt`)
-  writeFileSync(lista, itens.map((i) => `file '${i.p.replace(/'/g, "'\\''")}'`).join('\n') + '\n', 'utf8')
+  writeFileSync(lista, entradas.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n') + '\n', 'utf8')
   try {
     await rodarFfmpeg([
       '-y', '-hide_banner', '-loglevel', 'error',
@@ -218,40 +207,51 @@ export async function mesclarClipes(paths: readonly string[]): Promise<Resultado
   } finally {
     rmSync(lista, { force: true })
   }
-  // So mexe nos pedacos DEPOIS de o mesclado existir com conteudo.
+  // So entra no registro DEPOIS de o mesclado existir com conteudo.
   if (!existsSync(destino) || statSync(destino).size === 0) {
     rmSync(destino, { force: true })
     throw new Error('O ffmpeg terminou sem gerar o clipe mesclado.')
   }
+  const segundos = await duracao(destino)
 
-  // Os pedacos vao para a lixeira do episodio, no mesmo formato da do AnCut.
-  const agora = new Date()
-  const p2 = (n: number): string => String(n).padStart(2, '0')
-  const carimbo = `${agora.getFullYear()}-${p2(agora.getMonth() + 1)}-${p2(agora.getDate())}_${p2(agora.getHours())}-${p2(agora.getMinutes())}-${p2(agora.getSeconds())}`
-  const lixeira = join(episodio, '_lixeira', carimbo, 'shots')
-  mkdirSync(lixeira, { recursive: true })
-  const movidos: string[] = []
-  for (const i of itens) {
-    try {
-      renameSync(i.p, join(lixeira, basename(i.p)))
-      movidos.push(i.p)
-    } catch {
-      /* fica no lugar: o indexador o mostraria junto com o mesclado, sem quebrar nada */
-    }
+  /*
+   * Saem do registro as mesclas que esta engoliu (a escolhida na grade) e as
+   * velhas que dividiam pedaco com ela e ja nao valiam (pedaco ou clipe tinha
+   * sumido). Relido agora: o ffmpeg levou tempo, e o registro e a verdade.
+   */
+  const saem = doEpisodio.filter((m) => m.pedacos.some((p) => escolhidos.has(p.toLowerCase())))
+  const nova: Mescla = { episodio, pedacos, assinaturas, arquivo: destino, segundos, criadoEm: new Date().toISOString() }
+  gravarMesclas([...lerMesclas().filter((m) => !saem.some((s) => mesmoCaminho(s.arquivo, m.arquivo))), nova])
+  for (const m of saem) if (!mesmoCaminho(m.arquivo, destino)) apagarMesclado(m.arquivo)
+
+  return { path: destino, pedacos: itens.map((i) => i.p), ancut: 'sem-banco', segundos }
+}
+
+export interface ResultadoDoDesfazer {
+  /** O clipe mesclado que saiu. */
+  path: string
+  /** Os clipes do AnCut que voltam a aparecer na grade, em ordem. */
+  pedacos: string[]
+}
+
+/**
+ * DESFAZER UMA MESCLA. O Dangai nao tinha (os pedacos ficavam na _lixeira e a
+ * volta era a mao); aqui sai de graca, porque os pedacos nunca sairam do lugar:
+ * tira a linha do registro e apaga o clipe nosso. A pasta do episodio nao e
+ * tocada -- ela ja esta como estava.
+ */
+export function desfazerMescla(path: string): ResultadoDoDesfazer {
+  const registro = lerMesclas()
+  const mescla = registro.find((m) => mesmoCaminho(m.arquivo, path))
+  if (!mescla) throw new Error('Essa cena nao e uma mescla do Studio.')
+  // O registro primeiro: se o clipe estiver preso no preview e nao apagar, a
+  // grade ja volta certa e o arquivo que sobrou nao aparece em lugar nenhum.
+  gravarMesclas(registro.filter((m) => m !== mescla))
+  apagarMesclado(mescla.arquivo)
+  const shots = join(mescla.episodio, 'shots')
+  const naPasta = arquivosDe(shots)
+  return {
+    path: mescla.arquivo,
+    pedacos: mescla.pedacos.map((p) => join(shots, naPasta.get(`${p}.mp4`.toLowerCase()) ?? `${p}.mp4`)),
   }
-  writeFileSync(
-    join(episodio, '_lixeira', carimbo, 'dangai-mescla.json'),
-    JSON.stringify({ mesclado: relative(episodio, destino), pedacos: movidos.map((p) => relative(episodio, p)) }, null, 2),
-  )
-
-  let ancut: ResultadoDaMescla['ancut'] = 'sem-banco'
-  try {
-    ancut = atualizarAncut(episodio, itens.map((i) => i.p), destino)
-  } catch (err) {
-    // O clipe ja esta pronto; o banco do AnCut e o que nao deu (aberto e travado?).
-    console.warn('[mesclar] banco do AnCut nao atualizado:', err)
-    ancut = 'sem-banco'
-  }
-
-  return { path: destino, pedacos: movidos, ancut, segundos: await duracao(destino) }
 }

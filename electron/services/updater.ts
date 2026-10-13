@@ -63,6 +63,20 @@ async function carregar(): Promise<typeof import('electron-updater')> {
 /** Uma vez por dia basta: o app fica aberto por sessoes de edicao, nao dias. */
 const INTERVALO_MS = 6 * 60 * 60 * 1000
 
+/**
+ * A busca de atualizacao esta DESLIGADA ate a 1a release do Studio.
+ *
+ * O repo (leviclementino1-creator/anirecap-studio) e publico, mas ainda nao tem
+ * release nenhuma, e o electron-updater trata "nenhuma versao publicada" como
+ * erro -- que chegaria na barra de status de quem so abriu o app para editar.
+ * Desligado, o app nao consulta nada e a versao na barra responde "em dia",
+ * que e a verdade enquanto nao existe versao mais nova.
+ *
+ * Ligar = trocar para true no mesmo commit da versao publicada como 1a release.
+ * O resto do codigo continua aqui inteiro para esse dia.
+ */
+export const ATUALIZACAO_LIGADA: boolean = false
+
 export async function startUpdater(
   windows: () => BrowserWindow[],
   isPackaged: boolean,
@@ -76,7 +90,7 @@ export async function startUpdater(
 
   // Em dev nao existe instalacao para substituir; o updater reclamaria da falta
   // de app-update.yml a cada abertura.
-  if (!isPackaged) return
+  if (!isPackaged || !ATUALIZACAO_LIGADA) return
 
   const { autoUpdater } = await carregar()
   ativo = true
@@ -170,6 +184,13 @@ export async function installUpdate(): Promise<void> {
 export async function checkForUpdateNow(): Promise<void> {
   const enviar = enviarStatus
   if (!enviar) return
+
+  // Sem release publicada nao ha o que procurar, e responder erro aqui pintaria
+  // de vermelho a versao na barra por um motivo que nao e falha de ninguem.
+  if (!ATUALIZACAO_LIGADA) {
+    enviar({ state: 'atual' })
+    return
+  }
 
   if (!ativo) {
     enviar({

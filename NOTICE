@@ -1,0 +1,56 @@
+AniRecap Studio
+Copyright (c) 2026 Levi Clementino
+
+O AniRecap Studio e uma copia modificada do Dangai e junta trabalho de outros
+projetos. Os creditos e as licencas de cada parte estao abaixo.
+
+
+Dangai
+------
+De faahpla (Kintay). https://github.com/faahpla/dangai
+Base deste app: copia do Dangai v1.65.0, commit 7ceaedd (commit-base local
+d9aa005). Editor, timeline, legendas, alinhamento, biblioteca e render vem de
+la. Usado com a permissao do autor. O repositorio do Dangai nao traz arquivo
+de licenca.
+
+AnCut HUB e ancut-hub-engine
+----------------------------
+De faahpla. https://github.com/faahpla/ancut-hub
+O Studio le o formato de biblioteca de episodios do AnCut
+(<serie>/SxxEyy/shots|keyframes|metadata/shots.json), sempre so leitura.
+Os repositorios nao trazem arquivo de licenca.
+
+AniRecap
+--------
+De Levi Clementino. https://github.com/leviclementino1-creator/anirecap
+Fluxo de geracao (episodio -> roteiro -> voz -> cenas) e o icone do app.
+
+Corte Cenas
+-----------
+De Levi Clementino. App de corte de episodios em cenas; o Studio le a
+biblioteca dele, sempre so leitura.
+
+
+Componentes de terceiros embarcados
+-----------------------------------
+
+Real-ESRGAN (realesr-animevideov3)
+  Copyright (c) 2021, Xintao Wang. Licenca BSD 3-Clause.
+  Modelo e licenca em assets/upscale (LICENSE-Real-ESRGAN.txt).
+
+lbpcascade_animeface
+  Copyright (C) 2011 by nagadomi. Licenca MIT, no cabecalho do arquivo
+  assets/vision/anime-face.xml.
+
+Komika Axis (fonte das legendas)
+  (c) 1999-2001 WolfBainX & Apostrophic Labs. Em assets/fonts/KomikaAxis.ttf.
+  Veio do Dangai sem arquivo de licenca: conferir os termos antes de
+  distribuir o app para outras pessoas.
+
+Remotion
+  https://www.remotion.dev. Licenca propria da Remotion: gratuita para
+  pessoa fisica e empresa pequena; empresas maiores precisam de licenca
+  paga. Ver https://www.remotion.dev/license.
+
+As demais dependencias do npm seguem as licencas de cada pacote, listadas em
+node_modules/<pacote>/LICENSE.

@@ -113,7 +113,7 @@ async function exportarCurva(nome: string, curva: CurvaDaEntrada): Promise<void>
     titulo: 'Exportar curva da entrada',
     nome,
     extensao: 'dangai-curva',
-    descricao: 'Curva da entrada do Dangai',
+    descricao: 'Curva da entrada do Studio',
     conteudo,
   })
 }
@@ -122,7 +122,7 @@ async function importarCurva(): Promise<string | null> {
   const r = await window.dangai.importarTexto({
     titulo: 'Importar curva da entrada',
     extensoes: ['dangai-curva'],
-    descricao: 'Curva da entrada do Dangai',
+    descricao: 'Curva da entrada do Studio',
   })
   if (!r.ok) return r.error
   if (!r.value) return null
@@ -130,11 +130,11 @@ async function importarCurva(): Promise<string | null> {
   try {
     dados = JSON.parse(r.value.conteudo)
   } catch {
-    return 'Esse arquivo nao e uma curva do Dangai.'
+    return 'Esse arquivo nao e uma curva do Studio.'
   }
   const bruto = dados as { tipo?: unknown; nome?: unknown; curva?: unknown }
   const curva = curvaDaEntradaSchema.safeParse(bruto?.curva)
-  if (bruto?.tipo !== TIPO_DO_ARQUIVO || !curva.success) return 'Esse arquivo nao e uma curva do Dangai.'
+  if (bruto?.tipo !== TIPO_DO_ARQUIVO || !curva.success) return 'Esse arquivo nao e uma curva do Studio.'
   const base = (typeof bruto.nome === 'string' && bruto.nome.trim() ? bruto.nome.trim() : r.value.nome).slice(0, 26)
   const usados = new Set(useProject.getState().curvasDeEntrada.map((c) => c.nome))
   let nome = base

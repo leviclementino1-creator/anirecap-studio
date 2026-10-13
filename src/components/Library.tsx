@@ -1127,7 +1127,7 @@ function SemBiblioteca({ mensagem }: { mensagem: string }) {
           Escolher a pasta da biblioteca
         </button>
         <p className="mt-3 text-[11px] leading-relaxed text-ink-3">
-          E a pasta onde o AnCut grava, a que contem uma pasta por anime. O Dangai so le: ele
+          E a pasta onde o AnCut grava, a que contem uma pasta por anime. O Studio so le: ele
           nunca renomeia, move nem apaga nada la dentro.
         </p>
       </div>
@@ -2345,7 +2345,8 @@ function pad(n: number): string {
 /**
  * A barra de MESCLAR, embaixo da grade, enquanto ha cenas marcadas com
  * Ctrl+clique. Diz na hora se da para mesclar (mesmo episodio, cenas seguidas)
- * e pede uma confirmacao antes -- os pedacos saem da pasta shots.
+ * e pede uma confirmacao antes -- os pedacos saem da grade (os arquivos do
+ * AnCut ficam onde estao; o clipe novo mora na pasta do Studio).
  */
 function BarraDeMescla({
   ids,
@@ -2403,7 +2404,7 @@ function BarraDeMescla({
           {(problema || recado) && <span className="block text-[11px] text-ink-3">{problema ?? recado}</span>}
           {confirmando && !problema && (
             <span className="block text-[11px] text-ink-3">
-              Viram um clipe so; os pedacos vao para a _lixeira do episodio e o AnCut e atualizado junto.
+              Viram um clipe so, guardado no Studio; os arquivos do AnCut nao mudam.
             </span>
           )}
         </span>

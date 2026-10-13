@@ -10,6 +10,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   autosaveSchema,
+  ehProjetoDoDangai,
   projectFileSchema,
   PROJECT_FILE_VERSION,
   type FileReference,
@@ -18,7 +19,7 @@ import {
 } from '@shared/project-file'
 
 /**
- * Ler e gravar o .dangai.
+ * Ler e gravar o .anirecap (e ler o .dangai, que e o mesmo formato).
  *
  * Duas garantias que valem mais que qualquer recurso daqui:
  *
@@ -90,6 +91,15 @@ function perdeuTrabalho(velho: ProjectFile, novo: ProjectFile): boolean {
 // ------------------------------------------------------------------- gravar
 
 export function saveProjectFile(path: string, file: ProjectFile): void {
+  // O .dangai e do Dangai: o Studio abre, mas nunca grava por cima. O store ja
+  // manda o primeiro save de um .dangai para o dialogo; isto segura o caso de
+  // alguem digitar ".dangai" no nome ali.
+  if (ehProjetoDoDangai(path)) {
+    throw new Error(
+      'O AniRecap Studio nao grava por cima de projeto do Dangai. Salve como .anirecap.',
+    )
+  }
+
   const base = dirname(path)
 
   // O `rel` e recalculado aqui e nao no renderer: so aqui se sabe para onde o
@@ -252,7 +262,7 @@ function parse(raw: string, nome: string): ProjectFile {
   try {
     json = JSON.parse(raw)
   } catch {
-    throw new Error(`"${nome}" nao e um projeto do Dangai valido.`)
+    throw new Error(`"${nome}" nao e um projeto valido (.anirecap ou .dangai).`)
   }
 
   /*
@@ -266,8 +276,13 @@ function parse(raw: string, nome: string): ProjectFile {
    */
   const versao = (json as { version?: unknown } | null)?.version
   if (typeof versao === 'number' && versao > PROJECT_FILE_VERSION) {
+    // Um .dangai do futuro nao se resolve atualizando o Studio: o formato novo
+    // e do Dangai, e so ele abre ate o Studio aprender. Dizer "atualize" ai
+    // mandaria o usuario esperar uma versao que nao muda nada.
     throw new Error(
-      `"${nome}" foi salvo por uma versao mais nova do Dangai. Atualize o app e abra de novo.`,
+      ehProjetoDoDangai(nome)
+        ? `"${nome}" foi salvo por uma versao mais nova do Dangai, num formato que o AniRecap Studio ainda nao abre. Abra no Dangai.`
+        : `"${nome}" foi salvo por uma versao mais nova do AniRecap Studio. Atualize o app e abra de novo.`,
     )
   }
 

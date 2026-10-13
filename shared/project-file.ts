@@ -31,7 +31,7 @@ import {
 } from './contract'
 
 /**
- * O arquivo .dangai -- o projeto salvo.
+ * O arquivo .anirecap (o .dangai do Dangai, com outro nome) -- o projeto salvo.
  *
  * Guarda DECISAO, nunca pixel. Miniatura, recorte 9:16 e URL do servidor de
  * midia ficam de fora de proposito: sao derivados dos arquivos originais e se
@@ -45,7 +45,30 @@ import {
  */
 
 export const PROJECT_FILE_VERSION = 1
-export const PROJECT_EXTENSION = 'dangai'
+
+/**
+ * O Studio grava .anirecap e abre tambem o .dangai.
+ *
+ * So o nome muda: o conteudo e o mesmo formato do Dangai (versao 1), entao um
+ * projeto feito la abre aqui sem conversao. Gravar sempre na extensao propria
+ * e o que impede o Studio de sobrescrever um projeto que o Dangai ainda usa.
+ */
+export const PROJECT_EXTENSION = 'anirecap'
+export const PROJECT_EXTENSION_DANGAI = 'dangai'
+/** Tudo que abre como projeto: dialogo de abrir, filtro e arquivo solto na janela. */
+export const PROJECT_EXTENSIONS_ABRIR = [PROJECT_EXTENSION, PROJECT_EXTENSION_DANGAI] as const
+
+const EXTENSAO_DE_PROJETO = /\.(anirecap|dangai)$/i
+
+/** O caminho (ou nome) sem a extensao de projeto, qualquer uma das duas. */
+export function semExtensaoDeProjeto(caminho: string): string {
+  return caminho.replace(EXTENSAO_DE_PROJETO, '')
+}
+
+/** Projeto salvo pelo Dangai: abre normal, mas salvar nunca grava por cima dele. */
+export function ehProjetoDoDangai(caminho: string): boolean {
+  return /\.dangai$/i.test(caminho)
+}
 
 /**
  * Um arquivo do disco referenciado pelo projeto.

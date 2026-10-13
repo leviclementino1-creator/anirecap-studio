@@ -14,11 +14,14 @@ import type { z } from 'zod'
 
 export type TipoDePreset = 'legenda' | 'cor' | 'movimento' | 'transicao'
 
+// Extensao e marca seguem "dangai" de proposito: o preset troca de maos entre o
+// Studio e o Dangai nos dois sentidos. So a descricao do dialogo leva o nome.
+
 const INFO: Record<TipoDePreset, { extensao: string; descricao: string; nome: string }> = {
-  legenda: { extensao: 'dangai-legenda', descricao: 'Estilo de legenda do Dangai', nome: 'estilo de legenda' },
-  cor: { extensao: 'dangai-cor', descricao: 'Preset de cor do Dangai', nome: 'preset de cor' },
-  movimento: { extensao: 'dangai-movimento', descricao: 'Curva de movimento do Dangai', nome: 'curva de movimento' },
-  transicao: { extensao: 'dangai-transicao', descricao: 'Transicao do Dangai', nome: 'transicao' },
+  legenda: { extensao: 'dangai-legenda', descricao: 'Estilo de legenda do Studio', nome: 'estilo de legenda' },
+  cor: { extensao: 'dangai-cor', descricao: 'Preset de cor do Studio', nome: 'preset de cor' },
+  movimento: { extensao: 'dangai-movimento', descricao: 'Curva de movimento do Studio', nome: 'curva de movimento' },
+  transicao: { extensao: 'dangai-transicao', descricao: 'Transicao do Studio', nome: 'transicao' },
 }
 
 const marca = (tipo: TipoDePreset): string => `dangai.${tipo}`
@@ -52,7 +55,7 @@ export async function importarPreset<T>(
   })
   if (!r.ok) return { erro: r.error }
   if (!r.value) return null
-  const errado = { erro: `Esse arquivo nao e um ${info.nome} do Dangai.` }
+  const errado = { erro: `Esse arquivo nao e um ${info.nome} do Studio.` }
   let bruto: unknown
   try {
     bruto = JSON.parse(r.value.conteudo)

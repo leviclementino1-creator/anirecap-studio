@@ -5,8 +5,8 @@ release/
 
 *.tsbuildinfo
 
-# Nunca versionar chave de API. A chave do Anthropic vive no electron-store,
-# fora do repositorio.
+# Nunca versionar chave de API. As chaves (Gemini e Anthropic) vivem cifradas
+# no settings.json do userData, fora do repositorio.
 .env
 .env.*
 

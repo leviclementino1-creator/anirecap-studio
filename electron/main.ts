@@ -101,6 +101,12 @@ app.whenReady().then(async () => {
   // Antes da janela: os servicos publicam URLs assim que um arquivo entra.
   await startMediaServer()
 
+  /*
+   * A pasta vem do productName do package.json: %APPDATA%/AniRecap Studio. E
+   * isso que separa chaves, autosave e caches deste app dos do Dangai, que pode
+   * estar instalado na mesma maquina. Trocar o productName muda a pasta e faz
+   * o app abrir "zerado".
+   */
   const userData = app.getPath('userData')
 
   /*

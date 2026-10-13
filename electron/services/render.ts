@@ -357,7 +357,7 @@ async function resolveBrowser(onProgress: ProgressSink): Promise<string | null> 
     const installed = findInstalledBrowser()
     if (!installed) {
       throw new Error(
-        'Nenhum navegador disponivel para o render. Conecte a internet uma vez para o Dangai baixar o navegador, ou instale o Google Chrome.',
+        'Nenhum navegador disponivel para o render. Conecte a internet uma vez para o Studio baixar o navegador, ou instale o Google Chrome.',
       )
     }
     return installed

@@ -23,6 +23,7 @@ import {
   type SceneDescription,
   type SettingsPatch,
   type StartRenderArgs,
+  type TesteDoGemini,
   type TiraDaCena,
   type LegendasSincronizadas,
   type ArquivoDaBin,
@@ -38,6 +39,7 @@ import type {
 } from '@shared/contract'
 import {
   PROJECT_EXTENSION,
+  PROJECT_EXTENSIONS_ABRIR,
   type OpenedProject,
   type ProjectFile,
 } from '@shared/project-file'
@@ -71,6 +73,7 @@ import { cancelRender, RenderCancelled, renderVideo } from './services/render'
 import { encerrarWhisper } from './services/whisper'
 import { analyze } from './services/transcribe'
 import { generateMetadata } from './services/metadata'
+import { iaDisponivel, testarGemini } from './services/llm'
 import { getSettings, getSettingsForRenderer, saveSettings } from './services/settings'
 import { ensureSfxDir, listSfx, sfxDir } from './services/sfx'
 import { caminhoDaFonte, ensureFontesDir, fontesDir, listFontes } from './services/fontes'
@@ -492,7 +495,7 @@ export function registerIpc(): void {
       properties: ['openFile', 'multiSelections'],
       filters: [
         {
-          name: 'Tudo que o Dangai abre',
+          name: 'Tudo que o Studio abre',
           extensions: [
             ...AUDIO_EXTENSIONS,
             ...IMAGE_EXTENSIONS,
@@ -501,11 +504,11 @@ export function registerIpc(): void {
             'srt',
             'txt',
             'md',
-            PROJECT_EXTENSION,
+            ...PROJECT_EXTENSIONS_ABRIR,
           ],
         },
         // Varios projetos de uma vez entram na fila de render.
-        { name: 'Projetos do Dangai', extensions: [PROJECT_EXTENSION] },
+        { name: 'Projetos (.anirecap, .dangai)', extensions: [...PROJECT_EXTENSIONS_ABRIR] },
         { name: 'Roteiro', extensions: ['txt', 'md'] },
         { name: 'Audio', extensions: [...AUDIO_EXTENSIONS] },
         { name: 'Imagens', extensions: [...IMAGE_EXTENSIONS] },
@@ -657,7 +660,7 @@ export function registerIpc(): void {
         const result = await dialog.showSaveDialog({
           title: 'Salvar projeto',
           defaultPath: `${suggestedName}.${PROJECT_EXTENSION}`,
-          filters: [{ name: 'Projeto do Dangai', extensions: [PROJECT_EXTENSION] }],
+          filters: [{ name: 'Projeto do AniRecap Studio', extensions: [PROJECT_EXTENSION] }],
         })
         if (result.canceled || !result.filePath) return null
         alvo = result.filePath
@@ -678,7 +681,7 @@ export function registerIpc(): void {
       const result = await dialog.showOpenDialog({
         title: 'Abrir projeto',
         properties: ['openFile'],
-        filters: [{ name: 'Projeto do Dangai', extensions: [PROJECT_EXTENSION] }],
+        filters: [{ name: 'Projeto (.anirecap, .dangai)', extensions: [...PROJECT_EXTENSIONS_ABRIR] }],
       })
       if (result.canceled || result.filePaths.length === 0) return null
       alvo = result.filePaths[0]!
@@ -703,13 +706,23 @@ export function registerIpc(): void {
   })
 
   handle<[string], Metadata>(IPC.generateMetadata, async (texto) => {
-    const { anthropicApiKey } = getSettings()
-    if (!anthropicApiKey) {
+    if (!iaDisponivel()) {
       throw new Error(
-        'Sem chave da Anthropic. Abra as configuracoes (Ctrl+,) e cole a sua para gerar os textos.',
+        'Sem chave de IA. Abra as configuracoes (Ctrl+,) e cole a do Gemini (gratis) ou a da Anthropic para gerar os textos.',
       )
     }
-    return generateMetadata({ apiKey: anthropicApiKey, texto })
+    return generateMetadata({ texto })
+  })
+
+  // A chave digitada ainda nao salva vem do renderer; a salva fica aqui e nunca
+  // faz o caminho de volta.
+  handle<[string | null], TesteDoGemini>(IPC.testarGemini, async (chave) => {
+    const settings = getSettings()
+    const usada = (typeof chave === 'string' ? chave.trim() : '') || settings.geminiApiKey
+    if (!usada) {
+      throw new Error('Cole a chave do Gemini antes de testar. Ela sai de graca em aistudio.google.com/apikey.')
+    }
+    return testarGemini(usada, settings.geminiModelo)
   })
 
   handle<[string], null>(IPC.copyText, async (text) => {

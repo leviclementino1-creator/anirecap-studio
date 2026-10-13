@@ -97,6 +97,12 @@ interface EstadoDoGerar {
   /** Todas as rodadas do motor neste episodio (as que falharam tambem). Zera ao trocar de arquivo. */
   tempoDoMotor: { segundos: number; rodadas: number }
   /**
+   * De onde vieram as fotos do elenco na ultima analise deste episodio, quando
+   * nao foi a busca online ('Corte Cenas', da reserva do elenco). A tela diz
+   * "Fotos: Corte Cenas" no resumo. null = busca online, ou nao se sabe.
+   */
+  fotosDoElenco: string | null
+  /**
    * O motor (este) cortou o episodio e parou no reconhecimento (sem fotos do
    * elenco): as cenas estao no disco, mas sem shots.json a busca nao as ve. A
    * tela nao pode dizer "nao esta na biblioteca". null = nao aconteceu.
@@ -110,8 +116,22 @@ interface EstadoDoGerar {
   erro: string | null
   /** Recado neutro, sem vermelho ("Analise cancelada."). */
   recado: string | null
+  /**
+   * O "Trocar pasta" pediu as Configuracoes ja na Biblioteca do Studio, que
+   * fica no fim delas. AjustesDoStudio rola ate la e apaga o pedido.
+   */
+  ajustesPedidos: boolean
 
   abrir: (path?: string) => void
+  /** Abre as Configuracoes na aba Geral, roladas ate a Biblioteca do Studio. */
+  abrirAjustesDoStudio: () => void
+  ajustesVistos: () => void
+  /**
+   * A porta do assistente (botao da tela inicial, paleta): com um episodio ja
+   * nele, reabre onde parou; sem, vai direto ao dialogo de escolher o .mkv --
+   * um clique a menos que abrir o assistente vazio.
+   */
+  abrirOuEscolher: () => Promise<void>
   fechar: () => void
   /** Dialogo nativo. true = escolheu um arquivo (e o assistente abriu). */
   escolherArquivo: () => Promise<boolean>
@@ -177,6 +197,12 @@ function emOrdem(lista: readonly Exclusao[]): Exclusao[] {
   return [...lista].sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
+/** '<biblioteca>/Dr STONE/S04E24' -> 'Dr STONE': a pasta do anime, a de cima da do episodio. */
+function pastaDaSerie(pastaDoEpisodio: string): string | null {
+  const partes = pastaDoEpisodio.split(/[\\/]+/).filter(Boolean)
+  return partes.length >= 2 ? (partes[partes.length - 2] ?? null) : null
+}
+
 /*
  * EVENTOS SEM DONO. O main devolve o jobId antes de qualquer evento do job
  * (sobe o processo em setImmediate), mas a ordem entre a resposta do invoke e
@@ -220,6 +246,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     indice: null,
     ultimaAnalise: null,
     tempoDoMotor: { segundos: 0, rodadas: 0 },
+    fotosDoElenco: null,
     corteSemIndice: null,
     exclusoes: [],
     exclusoesMudaram: false,
@@ -256,7 +283,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
 
   const indexar = async (args: IndexarEpisodioArgs): Promise<void> => {
     const minhaGeracao = geracao
-    set({ fase: 'indexando', indexando: 'Lendo a legenda e montando o indice...', erro: null, recado: null })
+    set({ fase: 'indexando', indexando: 'Lendo a legenda...', erro: null, recado: null })
     const r = await window.dangai.indexarEpisodio(args)
     if (minhaGeracao !== geracao) return
     if (!r.ok) {
@@ -335,6 +362,9 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         corteSemIndice: null,
         tempoDoMotor,
         ultimaAnalise: { motor: f.motor, ...tempoDoMotor },
+        // So muda quando a analise reconheceu: um "cortar sem personagens"
+        // depois nao apaga de onde vieram as fotos de antes.
+        ...(f.fotosDoElenco ? { fotosDoElenco: f.fotosDoElenco } : {}),
       })
       if (!arquivo || !palpite) return
       void indexar({
@@ -372,13 +402,18 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         corteSemIndice: f.precisaDescoberta === 'sem-referencias' ? job.motor : get().corteSemIndice,
       })
     } else if (f.precisaDescoberta) {
-      // As cenas ja estao cortadas: "cortar sem personagens" nao teria o que fazer.
+      /*
+       * As cenas ja estao cortadas: "cortar sem personagens" nao teria o que
+       * fazer. O nome do anime fica editavel ao lado do "Reconhecer agora"
+       * (ResumoDoEpisodio), entao o recado diz o que fazer -- antes o campo
+       * ficava travado e era um beco sem saida.
+       */
       set({
         ...fimDaFila,
         erro:
           f.precisaDescoberta === 'anime-nao-encontrado'
-            ? 'O motor nao achou este anime no AniList nem no MyAnimeList. As cenas continuam como estavam, sem personagens.'
-            : 'O motor achou o anime, mas nao conseguiu fotos dos personagens. As cenas continuam como estavam, sem personagens.',
+            ? `Nao achei "${palpite?.anime.trim() ?? ''}" no AniList/MAL. Corrija o nome (em romaji) e tente de novo.`
+            : 'Sem fotos do elenco desse anime, nem no Corte Cenas. Tente de novo mais tarde.',
       })
     } else {
       set({ ...fimDaFila, erro: f.erro || 'A analise parou sem dizer por que.' })
@@ -396,10 +431,26 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     conferindoMotor: false,
     reconhecer: true,
     job: null,
+    ajustesPedidos: false,
 
     abrir: (path) => {
       set({ aberto: true })
       if (path && path !== get().arquivo) void get().carregarArquivo(path)
+    },
+
+    abrirAjustesDoStudio: () => {
+      set({ ajustesPedidos: true })
+      useProject.getState().openSettings(true)
+    },
+    ajustesVistos: () => set({ ajustesPedidos: false }),
+
+    abrirOuEscolher: async () => {
+      const { arquivo, job } = get()
+      if (arquivo !== null || job !== null) {
+        get().abrir()
+        return
+      }
+      await get().escolherArquivo()
     },
 
     fechar: () => set({ aberto: false }),
@@ -421,7 +472,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         return
       }
       if (get().exclusoesMudaram) {
-        set({ erro: 'Salve ou descarte as marcacoes da regua antes de trocar de episodio.' })
+        set({ erro: 'Salve ou desfaca as marcacoes de OP/ED antes de trocar de episodio.' })
         return
       }
       if (!ehEpisodio(path)) {
@@ -482,7 +533,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         episodio: achado.episodio,
         kind: achado.kind,
       }
-      set({ palpite, descoberta: null })
+      // As fotos do elenco de um corte do Studio (reserva) aparecem no resumo tambem.
+      set({ palpite, descoberta: null, fotosDoElenco: achado.fotosDoElenco ?? null })
       await indexar({
         path: arquivo,
         pastaDoEpisodio: achado.pasta,
@@ -497,10 +549,18 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       if (!arquivo || !palpite || job) return
       const anime = palpite.anime.trim()
       if (!anime) {
-        set({ erro: 'Diga o nome do anime antes de analisar: e ele que da nome a pasta.' })
+        set({ erro: 'Falta o nome do anime.' })
         return
       }
       const comPersonagens = reconhecer ?? get().reconhecer
+      /*
+       * "Reconhecer agora" sobre cenas que o Studio ja cortou: a pasta do anime
+       * vai junto e fica onde esta. O nome digitado passa a servir so para
+       * achar o elenco -- corrigi-lo nao corta o episodio de novo noutra pasta.
+       */
+      const indice = get().indice
+      const pastaDoAnime =
+        motor === 'studio' && indice?.biblioteca.origem === 'studio' ? pastaDaSerie(indice.biblioteca.pasta) : null
       eventosSemDono = []
       set({
         fase: 'analisando',
@@ -523,6 +583,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         kind: palpite.kind,
         motor,
         reconhecer: comPersonagens,
+        ...(pastaDoAnime ? { pastaDoAnime } : {}),
       })
       if (!r.ok) {
         eventosSemDono = []
@@ -568,7 +629,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       const { arquivo, palpite, indice, faixaLegenda } = get()
       if (!arquivo || !palpite || !indice) return
       if (get().exclusoesMudaram) {
-        set({ erro: 'Salve ou descarte as marcacoes da regua antes de ler a legenda de novo.' })
+        set({ erro: 'Salve ou desfaca as marcacoes de OP/ED antes de ler a legenda de novo.' })
         return
       }
       await indexar({
@@ -666,8 +727,22 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     verNaBiblioteca: async () => {
       // Episodio recem-cortado: espera a releitura, ou o "ir ate o clipe" nao o acharia.
       if (sincronizando) await sincronizando
-      const projeto = useProject.getState()
       const primeiro = get().indice?.planos[0]?.arquivo
+      /*
+       * A Biblioteca do editor so le a pasta dela e a do Studio. Um episodio
+       * de fora (o Corte Cenas, sem a Biblioteca do AnCut apontada para la)
+       * nao esta nela, e abrir assim caia em silencio no episodio do filtro
+       * anterior. A tela ja esconde o botao nesse caso; isto e a rede -- e
+       * ela le a Biblioteca antes de decidir, se ainda nao foi lida na sessao
+       * (sem isso a rede pulava e abria no "Todos").
+       */
+      if (primeiro && useProject.getState().library === null) await useProject.getState().syncLibrary()
+      const projeto = useProject.getState()
+      const lida = projeto.library
+      if (primeiro && lida && !lida.clips.some((c) => c.path === primeiro)) {
+        set({ recado: 'Esse episodio nao esta na Biblioteca do editor. Use Abrir pasta.' })
+        return
+      }
       // A Biblioteca abre POR CIMA do assistente; fechar ela volta para ca.
       if (primeiro) await projeto.mostrarNaBiblioteca(primeiro)
       else await projeto.openLibrary(true)

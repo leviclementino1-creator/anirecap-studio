@@ -8,7 +8,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useProject } from "@/store/project";
 import { classifyFile } from "@shared/channels";
 import { useRecentes } from "@/store/recentes";
@@ -26,6 +26,10 @@ interface DropzoneProps {
 export function Dropzone({ isDragging }: DropzoneProps) {
   const ingest = useProject((s) => s.ingest);
   const busy = useProject((s) => s.busy);
+  // Com o arquivo em cima do Gerar recap, o alvo e ele: a area de soltar fica
+  // neutra, ou seriam dois alvos acesos ao mesmo tempo.
+  const [sobreOGerar, setSobreOGerar] = useState(false);
+  const aceso = isDragging && !sobreOGerar;
 
   const pick = async () => {
     const result = await window.dangai.pickFiles();
@@ -35,6 +39,40 @@ export function Dropzone({ isDragging }: DropzoneProps) {
   return (
     <div className="flex h-full w-full flex-col gap-4">
       <div className="relative min-h-0 w-full flex-1">
+        {/*
+          A LINHA DE CIMA, numa linha so: Gerar recap (a funcao principal) na
+          esquerda, o formato no meio e os atalhos na direita. Eram tres
+          blocos soltos por cima da area de soltar, e o da direita cobria o
+          "Long form" ja em 1280 px (em 1024 o clique caia no "Legendar video
+          pronto"). Vem antes da area no DOM para o Tab comecar por ela; o z-10
+          a mantem por cima.
+
+          Com espaco, grade 1fr|auto|1fr: o formato fica no centro da TELA,
+          em cima do titulo, como no Dangai (no flex-1 ele centrava no vao
+          entre os dois lados, ~180 px a esquerda do titulo em 1920). Sem
+          espaco para os dois lados iguais (linha < 1312 px: a direita tem
+          ~480 px, o formato ~304, e 16 px de folga de cada lado), volta o
+          flex: o formato no meio do vao, longe dos dois -- na grade ele
+          grudaria nos atalhos da direita e pareceria um deles. O container e
+          a caixa de fora porque container query so vale para os filhos. O
+          @container/topo tambem tira as medidas dos chips quando nem o flex
+          tem espaco.
+        */}
+        <div className="@container/topo pointer-events-none absolute inset-x-6 top-6 z-10">
+          <div className="flex items-center gap-2 whitespace-nowrap @min-[1312px]/topo:grid @min-[1312px]/topo:grid-cols-[1fr_auto_1fr]">
+            <div className="pointer-events-auto flex shrink-0 justify-self-start">
+              <BotaoGerarRecap arrastando={isDragging} aoAcender={setSobreOGerar} />
+            </div>
+            <div className="flex min-w-0 flex-1 justify-center">
+              <EscolhaDeFormato />
+            </div>
+            <div className="pointer-events-auto flex shrink-0 items-center gap-2 justify-self-end">
+              <LegendarVideoPronto />
+              <MelhorarVideoPronto />
+              <AbrirBiblioteca />
+            </div>
+          </div>
+        </div>
         <button
           type="button"
           onClick={pick}
@@ -42,20 +80,20 @@ export function Dropzone({ isDragging }: DropzoneProps) {
           className={[
             "group relative flex h-full w-full flex-col items-center justify-center gap-5 rounded-lg",
             "border border-dashed transition-colors duration-200 ease-dangai",
-            isDragging
+            aceso
               ? "border-accent bg-accent-dim"
               : "border-line hover:border-line-strong",
           ].join(" ")}
         >
           <motion.div
-            animate={{ scale: isDragging ? 1.04 : 1 }}
+            animate={{ scale: aceso ? 1.04 : 1 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className="flex flex-col items-center gap-5"
           >
             <span
               className={[
                 "text-[32px] font-semibold tracking-tight transition-colors duration-200",
-                isDragging ? "text-accent" : "text-ink",
+                aceso ? "text-accent" : "text-ink",
               ].join(" ")}
             >
               {busy ?? "Soltar audio e imagens aqui"}
@@ -69,17 +107,6 @@ export function Dropzone({ isDragging }: DropzoneProps) {
           </motion.div>
         </button>
 
-        <EscolhaDeFormato />
-        {/* No canto esquerdo: no grupo da direita ele empurrava os botoes por
-            cima do "Short / Long form" ja na largura padrao da janela. */}
-        <div className="absolute left-6 top-6">
-          <BotaoGerarRecap />
-        </div>
-        <div className="absolute right-6 top-6 flex items-center gap-2">
-          <LegendarVideoPronto />
-          <MelhorarVideoPronto />
-          <AbrirBiblioteca />
-        </div>
         <Recuperar />
       </div>
       <Recentes />
@@ -216,7 +243,7 @@ function EscolhaDeFormato() {
   };
 
   return (
-    <div className="pointer-events-none absolute left-1/2 top-4 flex -translate-x-1/2 gap-1.5">
+    <div className="pointer-events-auto flex gap-1.5">
       {FORMATOS.map((f) => {
         const medidas = medidasDo(f);
         const ativo = formato === f;
@@ -228,7 +255,7 @@ function EscolhaDeFormato() {
             onClick={() => void definirFormato(f)}
             title={rotulo[f].dica}
             className={[
-              "pointer-events-auto flex items-center gap-1.5 rounded-sm border px-2.5 py-1.5 text-[11px] transition-colors",
+              "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border px-2.5 py-1.5 text-[11px] transition-colors",
               ativo
                 ? "border-accent bg-accent-dim text-ink"
                 : "border-line bg-elevated text-ink-3 hover:text-ink-2",
@@ -236,7 +263,7 @@ function EscolhaDeFormato() {
           >
             <Icone size={12} strokeWidth={1.5} />
             {rotulo[f].nome}
-            <span className="tnum text-ink-3">
+            <span className="tnum text-ink-3 @max-[920px]/topo:hidden">
               {medidas.width}x{medidas.height}
             </span>
           </button>

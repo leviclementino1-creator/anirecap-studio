@@ -1,137 +1,166 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, CircleCheck, FolderOpen, Plus, Scissors, Subtitles, Trash2, TriangleAlert, Undo2, Users } from 'lucide-react'
+import { Check, Plus, Save, Subtitles, Trash2, Undo2, Users } from 'lucide-react'
 import {
   ROTULO_DA_ORIGEM,
   ROTULO_DO_MOTIVO,
   resumirIndice,
-  slugDoEpisodio,
   type Exclusao,
-  type ResumoDoIndice,
   type MotivoDaExclusao,
+  type ResumoDoIndice,
 } from '@shared/episodio'
-import { useGerar } from '@/store/gerar'
-import { rotuloDaFaixa } from './CartaoDoEpisodio'
+import { nomeNatural } from '@shared/nomes'
+import { TRECHO_MINIMO, useGerar } from '@/store/gerar'
+import { SeletorDeLegenda } from './CartaoDoEpisodio'
 import { LISTRADO, ReguaDoEpisodio } from './ReguaDoEpisodio'
-import { Botao, CampoDeTempo, CLASSE_DO_CAMPO, Contagem, duracaoCurta, formatarTempo, listaCurta, Secao } from './pecas'
+import {
+  AbrirPasta,
+  Aviso,
+  Botao,
+  CAMPO_NORMAL,
+  CAMPO_PEQUENO,
+  CampoDeTempo,
+  CLASSE_DO_CAMPO,
+  Contagem,
+  duracaoCurta,
+  formatarTempo,
+  listaCurta,
+  Secao,
+  Subtitulo,
+} from './pecas'
 
 /** Quantos personagens cabem em chips antes do "+N". */
 const PERSONAGENS_VISIVEIS = 24
+
+/**
+ * Os avisos do indice que falam da legenda ("Legenda .srt nao diz quem fala").
+ * O resumo ja diz isso no cartao de Falas: repetido aqui, o mesmo fato
+ * aparecia tres vezes na tela.
+ */
+function avisoDaLegenda(aviso: string): boolean {
+  return /^(Legenda |Sem legenda|A legenda )/.test(aviso)
+}
 
 /**
  * (e) O EPISODIO PRONTO: o que o indice sabe (cenas, falas, quem fala, quem
  * aparece) e a regua de OP/ED para confirmar.
  *
  * O resumo vem de resumirIndice (shared), o mesmo que qualquer outra tela vai
- * usar -- o numero que aparece aqui e o numero que o roteiro vai enxergar.
+ * usar -- o numero que aparece aqui e o numero que o roteiro vai enxergar. So
+ * os NOMES mudam na tela: no formato natural ("Senku Ishigami", e nao o
+ * "Ishigami, Senkuu" do MyAnimeList), com a grafia da legenda (nomeNatural).
  */
 export function ResumoDoEpisodio() {
   const fase = useGerar((s) => s.fase)
   const indice = useGerar((s) => s.indice)
   const ultimaAnalise = useGerar((s) => s.ultimaAnalise)
+  const fotosDoElenco = useGerar((s) => s.fotosDoElenco)
 
   const resumo = useMemo(() => (indice ? resumirIndice(indice) : null), [indice])
+  const personagens = useMemo(() => {
+    if (!resumo) return []
+    const falantes = resumo.falantes.map((f) => f.nome)
+    // Duas grafias que viram o mesmo nome natural contam como uma: fica a maior contagem.
+    const porNome = new Map<string, number>()
+    for (const p of resumo.personagens) {
+      const nome = nomeNatural(p.nome, falantes)
+      porNome.set(nome, Math.max(porNome.get(nome) ?? 0, p.cenas))
+    }
+    return [...porNome.entries()].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n)
+  }, [resumo])
 
   if (fase !== 'pronto' || !indice || !resumo) return null
 
-  const faixa = indice.faixaLegenda
-  const personagensSobram = resumo.personagens.length - PERSONAGENS_VISIVEIS
+  const avisos = indice.avisos.filter((a) => !avisoDaLegenda(a))
+  const personagensSobram = personagens.length - PERSONAGENS_VISIVEIS
+  const podeReconhecer = indice.reconhecimento === 'pulado' && indice.biblioteca.origem === 'studio'
 
   return (
     <>
       <Secao
         titulo="Episodio pronto"
-        icone={<CircleCheck size={13} strokeWidth={1.5} className="text-accent" />}
         acao={
-          <Botao
-            pequeno
-            onClick={() => void window.dangai.revealFile(indice.biblioteca.pasta)}
-            title={indice.biblioteca.pasta}
-          >
-            <FolderOpen size={12} strokeWidth={1.5} />
-            Abrir a pasta das cenas
-          </Botao>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-ink-3">
+              <span title="De onde vem as cenas">{ROTULO_DA_ORIGEM[indice.biblioteca.origem]}</span>
+              {ultimaAnalise && (
+                <span
+                  className="tnum"
+                  title={
+                    ultimaAnalise.rodadas > 1
+                      ? `Tempo do motor neste episodio, somando ${ultimaAnalise.rodadas} rodadas`
+                      : 'Tempo do motor neste episodio'
+                  }
+                >
+                  {' '}
+                  · {duracaoCurta(ultimaAnalise.segundos)}
+                </span>
+              )}
+            </span>
+            <AbrirPasta
+              caminho={indice.biblioteca.pasta}
+              title={
+                indice.biblioteca.origem === 'studio'
+                  ? 'Mostrar as cenas no Explorer'
+                  : 'Mostrar as cenas no Explorer (so leitura: o Studio nao mexe nela)'
+              }
+            />
+          </div>
         }
       >
-        <p className="text-[13px] leading-relaxed text-ink">
-          {indice.anime} · {slugDoEpisodio(indice.temporada, indice.episodio, indice.kind)} · cenas na biblioteca do{' '}
-          {ROTULO_DA_ORIGEM[indice.biblioteca.origem]}
-          {ultimaAnalise && (
-            <span className="text-ink-3">
-              {' '}
-              · analise feita em {duracaoCurta(ultimaAnalise.segundos)}
-              {ultimaAnalise.rodadas > 1 ? ` (somando ${ultimaAnalise.rodadas} rodadas do motor)` : ''}
-            </span>
-          )}
-        </p>
-
         <Numeros resumo={resumo} />
 
+        {(personagens.length > 0 || podeReconhecer) && (
+          <div className="flex flex-col gap-2">
+            <Subtitulo
+              icone={<Users size={12} strokeWidth={1.5} />}
+              canto={
+                fotosDoElenco && (
+                  <span
+                    className="text-[11px] text-ink-3"
+                    title={`As fotos do elenco que reconheceram os personagens vieram do ${fotosDoElenco} (copiadas; a pasta de la nao muda).`}
+                  >
+                    Fotos do elenco: {fotosDoElenco}
+                  </span>
+                )
+              }
+            >
+              Personagens
+            </Subtitulo>
+            {personagens.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {personagens.slice(0, PERSONAGENS_VISIVEIS).map((p) => (
+                  <Contagem key={p.nome} nome={p.nome} n={p.n} unidade={['cena', 'cenas']} />
+                ))}
+                {personagensSobram > 0 && (
+                  <span className="px-1 py-1 text-[11px] text-ink-3">e mais {personagensSobram}</span>
+                )}
+              </div>
+            ) : (
+              <ReconhecerAgora />
+            )}
+          </div>
+        )}
+
         <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-[11px] font-medium text-ink-2">
-            <Users size={12} strokeWidth={1.5} className="text-ink-3" />
-            Personagens
-          </span>
-          {resumo.personagens.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {resumo.personagens.slice(0, PERSONAGENS_VISIVEIS).map((p) => (
-                <Contagem key={p.nome} nome={p.nome} n={p.cenas} />
-              ))}
-              {personagensSobram > 0 && (
-                <span className="px-1 py-1 text-[11px] text-ink-3">e mais {personagensSobram}</span>
+          <Subtitulo icone={<Subtitles size={12} strokeWidth={1.5} />}>Legenda</Subtitulo>
+          <SeletorDeLegenda />
+          {resumo.falantes.length > 0 && (
+            <p className="text-[11px] text-ink-3">
+              Quem mais fala:{' '}
+              {listaCurta(
+                resumo.falantes.map((f) => ({ nome: f.nome, n: f.falas })),
+                5,
               )}
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[11px] text-ink-3">
-                {indice.reconhecimento === 'pulado'
-                  ? 'Nao reconhecidos: a analise foi so de corte.'
-                  : indice.reconhecimento === 'desconhecido'
-                    ? 'A biblioteca de origem nao diz quem aparece nas cenas.'
-                    : 'O motor nao reconheceu ninguem com confianca.'}
-              </p>
-              {indice.reconhecimento === 'pulado' && indice.biblioteca.origem === 'studio' && <ReconhecerAgora />}
-            </div>
-          )}
-          {resumo.personagens.length > 0 && (
-            <p className="text-[11px] text-ink-3">O numero e em quantas cenas o personagem foi reconhecido.</p>
+            </p>
           )}
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <span className="flex items-center gap-1.5 text-[11px] font-medium text-ink-2">
-            <Subtitles size={12} strokeWidth={1.5} className="text-ink-3" />
-            Legenda
-          </span>
-          {faixa ? (
-            <>
-              <p className="text-[12px] text-ink">
-                {rotuloDaFaixa(faixa)} · <span className="tnum">{resumo.totalFalas}</span> falas
-              </p>
-              <p className="text-[11px] leading-relaxed text-ink-3">
-                {resumo.falantes.length > 0
-                  ? `Quem mais fala: ${listaCurta(
-                      resumo.falantes.map((f) => ({ nome: f.nome, n: f.falas })),
-                      5,
-                    )}`
-                  : resumo.totalFalas > 0
-                    ? 'A legenda nao diz quem fala (sem o campo Name): as falas ficam sem falante.'
-                    : 'A legenda nao tem falas.'}
-              </p>
-            </>
-          ) : (
-            <p className="text-[11px] text-ink-3">Sem legenda de texto: as cenas ficam sem falas.</p>
-          )}
-        </div>
-
-        {indice.avisos.length > 0 && (
-          <ul className="flex flex-col gap-1">
-            {indice.avisos.map((aviso, i) => (
-              <li key={i} className="flex items-start gap-1.5 text-[11px] leading-relaxed text-ink-2">
-                <TriangleAlert size={12} strokeWidth={1.5} className="mt-0.5 shrink-0 text-accent" />
-                <span className="select-text">{aviso}</span>
-              </li>
+        {avisos.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {avisos.map((aviso, i) => (
+              <Aviso key={i}>{aviso}</Aviso>
             ))}
-          </ul>
+          </div>
         )}
       </Secao>
 
@@ -144,28 +173,61 @@ export function ResumoDoEpisodio() {
  * Depois de um "so cortar": roda a analise completa sobre o mesmo episodio. O
  * motor reaproveita os cortes (vem do cache), entao o custo e o elenco e o
  * reconhecimento. As marcacoes CONFIRMADAS da regua passam para o indice novo.
+ *
+ * O nome do anime fica editavel AQUI, ao lado do botao: e ele que o motor usa
+ * para achar o elenco, e quando a busca falha ("nao achei no AniList/MAL") o
+ * jeito e corrigir e tentar de novo. A pasta das cenas nao muda (o store manda
+ * a pasta do anime junto, ver `analisar`).
+ *
+ * E a acao principal da tela enquanto nao ha marcacao para salvar: sem ela o
+ * episodio so-corte ficava sem nenhum botao rosa. Com mudancas, ele desliga
+ * (neutro) e o principal e o Salvar.
  */
 function ReconhecerAgora() {
   const analisar = useGerar((s) => s.analisar)
   const mudaram = useGerar((s) => s.exclusoesMudaram)
   const motor = useGerar((s) => s.motor)
+  const anime = useGerar((s) => s.palpite?.anime ?? '')
+  const editarPalpite = useGerar((s) => s.editarPalpite)
   const pronto = motor?.studio.pronto === true
+  const semAnime = !anime.trim()
+  const reconhecer = (): void => {
+    if (!mudaram && pronto && !semAnime) void analisar('studio', true)
+  }
   return (
-    <Botao
-      pequeno
-      onClick={() => void analisar('studio', true)}
-      disabled={mudaram || !pronto}
-      title={
-        mudaram
-          ? 'Salve ou descarte as marcacoes da regua antes'
-          : !pronto
-            ? (motor?.studio.erro ?? 'O motor do Studio nao esta pronto')
-            : 'Busca o elenco e reconhece os personagens nas cenas que ja estao cortadas'
-      }
-    >
-      <Users size={12} strokeWidth={1.5} />
-      Reconhecer personagens agora
-    </Botao>
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <input
+        type="text"
+        value={anime}
+        onChange={(e) => editarPalpite({ anime: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') reconhecer()
+          if (e.key === 'Escape') e.currentTarget.blur()
+        }}
+        aria-label="Anime"
+        title="O nome usado para achar o elenco no AniList e no MyAnimeList. A pasta das cenas nao muda."
+        placeholder="Nome do anime"
+        spellCheck={false}
+        className={`${CLASSE_DO_CAMPO} ${CAMPO_NORMAL} w-[260px]`}
+      />
+      <Botao
+        principal
+        onClick={reconhecer}
+        disabled={mudaram || !pronto || semAnime}
+        title={
+          mudaram
+            ? 'Salve ou desfaca as marcacoes de OP/ED antes'
+            : !pronto
+              ? (motor?.studio.erro ?? 'O motor do Studio nao esta pronto')
+              : semAnime
+                ? 'Falta o nome do anime'
+                : 'Busca o elenco e reconhece os personagens nas cenas que ja estao cortadas'
+        }
+      >
+        <Users size={13} strokeWidth={1.5} />
+        Reconhecer agora
+      </Botao>
+    </div>
   )
 }
 
@@ -177,6 +239,8 @@ function Numeros({ resumo }: { resumo: ResumoDoIndice }) {
 
   const fora = exclusoes.reduce((s, e) => s + Math.max(0, e.end - e.start), 0)
   const pendentes = exclusoes.filter((e) => !e.confirmada).length
+  const faixa = indice.faixaLegenda
+  const srt = faixa !== null && /^(subrip|srt)$/i.test(faixa.codec)
 
   return (
     <div className="grid grid-cols-4 gap-2">
@@ -185,9 +249,13 @@ function Numeros({ resumo }: { resumo: ResumoDoIndice }) {
         titulo="Falas"
         valor={resumo.totalFalas.toLocaleString('pt-BR')}
         detalhe={
-          resumo.falantes.length > 0
-            ? `${resumo.falantes.length} ${resumo.falantes.length === 1 ? 'falante' : 'falantes'}`
-            : 'sem quem fala'
+          !faixa
+            ? 'sem legenda'
+            : resumo.falantes.length > 0
+              ? `${resumo.falantes.length} ${resumo.falantes.length === 1 ? 'falante' : 'falantes'}`
+              : resumo.totalFalas > 0
+                ? `sem nome de quem fala${srt ? ' (.srt)' : ''}`
+                : 'so placas ou musica'
         }
       />
       <Numero
@@ -198,19 +266,15 @@ function Numeros({ resumo }: { resumo: ResumoDoIndice }) {
             ? 'so corte'
             : indice.reconhecimento === 'desconhecido'
               ? 'sem informacao'
-              : 'pelo rosto'
+              : resumo.personagens.length > 0
+                ? 'pelo rosto'
+                : 'ninguem reconhecido'
         }
       />
       <Numero
         titulo="Fora do recap"
         valor={formatarTempo(fora)}
-        detalhe={
-          exclusoes.length === 0
-            ? 'nada marcado'
-            : pendentes > 0
-              ? `${pendentes} a confirmar`
-              : 'tudo confirmado'
-        }
+        detalhe={exclusoes.length === 0 ? 'nada marcado' : pendentes > 0 ? `${pendentes} a confirmar` : 'tudo confirmado'}
         alerta={pendentes > 0}
       />
     </div>
@@ -232,7 +296,9 @@ function Numero({
     <div className="flex min-w-0 flex-col gap-0.5 rounded-sm border border-line bg-elevated px-3 py-2">
       <span className="text-[10px] font-medium uppercase tracking-wide text-ink-3">{titulo}</span>
       <span className="tnum text-[20px] font-semibold leading-tight text-ink">{valor}</span>
-      <span className={['truncate text-[11px]', alerta ? 'text-accent' : 'text-ink-3'].join(' ')}>{detalhe}</span>
+      <span className={['truncate text-[11px]', alerta ? 'text-ink-2' : 'text-ink-3'].join(' ')} title={detalhe}>
+        {detalhe}
+      </span>
     </div>
   )
 }
@@ -240,7 +306,10 @@ function Numero({
 /**
  * A REGUA DE OP/ED com a lista dos trechos. O Studio sugere (tracejado), o
  * usuario confirma (cheio), remove, ajusta ou marca outro trecho. Nada vai para
- * o disco ate "Salvar marcacoes": o indice so muda quando ele decide.
+ * o disco ate "Salvar": o indice so muda quando ele decide.
+ *
+ * Uma acao principal: o Salvar, rosa so quando ha o que salvar. O Confirmar de
+ * cada linha e neutro -- duas sugestoes eram dois botoes rosa e mais o Salvar.
  */
 function AberturaEEncerramento() {
   const indice = useGerar((s) => s.indice)
@@ -289,29 +358,22 @@ function AberturaEEncerramento() {
     setSelecionada(marcarTrecho(start, start + largura))
   }
 
+  // Quem cai em cima de quem: a linha avisa, em vez de um trecho sumir debaixo do outro.
+  const sobrepoe = exclusoes.map((ex, i) => {
+    const outro = exclusoes.find((o, j) => j !== i && o.start < ex.end && ex.start < o.end)
+    return outro ? ROTULO_DO_MOTIVO[outro.motivo] : null
+  })
+
   return (
     <Secao
       titulo="Abertura e encerramento"
-      icone={<Scissors size={13} strokeWidth={1.5} className="text-accent" />}
-      destaque={pendentes > 0}
       acao={
         <span className="text-[11px] text-ink-3">
-          {mudaram
-            ? 'Mudancas nao salvas'
-            : salvoEm
-              ? 'Salvo'
-              : pendentes === 1
-                ? '1 sugestao para olhar'
-                : pendentes > 1
-                  ? `${pendentes} sugestoes para olhar`
-                  : ''}
+          {mudaram ? 'Mudancas nao salvas' : salvoEm ? 'Salvo' : pendentes > 0 ? `${pendentes} para confirmar` : ''}
         </span>
       }
     >
-      <p className="text-[11px] leading-relaxed text-ink-3">
-        O que estiver marcado fica fora do recap. Tracejado e sugestao do Studio; cheio e confirmado. Arraste as
-        bordas para ajustar (grudam nos cortes; Alt solta), ou arraste num espaco vazio para marcar outro trecho.
-      </p>
+      <p className="text-[11px] text-ink-3">Marcado = fora do recap.</p>
 
       <ReguaDoEpisodio
         duracao={duracao}
@@ -327,15 +389,15 @@ function AberturaEEncerramento() {
       <Legenda />
 
       {exclusoes.length === 0 ? (
-        <p className="text-[12px] text-ink-2">
-          Nenhuma abertura ou encerramento sugerido. Se o episodio tem, marque na regua.
-        </p>
+        <p className="text-[12px] text-ink-2">Nada sugerido. Arraste na regua para marcar.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {exclusoes.map((ex, i) => (
             <LinhaDaExclusao
               key={i}
               ex={ex}
+              duracao={duracao}
+              sobrepoe={sobrepoe[i] ?? null}
               escolhida={i === selecionada}
               onEscolher={() => setSelecionada(i)}
               onConfirmar={() => confirmar(i)}
@@ -352,7 +414,7 @@ function AberturaEEncerramento() {
       <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
         <Botao pequeno onClick={marcarManual} title="Acrescenta um trecho de 30 s para ajustar (ou arraste na regua)">
           <Plus size={12} strokeWidth={1.75} />
-          Marcar trecho manual
+          Marcar trecho
         </Botao>
         {pendentes > 1 && (
           <Botao pequeno onClick={confirmarTodas}>
@@ -362,13 +424,19 @@ function AberturaEEncerramento() {
         )}
         <span className="flex-1" />
         {mudaram && (
-          <Botao pequeno onClick={descartar} disabled={salvando} title="Volta as marcacoes ao que esta salvo">
-            <Undo2 size={12} strokeWidth={1.5} />
-            Desfazer mudancas
+          <Botao onClick={descartar} disabled={salvando} title="Volta as marcacoes ao que esta salvo">
+            <Undo2 size={13} strokeWidth={1.5} />
+            Desfazer
           </Botao>
         )}
-        <Botao principal onClick={() => void salvar()} disabled={!mudaram || salvando}>
-          {salvando ? 'Salvando...' : 'Salvar marcacoes'}
+        <Botao
+          principal
+          onClick={() => void salvar()}
+          disabled={!mudaram || salvando}
+          title={mudaram ? 'Grava as marcacoes no episodio' : 'Nada para salvar'}
+        >
+          <Save size={13} strokeWidth={1.5} />
+          {salvando ? 'Salvando...' : 'Salvar'}
         </Botao>
       </div>
     </Secao>
@@ -401,9 +469,61 @@ function Legenda() {
 
 const MOTIVOS = Object.entries(ROTULO_DO_MOTIVO) as [MotivoDaExclusao, string][]
 
+/** Uma fonte que concorda com a sugestao ("1m49s sem fala") -> duas palavras. */
+function apoioCurto(apoio: string): string | null {
+  if (/sem fala/i.test(apoio)) return 'sem fala'
+  if (/musica/i.test(apoio)) return 'musica'
+  if (/corte cenas/i.test(apoio)) return 'Corte Cenas'
+  const serie = /confirmado no (\S+)/i.exec(apoio)
+  if (serie) return `como no ${serie[1]}`
+  if (/capitulo/i.test(apoio)) return 'capitulo'
+  return null
+}
+
+/**
+ * O "porque" da sugestao em poucas palavras: "Capitulo Intro, sem fala", "Sem
+ * fala no comeco". O porque inteiro (shared/oped.ts) repete os tempos que ja
+ * estao nos campos e saia cortado com reticencias: ele vai no tooltip.
+ */
+export function porqueCurto(ex: Exclusao): string {
+  const [principal = '', apoios = ''] = ex.porque.split('; bate com: ')
+  if (ex.origem === 'usuario') return principal ? 'Ajustado por voce' : 'Marcado por voce'
+  let curto: string
+  switch (ex.origem) {
+    case 'capitulo': {
+      const m = /Capitulo "([^"]*)"/.exec(principal)
+      curto = m?.[1] ? `Capitulo ${m[1]}` : 'Capitulo do arquivo'
+      break
+    }
+    case 'estilo':
+      curto = 'Letra de musica'
+      break
+    case 'vao':
+      curto = /fim/.test(principal) ? 'Sem fala no fim' : 'Sem fala no comeco'
+      break
+    case 'skip_ranges':
+      curto = 'Pulo do Corte Cenas'
+      break
+    case 'serie': {
+      const m = /confirmado no (\S+)/.exec(principal)
+      curto = m ? `Como no ${m[1]}` : 'Como na serie'
+      break
+    }
+    case 'audio':
+      curto = 'Audio da abertura'
+      break
+    default:
+      curto = principal
+  }
+  const extras = [...new Set(apoios.split(', ').map(apoioCurto))].filter((x): x is string => x !== null)
+  return [curto, ...extras.slice(0, 2)].join(', ')
+}
+
 /** Uma linha da lista: motivo, inicio e fim em m:ss, por que, e confirmar/remover. */
 function LinhaDaExclusao({
   ex,
+  duracao,
+  sobrepoe,
   escolhida,
   onEscolher,
   onConfirmar,
@@ -411,13 +531,33 @@ function LinhaDaExclusao({
   onAjustar,
 }: {
   ex: Exclusao
+  duracao: number
+  /** O motivo do outro trecho que cai em cima deste, ou null. */
+  sobrepoe: string | null
   escolhida: boolean
   onEscolher: () => void
   onConfirmar: () => void
   onRemover: () => void
   onAjustar: (patch: Partial<Pick<Exclusao, 'start' | 'end' | 'motivo'>>) => void
 }) {
-  const porque = ex.porque || (ex.origem === 'usuario' ? 'Marcado por voce' : '')
+  /*
+   * Inicio e fim fora de ordem sao RECUSADOS, com o porque no campo. Antes o
+   * normalizar aceitava calado: fim antes do inicio virava um trecho de 1 s, e
+   * inicio depois do fim do episodio jogava a OP para cima do ED.
+   */
+  const novoInicio = (start: number): string | null => {
+    if (start >= duracao) return 'O inicio passa do fim do episodio'
+    if (start > ex.end - TRECHO_MINIMO) return 'O inicio tem que vir antes do fim'
+    onAjustar({ start })
+    return null
+  }
+  const novoFim = (end: number): string | null => {
+    if (end < ex.start + TRECHO_MINIMO) return 'O fim tem que vir depois do inicio'
+    // Depois do fim do episodio vale como "ate o fim".
+    onAjustar({ end: Math.min(end, duracao) })
+    return null
+  }
+
   return (
     <li
       onPointerDown={onEscolher}
@@ -438,7 +578,7 @@ function LinhaDaExclusao({
         value={ex.motivo}
         onChange={(e) => onAjustar({ motivo: e.target.value as MotivoDaExclusao })}
         aria-label="Motivo"
-        className={`${CLASSE_DO_CAMPO} w-[120px] shrink-0 px-1.5 py-1 text-[12px]`}
+        className={`${CLASSE_DO_CAMPO} ${CAMPO_PEQUENO} w-[136px] shrink-0`}
       >
         {MOTIVOS.map(([valor, rotulo]) => (
           <option key={valor} value={valor}>
@@ -446,20 +586,26 @@ function LinhaDaExclusao({
           </option>
         ))}
       </select>
-      <CampoDeTempo valor={ex.start} rotulo="Inicio" onChange={(start) => onAjustar({ start })} />
+      <CampoDeTempo valor={ex.start} rotulo="Inicio" onChange={novoInicio} />
       <span className="text-[11px] text-ink-3">ate</span>
-      <CampoDeTempo valor={ex.end} rotulo="Fim" onChange={(end) => onAjustar({ end })} />
+      <CampoDeTempo valor={ex.end} rotulo="Fim" onChange={novoFim} />
       <span className="tnum w-[52px] shrink-0 text-[11px] text-ink-3">{duracaoCurta(ex.end - ex.start)}</span>
-      <span className="min-w-0 flex-1 truncate text-[11px] text-ink-3" title={porque}>
-        {porque}
-      </span>
+      {sobrepoe ? (
+        <span className="min-w-0 flex-1 truncate text-[11px] text-ink-2" title={ex.porque || undefined}>
+          Sobrepoe: {sobrepoe}
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-[11px] text-ink-3" title={ex.porque || undefined}>
+          {porqueCurto(ex)}
+        </span>
+      )}
       {ex.confirmada ? (
-        <span className="flex shrink-0 items-center gap-1 text-[11px] text-ink-2">
+        <span className="flex h-7 shrink-0 items-center gap-1 text-[11px] text-ink-2">
           <Check size={12} strokeWidth={2} className="text-accent" />
           Confirmada
         </span>
       ) : (
-        <Botao pequeno principal onClick={onConfirmar} title="Fica fora do recap">
+        <Botao pequeno onClick={onConfirmar} title="Fica fora do recap">
           <Check size={12} strokeWidth={1.75} />
           Confirmar
         </Botao>
@@ -469,7 +615,7 @@ function LinhaDaExclusao({
         onClick={onRemover}
         aria-label="Remover o trecho"
         title="Remover (o trecho volta para o recap)"
-        className="grid size-6 shrink-0 place-items-center rounded-sm text-ink-3 hover:text-danger"
+        className="grid size-7 shrink-0 place-items-center rounded-sm text-ink-3 hover:text-danger"
       >
         <Trash2 size={13} strokeWidth={1.5} />
       </button>

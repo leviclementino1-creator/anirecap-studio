@@ -7,6 +7,12 @@ import httpx
 
 JIKAN_BASE = "https://api.jikan.moe/v4"
 
+# [Studio] Prazo so para ABRIR a conexao. Com o api.jikan.moe inalcancavel
+# (ConnectTimeout, out/2026 na rede do Levi), cada pedido gastava 69 s entre
+# timeout e retries, e o disjuntor so cortava no 5o: ~6 min por analise.
+# Uma conexao saudavel abre em menos de 1 s; a leitura segue com o prazo longo.
+CONEXAO_S = 8.0
+
 
 @dataclass
 class JikanCharacter:
@@ -35,7 +41,7 @@ class JikanClient:
         # br, zstd") o pedido FURA o cache e cai no backend saturado -> 504.
         # Era por isso que o app "sempre falhava" enquanto o site funcionava.
         self.client = httpx.Client(
-            timeout=timeout,
+            timeout=httpx.Timeout(timeout, connect=CONEXAO_S),  # [Studio]
             headers={"Accept": "application/json", "Accept-Encoding": "gzip"},
         )
         self.min_interval = min_interval
@@ -55,6 +61,12 @@ class JikanClient:
         #: suficiente sobre o estado da fonte.
         self.give_up_after = 5
         self.gave_up = False
+        # [Studio] O Jikan ja respondeu alguma coisa (qualquer HTTP) nesta
+        # rodada. Sem nenhuma resposta, um erro de rede no pedido e a fonte
+        # fora do ar, nao instabilidade: `fora_do_ar` desiste dele na analise
+        # inteira, ate dos pedidos `essencial`, sem retry.
+        self.respondeu = False
+        self.fora_do_ar = False
 
     def close(self) -> None:
         self.client.close()
@@ -73,7 +85,7 @@ class JikanClient:
         encontrado", que é mentira quando o que houve foi instabilidade. Só o
         que dá pra perder sem quebrar nada respeita o disjuntor.
         """
-        if self.gave_up and not essencial:
+        if self.fora_do_ar or (self.gave_up and not essencial):  # [Studio] fora_do_ar
             # Nem tenta: sem rede, sem espera, sem retry. Quem chama trata o
             # None como "sem galeria", que é o mesmo caminho de um personagem
             # sem fotos — e os retratos oficiais continuam entrando.
@@ -87,8 +99,15 @@ class JikanClient:
                 r = self.client.get(f"{JIKAN_BASE}{path}")
             except httpx.HTTPError as e:
                 last_status = type(e).__name__
+                if not self.respondeu:
+                    # [Studio] O primeiro pedido nem teve resposta: o resto
+                    # da analise nao bate mais no Jikan.
+                    self.fora_do_ar = True
+                    self.gave_up = True
+                    break
                 time.sleep(1.0 + attempt)
                 continue
+            self.respondeu = True  # [Studio]
             if r.status_code == 200:
                 self.streak = 0
                 return r.json()
@@ -103,7 +122,13 @@ class JikanClient:
         print(f"[Jikan] {path} falhou apos retries (HTTP {last_status})", flush=True)
         self.failures += 1
         self.streak += 1
-        if self.streak >= self.give_up_after and not self.gave_up:
+        if self.fora_do_ar:  # [Studio]
+            print(
+                "[Jikan] sem resposta no primeiro pedido — MyAnimeList fora "
+                "do ar, desistindo dele nesta analise.",
+                flush=True,
+            )
+        elif self.streak >= self.give_up_after and not self.gave_up:
             self.gave_up = True
             print(
                 f"[Jikan] {self.streak} falhas seguidas — desistindo do "

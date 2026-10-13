@@ -311,8 +311,14 @@ class Pipeline:
                 flush=True,
             )
 
+        # [Studio] O id que o upsert devolveu, por nome do elenco. O upsert
+        # reusa a linha de "Senkuu Ishigami" (AniList) para "Ishigami,
+        # Senkuu" (MyAnimeList) sem trocar o nome, e o lookup por nome mais
+        # abaixo nao achava a linha: o personagem ficava sem embedding e fora
+        # do reconhecimento. Ver STUDIO.md.
+        ids_do_banco: dict[str, int] = {}
         for ch in bundle.characters:
-            self.db.upsert_character(
+            ids_do_banco[ch.name] = self.db.upsert_character(
                 anime_id=anime_id,
                 name=ch.name,
                 anilist_id=ch.anilist_id,
@@ -337,7 +343,7 @@ class Pipeline:
                 CharacterRef(mal_id=None, anilist_id=None, name=name,
                              role="Main", image_urls=[])
             )
-            self.db.upsert_character(
+            ids_do_banco[name] = self.db.upsert_character(  # [Studio] id guardado
                 anime_id=anime_id, name=name,
                 anilist_id=None, mal_id=None, role="Main",
             )
@@ -376,6 +382,7 @@ class Pipeline:
         kf_cache = FeatureCache(metadata_dir / "face_cache.npz", feat_meta)
 
         db_chars = {c["name"]: c for c in self.db.get_characters_for_anime(anime_id)}
+        db_por_id = {c["id"]: c for c in db_chars.values()}  # [Studio]
         entries: list[CharacterEntry] = []
         total_chars = len(bundle.characters)
         ref_stats: list[tuple[str, int, int]] = []  # (name, ref_count, face_count)
@@ -404,7 +411,8 @@ class Pipeline:
             centroid = build_centroid(embs)
             if centroid is None:
                 continue
-            db_row = db_chars.get(ch.name)
+            # [Studio] Pelo nome e, na falta, pelo id do upsert (ids_do_banco).
+            db_row = db_chars.get(ch.name) or db_por_id.get(ids_do_banco.get(ch.name, -1))
             if not db_row:
                 continue
             protos = None

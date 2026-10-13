@@ -7,18 +7,55 @@ import { formatarTempo } from './pecas'
 const IMA_PX = 6
 /** Menos que isso de arraste e clique. */
 const LIMIAR_DE_ARRASTE_PX = 3
+/**
+ * Para MARCAR um trecho novo no vazio, mais folga: com 3 px um clique tremido
+ * virava um trecho de ~5 s (24 min em 1098 px). Ajustar uma borda segue nos 3.
+ */
+const LIMIAR_PARA_MARCAR_PX = 7
 
 const CURTO: Record<MotivoDaExclusao, string> = {
   op: 'OP',
   ed: 'ED',
   preview: 'Previa',
   creditos: 'Creditos',
-  manual: 'Fora',
+  // O mesmo nome do select da lista (ROTULO_DO_MOTIVO).
+  manual: 'Outro',
 }
 
 /** O listrado da sugestao: "ainda nao visto", sem precisar ler legenda nenhuma. */
 export const LISTRADO =
   'repeating-linear-gradient(135deg, rgb(255 61 129 / 0.22) 0 5px, rgb(255 61 129 / 0.06) 5px 10px)'
+
+/**
+ * A faixa onde os trechos ficam: de 26 px do topo ate 22 px do fundo da regua
+ * (76 px com a borda; 74 por dentro, que e a base do `top` absoluto).
+ */
+const FAIXA_TOPO = 26
+const FAIXA_ALTURA = 74 - 26 - 22
+
+/**
+ * Trechos que se sobrepoem (no episodio curto, ED 1:45-3:34 e OP 1:48-3:15)
+ * caiam um em cima do outro, e o de baixo sumia. Cada trecho ganha uma
+ * pista: o primeiro que nao bate com nenhum anterior fica na de cima, os
+ * outros descem. Sem sobreposicao, uma pista so, do jeito de sempre.
+ */
+export function pistasDosTrechos(exclusoes: readonly { start: number; end: number }[]): { pista: number[]; total: number } {
+  const ordem = exclusoes.map((_, i) => i).sort((a, b) => exclusoes[a]!.start - exclusoes[b]!.start)
+  const fimDaPista: number[] = []
+  const pista = new Array<number>(exclusoes.length).fill(0)
+  for (const i of ordem) {
+    const ex = exclusoes[i]!
+    let p = fimDaPista.findIndex((fim) => fim <= ex.start)
+    if (p === -1) {
+      p = fimDaPista.length
+      fimDaPista.push(ex.end)
+    } else {
+      fimDaPista[p] = ex.end
+    }
+    pista[i] = p
+  }
+  return { pista, total: Math.max(1, fimDaPista.length) }
+}
 
 type Arraste = {
   modo: 'inicio' | 'fim' | 'mover' | 'desenhar'
@@ -86,8 +123,10 @@ export function ReguaDoEpisodio({
     const passo = passos.find((p) => duracao / p <= 10) ?? 3600
     const lista: number[] = []
     for (let t = 0; t <= duracao + 0.001; t += passo) lista.push(t)
-    return lista
+    return { lista, passo }
   }, [duracao])
+
+  const pistas = useMemo(() => pistasDosTrechos(exclusoes), [exclusoes])
 
   const tempoNoX = (clientX: number): number => {
     const r = trilho.current?.getBoundingClientRect()
@@ -172,7 +211,8 @@ export function ReguaDoEpisodio({
             return
           }
           // Clique para escolher nao pode virar ajuste: so conta depois de uns pixels.
-          if (!a.moveu && Math.abs(e.clientX - a.x0) < LIMIAR_DE_ARRASTE_PX) return
+          const limiar = a.modo === 'desenhar' ? LIMIAR_PARA_MARCAR_PX : LIMIAR_DE_ARRASTE_PX
+          if (!a.moveu && Math.abs(e.clientX - a.x0) < limiar) return
           a.moveu = true
           const livre = e.altKey
           if (a.modo === 'inicio') {
@@ -214,6 +254,7 @@ export function ReguaDoEpisodio({
         onPointerLeave={() => {
           if (!arraste.current) setCursor(null)
         }}
+        title="Arraste as bordas para ajustar (grudam nos cortes; Alt solta). Arraste no vazio para marcar outro trecho."
         className="relative h-[76px] cursor-crosshair touch-none rounded-sm border border-line bg-elevated"
       >
         <svg
@@ -242,19 +283,23 @@ export function ReguaDoEpisodio({
 
         {exclusoes.map((ex, i) => {
           const escolhida = i === selecionada
+          const altura = FAIXA_ALTURA / pistas.total
           return (
             <div
               key={i}
               data-ex={i}
               title={`${CURTO[ex.motivo]} ${formatarTempo(ex.start, 1)} - ${formatarTempo(ex.end, 1)}${ex.porque ? ` · ${ex.porque}` : ''}${ex.confirmada ? '' : ' (sugerida)'}`}
               className={[
-                'group/ex absolute top-[26px] bottom-[22px] min-w-[4px] cursor-grab rounded-[4px] border active:cursor-grabbing',
+                'group/ex absolute min-w-[4px] cursor-grab rounded-[4px] border active:cursor-grabbing',
                 ex.confirmada ? 'border-accent bg-accent/30' : 'border-dashed border-accent',
                 escolhida ? 'z-10 ring-2 ring-ink' : '',
               ].join(' ')}
               style={{
                 left: `${pct(ex.start)}%`,
                 width: `${pct(ex.end - ex.start)}%`,
+                // Uma pista: a faixa inteira. Mais de uma: cada trecho na sua, com 1 px entre elas.
+                top: FAIXA_TOPO + (pistas.pista[i] ?? 0) * altura,
+                height: pistas.total > 1 ? altura - 1 : altura,
                 backgroundImage: ex.confirmada ? undefined : LISTRADO,
               }}
             >
@@ -285,8 +330,13 @@ export function ReguaDoEpisodio({
 
         {desenho && (
           <div
-            className="pointer-events-none absolute top-[26px] bottom-[22px] rounded-[4px] border border-dashed border-ink-2 bg-white/5"
-            style={{ left: `${pct(desenho.start)}%`, width: `${pct(desenho.end - desenho.start)}%` }}
+            className="pointer-events-none absolute rounded-[4px] border border-dashed border-ink-2 bg-white/5"
+            style={{
+              left: `${pct(desenho.start)}%`,
+              width: `${pct(desenho.end - desenho.start)}%`,
+              top: FAIXA_TOPO,
+              height: FAIXA_ALTURA,
+            }}
           />
         )}
 
@@ -300,18 +350,25 @@ export function ReguaDoEpisodio({
       </div>
 
       <div className="relative h-4">
-        {marcas.map((t, i) => (
-          <span
-            key={t}
-            className={[
-              'tnum absolute top-0 text-[10px] text-ink-3',
-              i === 0 ? '' : t >= duracao - 0.001 ? '-translate-x-full' : '-translate-x-1/2',
-            ].join(' ')}
-            style={{ left: `${pct(t)}%` }}
-          >
-            {formatarTempo(t)}
-          </span>
-        ))}
+        {marcas.lista.map((t, i) => {
+          /*
+           * A ultima marca colada no fim (24:00 num episodio de 24:00.5) se
+           * alinha pela direita: centrada, metade do rotulo passava da borda.
+           */
+          const colada = duracao - t < marcas.passo / 2
+          return (
+            <span
+              key={t}
+              className={[
+                'tnum absolute top-0 text-[10px] text-ink-3',
+                i === 0 ? '' : colada ? '-translate-x-full' : '-translate-x-1/2',
+              ].join(' ')}
+              style={{ left: `${pct(colada && i > 0 ? duracao : t)}%` }}
+            >
+              {formatarTempo(t)}
+            </span>
+          )
+        })}
       </div>
     </div>
   )

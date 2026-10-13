@@ -19,8 +19,10 @@ import {
   Redo2,
   type LucideIcon,
   Sparkles,
+  WandSparkles,
 } from 'lucide-react'
 import { dicaDoAtalho } from '@/store/atalhos'
+import { useGerar } from '@/store/gerar'
 import { useProject } from '@/store/project'
 import { desfazer, podeDesfazer, podeRefazer, refazer } from '@/store/undo'
 
@@ -30,6 +32,12 @@ interface Command {
   hint?: string
   icon: LucideIcon
   disabled?: boolean
+  /**
+   * Roda com o assistente "Gerar recap" aberto, por cima dele (Configuracoes,
+   * o proprio Gerar recap). Os outros mexem no editor, que esta escondido
+   * atras: o assistente fecha antes -- a analise continua.
+   */
+  sobreOAssistente?: boolean
   run: () => void
 }
 
@@ -82,6 +90,7 @@ export function CommandPalette() {
   const run = (command: Command | undefined): void => {
     if (!command || command.disabled) return
     openPalette(false)
+    if (!command.sobreOAssistente) useGerar.getState().fechar()
     command.run()
   }
 
@@ -172,13 +181,25 @@ function useCommands(): Command[] {
   const queueRunning = useProject((s) => s.queueRunning)
   const pendentes = useProject((s) => s.queue.filter((item) => item.status === 'pendente').length)
   const transcriptText = useProject((s) => s.transcript?.text ?? '')
+  const gerarRodando = useGerar((s) => s.job !== null || s.fase === 'indexando')
 
   const pronto = Boolean(audio) && imageCount > 0
   const temTexto = (script?.trim().length ?? 0) >= 40 || transcriptText.trim().length >= 40
 
   return useMemo(() => {
     const store = useProject.getState
+    // A funcao principal do app: a porta do assistente, como o botao da tela inicial.
+    const gerarRecap: Command = {
+      id: 'gerar-recap',
+      label: 'Gerar recap',
+      hint: gerarRodando ? 'analise rodando' : 'do episodio ao recap',
+      icon: WandSparkles,
+      sobreOAssistente: true,
+      run: () => void useGerar.getState().abrirOuEscolher(),
+    }
     return [
+      // Sem projeto, ela vem primeiro (Renderizar ainda nem vale); com projeto, depois do desfazer.
+      ...(pronto ? [] : [gerarRecap]),
       {
         id: 'render',
         label: rendering ? 'Cancelar render' : 'Renderizar',
@@ -216,6 +237,7 @@ function useCommands(): Command[] {
         disabled: !podeRefazer(),
         run: () => void refazer(),
       },
+      ...(pronto ? [gerarRecap] : []),
       {
         id: 'library',
         label: 'Procurar cenas na biblioteca',
@@ -324,6 +346,7 @@ function useCommands(): Command[] {
         label: 'Configuracoes',
         hint: 'Ctrl ,',
         icon: Settings2,
+        sobreOAssistente: true,
         run: () => store().openSettings(true),
       },
       {
@@ -354,5 +377,6 @@ function useCommands(): Command[] {
     queueRunning,
     pendentes,
     temTexto,
+    gerarRodando,
   ])
 }

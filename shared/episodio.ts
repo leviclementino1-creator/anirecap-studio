@@ -178,6 +178,12 @@ export const episodioEncontradoSchema = z.object({
   indice: z.string().nullable(),
   /** ISO, mtime do shots.json. null quando nao deu para ler. */
   analisadoEm: z.string().nullable(),
+  /**
+   * De onde vieram as fotos do elenco que reconheceram os personagens, quando
+   * nao foi a busca online ('Corte Cenas', da reserva do elenco). So para a
+   * biblioteca do Studio; null/ausente = busca online ou nao se sabe.
+   */
+  fotosDoElenco: z.string().nullable().optional(),
 })
 export type EpisodioEncontrado = z.infer<typeof episodioEncontradoSchema>
 
@@ -217,6 +223,13 @@ export const pedidoDeAnaliseSchema = z.object({
    * primeira vez de cada anime). false = so corta (`cutOnly`), bem mais rapido.
    */
   reconhecer: z.boolean(),
+  /**
+   * A pasta do anime na biblioteca, quando ela ja existe e nao pode mudar (o
+   * "Reconhecer agora" sobre cenas ja cortadas). Vai como `outputFolder`: o
+   * nome em `anime` passa a servir so para achar o elenco, e corrigi-lo nao
+   * corta o episodio de novo em outra pasta. Ausente = o motor decide pelo nome.
+   */
+  pastaDoAnime: z.string().min(1).optional(),
 })
 export type PedidoDeAnalise = z.infer<typeof pedidoDeAnaliseSchema>
 
@@ -256,6 +269,12 @@ export const fimDaAnaliseSchema = z.union([
     /** Nomes reconhecidos. Vazio quando `reconhecer` era false. */
     personagens: z.array(z.string()),
     segundos: z.number().nonnegative(),
+    /**
+     * De onde vieram as fotos do elenco quando nao foi a busca online: a
+     * `origem` da reserva ('Corte Cenas', ver electron/services/elenco-reserva.ts).
+     * null = busca online, ou analise sem reconhecimento.
+     */
+    fotosDoElenco: z.string().nullable(),
   }),
   z.object({
     jobId: z.string(),
@@ -526,7 +545,9 @@ export const ROTULO_DA_ORIGEM: Record<OrigemDaBiblioteca, string> = {
   studio: 'Studio',
   ancut: 'AnCut HUB',
   cortecenas: 'Corte Cenas',
-  dangai: 'Biblioteca de cenas',
+  // A raiz herdada do Dangai (settings.libraryDir) e a pasta onde o AnCut
+  // grava: o mesmo nome que as Configuracoes dao a ela.
+  dangai: 'Biblioteca do AnCut',
 }
 
 export const ROTULO_DA_ETAPA: Record<EtapaDaAnalise, string> = {
@@ -535,7 +556,7 @@ export const ROTULO_DA_ETAPA: Record<EtapaDaAnalise, string> = {
   cortando: 'Cortando as cenas',
   elenco: 'Buscando o elenco',
   personagens: 'Reconhecendo personagens',
-  organizando: 'Organizando',
+  organizando: 'Finalizando',
 }
 
 export const ROTULO_DO_MOTIVO: Record<MotivoDaExclusao, string> = {
@@ -543,7 +564,8 @@ export const ROTULO_DO_MOTIVO: Record<MotivoDaExclusao, string> = {
   ed: 'Encerramento',
   preview: 'Previa',
   creditos: 'Creditos',
-  manual: 'Fora do recap',
+  // O mesmo nome na regua e no select: dois nomes para a mesma marcacao confundiam.
+  manual: 'Outro',
 }
 
 /** O que a tela de resumo do passo 1 mostra. */

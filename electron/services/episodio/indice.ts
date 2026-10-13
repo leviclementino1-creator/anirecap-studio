@@ -260,7 +260,7 @@ export async function indexarEpisodio(
         gravarJsonAtomico(destino, episodeIndexSchema.parse(corrigido))
       }
       lembrarIndice(sonda.id, destino)
-      avisar('Indice reaproveitado.')
+      avisar('Falas ja lidas antes.')
       return mudou ? corrigido : anterior
     }
   }
@@ -340,7 +340,7 @@ export async function indexarEpisodio(
     atualizadoEm: agora,
   } satisfies EpisodeIndex)
 
-  avisar('Gravando o indice...')
+  avisar('Salvando...')
   guardarAnterior(destino, anterior)
   gravarJsonAtomico(destino, indice)
   lembrarIndice(sonda.id, destino)
@@ -398,11 +398,11 @@ function acharIndice(id: string): string | null {
  */
 export async function salvarExclusoes(indiceId: string, exclusoes: Exclusao[]): Promise<EpisodeIndex> {
   const caminho = acharIndice(indiceId)
-  if (!caminho) throw new Error('Nao achei o indice desse episodio. Analise o episodio de novo.')
+  if (!caminho) throw new Error('Nao achei os dados desse episodio no disco. Analise o episodio de novo.')
   garantirGravavel(dirname(caminho))
 
   const atual = lerIndiceDoDisco(caminho)
-  if (!atual) throw new Error('O indice desse episodio nao abre (arquivo quebrado). Analise o episodio de novo.')
+  if (!atual) throw new Error('Os dados desse episodio nao abrem (episodio.json quebrado). Analise o episodio de novo.')
 
   const indice = episodeIndexSchema.parse({
     ...atual,

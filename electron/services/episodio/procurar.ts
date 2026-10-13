@@ -2,6 +2,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ComoAchou, EpisodioEncontrado, OrigemDaBiblioteca, PalpiteDoEpisodio } from '@shared/episodio'
 import { getSettings, pastaDaBibliotecaStudio, pastaDeDocumentos } from '../settings'
+import { fotosDoElenco } from '../elenco-reserva'
+import { pastaDeDadosDoMotor } from '../motor'
 import { episodiosEm } from '../library'
 import { animeParecido, tituloParecido } from './anime-parecido'
 import { impressaoLembrada } from './impressao'
@@ -131,6 +133,25 @@ function indicesExternos(): Map<string, IndiceResumido[]> {
   return mapa
 }
 
+/**
+ * De onde vieram as fotos do elenco de um episodio cortado no Studio, quando
+ * foi a reserva (elenco-reserva.ts) e nao a busca online. A tela mostra
+ * "Fotos: Corte Cenas". So le um json; nunca lanca (o motor pode nem estar
+ * configurado, como nos testes).
+ */
+function fotosDoEpisodio(anime: readonly string[], temporada: number): string | null {
+  try {
+    const dados = pastaDeDadosDoMotor()
+    for (const nome of anime) {
+      const r = nome.trim() ? fotosDoElenco(dados, nome, temporada) : null
+      if (r) return r.origem
+    }
+  } catch {
+    /* sem motor configurado: nao se sabe */
+  }
+  return null
+}
+
 // -------------------------------------------------------------------- procurar
 
 const FORCA: Record<ComoAchou, number> = { source: 0, impressao: 1, nome: 2, 'anime+episodio': 3 }
@@ -237,18 +258,24 @@ export async function procurarEpisodio(
       const dados = ler()
       if (!dados) continue
       const indice = indices.find((i) => i.id === id) ?? indices[0] ?? null
+      const serie = serieDaPasta(raiz.pasta, pasta)
+      const temporada = ident?.temporada ?? palpite.temporada
+      const personagens = contarPersonagens(dados)
       achados.push({
         origem: raiz.origem,
         pasta,
-        anime: serieDaPasta(raiz.pasta, pasta),
-        temporada: ident?.temporada ?? palpite.temporada,
+        anime: serie,
+        temporada,
         episodio: ident?.episodio ?? palpite.episodio,
         kind: ident?.kind ?? palpite.kind,
         totalCenas: dados.cenas.length,
-        personagens: contarPersonagens(dados),
+        personagens,
         comoAchou: como,
         indice: indice && normal(indice.pasta || pasta) === chave ? indice.caminho : null,
         analisadoEm: Number.isFinite(dados.mtimeShotsJson) ? new Date(dados.mtimeShotsJson).toISOString() : null,
+        // So o Studio usa a reserva; e so faz sentido com alguem reconhecido.
+        fotosDoElenco:
+          raiz.origem === 'studio' && personagens.length > 0 ? fotosDoEpisodio([palpite.anime, serie], temporada) : null,
       })
     }
   }

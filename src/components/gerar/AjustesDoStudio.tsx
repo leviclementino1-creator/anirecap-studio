@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Cpu, FolderOpen, Loader2 } from 'lucide-react'
 import type { PublicSettings } from '@shared/channels'
 import { useGerar } from '@/store/gerar'
-import { nuvemDoCaminho } from './pecas'
+import { ConferirDeNovo } from './ResultadoDaBusca'
+import { Link, meioDoCaminho, nuvemDoCaminho, resumoDoMotor } from './pecas'
 
 /**
  * O pedaco das Configuracoes que e do Studio: onde ele grava as cenas que
  * corta, e se o motor de personagens (e o AnCut HUB) estao a mao.
  *
  * Mora aqui, e nao no Settings.tsx, para o arquivo herdado do Dangai ganhar so
- * uma linha.
+ * uma linha. Segue o desenho das outras secoes de la: rotulo, controle, uma
+ * linha de ajuda -- sem caixa em volta, que nenhuma outra secao tem.
  */
 export function AjustesDoStudio({
   settings,
@@ -23,6 +25,10 @@ export function AjustesDoStudio({
   const conferirMotor = useGerar((s) => s.conferirMotor)
   const [aviso, setAviso] = useState<string | null>(null)
   const [salvando, setSalvando] = useState(false)
+  const secao = useRef<HTMLDivElement>(null)
+  // Veio do "Trocar pasta": a secao fica no fim das Configuracoes, abaixo da
+  // dobra. Guarda ATE QUANDO rolar (ver o efeito de baixo); 0 = nao rolar.
+  const rolarAte = useRef(useGerar.getState().ajustesPedidos ? Date.now() + 1500 : 0)
 
   // Pronto, a resposta e o cache do main (de graca). Nao pronto, abrir as
   // Configuracoes confere de novo: o motor pode ter sido instalado depois. So
@@ -31,6 +37,22 @@ export function AjustesDoStudio({
   useEffect(() => {
     if (!useGerar.getState().motor?.studio.pronto) void conferirMotor()
   }, [conferirMotor])
+
+  useEffect(() => {
+    if (rolarAte.current) useGerar.getState().ajustesVistos()
+  }, [])
+
+  /*
+   * Rola na abertura e de novo quando os ajustes relidos chegam (a altura de
+   * cima muda com eles) -- so no primeiro instante: depois disso, salvar a
+   * chave la em cima nao pode jogar a tela para o fim. O scrollTop da caixa, e
+   * nao scrollIntoView: este tambem rolaria a janela do app por baixo do modal.
+   */
+  useEffect(() => {
+    if (!settings || Date.now() > rolarAte.current) return
+    const caixa = secao.current?.closest<HTMLElement>('.overflow-y-auto')
+    if (caixa) caixa.scrollTop = caixa.scrollHeight
+  }, [settings])
 
   const gravar = async (pasta: string): Promise<void> => {
     setSalvando(true)
@@ -55,80 +77,66 @@ export function AjustesDoStudio({
   }
 
   const padrao = !settings || settings.bibliotecaStudio === ''
+  const efetiva = settings?.bibliotecaStudioEfetiva ?? ''
+  const nuvem = efetiva ? nuvemDoCaminho(efetiva) : null
+  const estado = resumoDoMotor(motor, motorErro)
 
   return (
-    <>
+    // pb-2: a linha do motor e a ultima do modal e encostava na borda de baixo.
+    <div ref={secao} className="pb-2">
       <div className="my-5 h-px bg-line" />
 
       <div className="mb-1.5 flex items-baseline gap-2">
         <label className="block text-[11px] font-medium text-ink-2">Biblioteca do Studio</label>
         <span className="flex-1" />
         {!padrao && (
-          <button
-            type="button"
-            onClick={() => void gravar('')}
-            disabled={salvando}
-            className="text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline disabled:opacity-40"
-          >
+          <Link onClick={() => void gravar('')} disabled={salvando}>
             Usar o padrao
-          </button>
+          </Link>
         )}
       </div>
       <button
         type="button"
         onClick={() => void escolher()}
         disabled={salvando}
-        title={settings?.bibliotecaStudioEfetiva}
+        title={efetiva || undefined}
         className="lift flex w-full items-center gap-2 rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-left text-[13px] text-ink-2 hover:text-ink disabled:opacity-40"
       >
         <FolderOpen size={13} strokeWidth={1.5} className="shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{settings?.bibliotecaStudioEfetiva || 'Escolher a pasta...'}</span>
+        {/* Cortado no meio: o fim do caminho e a pasta que importa. */}
+        <span className="min-w-0 flex-1 truncate">{efetiva ? meioDoCaminho(efetiva) : 'Escolher a pasta...'}</span>
         {settings && padrao && <span className="shrink-0 text-[11px] text-ink-3">(padrao)</span>}
       </button>
       {aviso && <p className="mt-2 select-text text-[11px] leading-relaxed text-danger">{aviso}</p>}
-      {settings && nuvemDoCaminho(settings.bibliotecaStudioEfetiva) && (
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-2">
-          Essa pasta fica no {nuvemDoCaminho(settings.bibliotecaStudioEfetiva)}: cada episodio cortado (perto de 1 GB de
-          cenas e keyframes) entra na sincronizacao. Uma pasta fora dele evita isso.
-        </p>
-      )}
       <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-        Onde o Studio grava as cenas que ele corta e o indice de cada episodio. As bibliotecas do AnCut e do Corte
-        Cenas continuam so leitura.
+        Onde o Studio grava as cenas que corta.
+        {nuvem && <span className="text-ink-2"> No {nuvem}: ~1 GB por episodio vai para a nuvem.</span>}
       </p>
 
-      <label className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">Motor de personagens</label>
-      <div className="flex flex-col gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-2 text-[12px]">
-        <p className="flex items-start gap-2">
-          <Cpu size={13} strokeWidth={1.5} className="mt-0.5 shrink-0 text-ink-3" />
-          {motorErro ? (
-            <span className="select-text text-danger">Motor de personagens: nao deu para conferir ({motorErro})</span>
-          ) : !motor ? (
-            <span className="flex items-center gap-1.5 text-ink-3">
-              <Loader2 size={12} strokeWidth={1.5} className="animate-spin text-accent" />
-              Conferindo o motor...
-            </span>
-          ) : motor.studio.pronto ? (
-            <span className="text-ink-2">
-              Motor de personagens: <span className="text-ink">pronto</span>{' '}
-              {motor.studio.gpu ? `(GPU ${motor.studio.gpu})` : '(sem GPU: roda na CPU, bem mais lento)'}
-            </span>
-          ) : (
-            <span className="select-text text-danger">
-              Motor de personagens: nao esta pronto. {motor.studio.erro ?? ''}
+      <div className="mt-4 mb-1.5 flex items-baseline gap-2">
+        <label className="block text-[11px] font-medium text-ink-2">Motor de personagens</label>
+        <span className="flex-1" />
+        {estado.estado === 'fora' && <ConferirDeNovo />}
+      </div>
+      <p className="flex items-center gap-2 text-[12px]">
+        {estado.estado === 'conferindo' ? (
+          <Loader2 size={13} strokeWidth={1.5} className="shrink-0 animate-spin text-accent" />
+        ) : (
+          <Cpu size={13} strokeWidth={1.5} className="shrink-0 text-ink-3" />
+        )}
+        <span
+          className={['min-w-0 select-text truncate', estado.estado === 'fora' ? 'text-danger' : 'text-ink-2'].join(' ')}
+          title={estado.detalhe}
+        >
+          {estado.texto}
+          {motor && (
+            <span className="text-ink-3" title={motor.ancut.caminho ?? undefined}>
+              {' '}
+              · AnCut HUB: {motor.ancut.instalado ? 'instalado' : 'nao encontrado'}
             </span>
           )}
-        </p>
-        {motor && (
-          <p className="flex items-start gap-2 pl-[21px] text-ink-2" title={motor.ancut.caminho ?? undefined}>
-            AnCut HUB: {motor.ancut.instalado ? <span className="text-ink">instalado</span> : 'nao encontrado'}
-          </p>
-        )}
-      </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-        O mesmo motor do AnCut, com pasta e banco proprios. Corta o episodio em cenas e reconhece os personagens pelo
-        rosto no passo 1 do "Gerar recap".
+        </span>
       </p>
-    </>
+    </div>
   )
 }

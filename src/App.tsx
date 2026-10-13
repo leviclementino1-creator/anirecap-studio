@@ -62,6 +62,16 @@ export function App() {
   const setLibraryBusy = useProject((s) => s.setLibraryBusy)
   const projectPath = useProject((s) => s.projectPath)
   const projectDirty = useProject((s) => s.projectDirty)
+  /*
+   * Com o assistente "Gerar recap" aberto (tela cheia, por cima), o resto fica
+   * `inert`: sem isso o Tab saia dele para os botoes da tela inicial
+   * escondidos atras. As Configuracoes, a Biblioteca e a paleta ficam fora do
+   * embrulho -- elas abrem POR CIMA do assistente e precisam do teclado.
+   */
+  const gerarAberto = useGerar((s) => s.aberto)
+  const atrasDoGerar = (el: HTMLElement | null): void => {
+    if (el) el.inert = gerarAberto
+  }
 
   // Progresso do render vindo do main.
   useEffect(() => window.dangai.onRenderProgress(applyRenderProgress), [applyRenderProgress])
@@ -146,9 +156,20 @@ export function App() {
       // O assistente "Gerar recap" e modal tambem: os atalhos ficam quietos por baixo dele.
       const porCima = store.paletteOpen || store.settingsOpen || store.scriptOpen || store.libraryOpen
       if (porCima || useGerar.getState().aberto) {
+        /*
+         * A paleta e as Configuracoes abrem POR CIMA do assistente (z-50 contra
+         * 35): com ele sozinho na tela, Ctrl+K e Ctrl+, funcionam como no
+         * editor -- o aviso do OneDrive manda trocar a pasta nas Configuracoes.
+         * Com outro modal aberto, o Ctrl+K so fecha a paleta, como sempre.
+         */
         if (acao === 'paleta') {
           event.preventDefault()
-          store.openPalette(false)
+          store.openPalette(!porCima)
+          return
+        }
+        if (acao === 'configuracoes' && !porCima) {
+          event.preventDefault()
+          store.openSettings(true)
           return
         }
 
@@ -350,11 +371,11 @@ export function App() {
        * ver o comentario da keyframe em index.css.
        */}
       {phase === 'empty' ? (
-        <main className="enter flex-1 p-6">
+        <main ref={atrasDoGerar} className="enter flex-1 p-6">
           <Dropzone isDragging={isDragging} />
         </main>
       ) : (
-        <main className="enter flex min-h-0 flex-1 flex-col px-6 pt-6 pb-3">
+        <main ref={atrasDoGerar} className="enter flex min-h-0 flex-1 flex-col px-6 pt-6 pb-3">
           {/*
             O LAYOUT E DELE, como no Premiere: as divisorias se arrastam (a
             altura da linha do tempo e a largura da coluna do bloco), e o
@@ -430,11 +451,14 @@ export function App() {
         Fora do <main>: a fila sobrevive a troca de estado vazio/editando, que
         acontece sozinha a cada projeto que ela abre.
       */}
-      <div className="px-6 pb-4 empty:hidden">
+      <div ref={atrasDoGerar} className="px-6 pb-4 empty:hidden">
         <Queue />
       </div>
 
-      <StatusBar isDragging={isDragging} />
+      {/* So para carregar o inert (ver gerarAberto); a barra continua do mesmo tamanho. */}
+      <div ref={atrasDoGerar} className="shrink-0">
+        <StatusBar isDragging={isDragging} />
+      </div>
       <Settings />
       <Script />
       <GerarRecap />

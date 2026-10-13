@@ -22,7 +22,7 @@ cópia. As únicas mudanças desta cópia estão listadas abaixo e marcadas com
 
 ## Mudanças em relação ao a1d732b
 
-Motivo de todas: o Corte Cenas do Levi e o AnCut HUB dividem a mesma pasta de
+Motivo das três primeiras: o Corte Cenas do Levi e o AnCut HUB dividem a mesma pasta de
 dados, `%LOCALAPPDATA%\CorteCenas\CorteCenas` (config.json com as chaves,
 `cache/index.db`, refs do elenco em `cache/anime_db`, `models/`, `Logs/`). Com
 o `APP_NAME = "CorteCenas"` original, o motor do Studio leria e gravaria ali, e
@@ -60,6 +60,51 @@ dos prints são só prefixo de log; o `User-Agent` dos downloads, o `updater.py`
 (auto-update do app Qt) e as telas em `app/ui/` não entram no headless. Os
 modelos grandes (CLIP, YOLO, CCIP) ficam no cache global do HuggingFace
 (`~/.cache/huggingface`), que não é do Corte Cenas.
+
+### Fontes de elenco (out/2026)
+
+Motivo: na rede do Levi o `api.jikan.moe` não aceita conexão (ConnectTimeout,
+também no curl). O elenco vinha só da AniList, com 1 retrato por personagem,
+abaixo de `min_references_per_character = 2`, e a análise terminava em
+"sem-referencias" depois de ~6 min de timeouts. Três mudanças pequenas, as
+três para levar ao ancut-hub-engine:
+
+4. **`app/providers/jikan.py`** — Jikan fora do ar desiste no 1º pedido.
+   - `httpx.Timeout(30, connect=CONEXAO_S)`, com `CONEXAO_S = 8`: só abrir a
+     conexão ficou curto; a leitura segue em 30 s.
+   - `respondeu` / `fora_do_ar`: erro de rede (`httpx.HTTPError`) sem nenhuma
+     resposta antes na rodada liga `fora_do_ar` (e `gave_up`) sem retry, e
+     dali em diante todo pedido, até o `essencial`, volta `None` na hora,
+     contando em `failures` (os avisos de fonte do provider continuam certos).
+   - Medido: antes, 69,2 s por pedido e o disjuntor só no 5º (5 × 69 s ≈
+     5,8 min por análise); depois, 8,0 s no 1º e 0,0 s nos outros. O
+     `resolve()` de Dr. Stone S4 inteiro (AniList + Kitsu, banco parcial)
+     caiu para 12 s.
+5. **`app/providers/anime_provider.py`** — a Kitsu também pela RAIZ da
+   franquia. O retrato extra da Kitsu era buscado só pelo MAL id da temporada
+   pedida, mas o elenco da AniList vem da raiz (`get_characters(root_id)`). A
+   Kitsu parou de cadastrar elenco por volta de 2020: temporada nova de
+   franquia velha volta vazia. Agora, se a temporada vier vazia, tenta o MAL id
+   da raiz (`root_mal_id`, achado nas `relations`).
+   - Medido: Re:Zero 3ª (mal 54857) e Slime 3ª (mal 53580) = 0 na Kitsu; as
+     1ªs temporadas = 50 e 11. Re:Zero S3 com o Jikan fora: 0 → 33
+     personagens com 2 fotos.
+   - Não resolve Dr. Stone: a Kitsu não tem elenco de nenhuma das 9 entradas
+     da franquia (2019 em diante), nem de Mushoku, Frieren, Lv999 ou
+     Apothecary. Para esses, a saída é a reserva do Corte Cenas (abaixo).
+6. **`app/pipeline.py`** (`run`, passo 3/5) — o personagem do elenco acha a
+   linha do banco pelo id que o `upsert_character` devolveu, não só pelo
+   nome. Bug do upstream: o upsert reusa por tokens a linha de "Senkuu
+   Ishigami" (nome da AniList, gravado numa rodada com o MyAnimeList fora)
+   para "Ishigami, Senkuu" (MyAnimeList) SEM trocar o nome, e o
+   `db_chars.get(ch.name)` do passo 5 não achava a linha: o personagem ficava
+   sem embedding e fora do reconhecimento, em silêncio. Agora `ids_do_banco`
+   guarda o id por nome e o lookup cai nele quando o nome não bate; os nomes
+   que saem no `shots.json` continuam os do banco (os da 1ª rodada).
+   - Medido no S04E24 com a reserva DEPOIS de uma rodada sem fotos: antes,
+     162 de 385 cenas e 9 nomes (sumiram Senkuu, Gen, Taiju e Ukyou, todos
+     de nome composto); depois, 178 de 385 e 12 nomes, igual ao banco limpo.
+     O `index.db` do Studio do Levi já tinha os 50 nomes da AniList.
 
 ## Como o Studio chama
 
@@ -105,9 +150,38 @@ voltar por cópia:
    `electron/services/elenco-degradado.ts` põe o `metadata.json` de lado
    (renomeia) depois da trégua.
 
+## Reserva de fotos do elenco (no Studio, sem mexer no motor)
+
+`electron/services/elenco-reserva.ts`. Antes de subir o motor com
+reconhecimento — e de novo quando ele volta `needs-input` `refs-missing` —, o
+Studio procura o elenco do MESMO anime já baixado pelo Corte Cenas e copia para
+`<dados>/cache/anime_db`, onde o motor acha o banco pelo id da franquia e segue
+normal.
+
+- Origens, SÓ LEITURA: `G:\App Corte Cenas\cache\anime_db` (Corte Cenas do
+  fonte) e `%LOCALAPPDATA%\CorteCenas\CorteCenas\cache\anime_db` (Corte Cenas
+  e AnCut HUB instalados, que dividem a pasta). `ANIRECAP_ELENCO_RESERVA`
+  (raízes separadas por `;`) troca a lista, para testes.
+- O id (`al<id>`, o sufixo `[al<id>]` da pasta) vem do que o motor do Studio já
+  resolveu (`busca_resolvida.json`, `pastas_de_anime.json`), do índice de
+  buscas do Corte Cenas (`busca_resolvida.json` ou o `index.json` antigo, mesmo
+  formato), do `refsDir` do needs-input ou, na falta, do título (só com um
+  anime casando).
+- Copia `metadata.json` + `characters/` inteiros (as fotos têm o nome que o
+  downloader do motor daria, sha1 da URL, e só contam com o metadata junto).
+  `ref_features.npz` fica (chaveado pelo caminho absoluto, não bateria). O
+  `fetched_at` em segundos do Corte Cenas vira ISO na cópia.
+- Só quando o banco do Studio para o id não reconhece ninguém; o banco ruim vai
+  inteiro para `<dados>/cache/elenco-posto-de-lado/`. A cópia passa por uma
+  pasta temporária e só então ganha o nome final.
+- Ensina `nome|sN -> id` ao `busca_resolvida.json` do motor quando o id não
+  veio de palpite de título: o motor acha o banco sem a AniList.
+- De onde vieram as fotos: `reserva-do-studio.json` na pasta copiada,
+  `fotosDoElenco()` e a linha `[studio] fotos do elenco: ...` do log.
+
 ## Atualizar a cópia
 
 1. Copiar o ancut-hub-engine novo por cima de `motor/` (sem `.venv`).
-2. Reaplicar as três mudanças acima (procurar `[Studio]` no diff).
+2. Reaplicar as seis mudanças acima (procurar `[Studio]` no diff).
 3. Atualizar o commit no topo deste arquivo e no `NOTICE`.
 4. `node out/teste/v-motor.cjs rapido` (ver `scripts/teste/v-motor.ts`).

@@ -21,6 +21,12 @@ import { join } from 'node:path'
  * que e o que a tregua faria se a lista de faltas nao estivesse vazia. Nada e
  * apagado: o arquivo vira metadata.degradado-<carimbo>.json na mesma pasta, e
  * as fotos ja baixadas continuam la.
+ *
+ * Roda DEPOIS da reserva do elenco (elenco-reserva.ts, no prepararEIniciar do
+ * motor.ts): se o banco degradado nao reconhecia ninguem e o Corte Cenas tem o
+ * mesmo anime, a reserva ja trocou o banco (o do Corte Cenas nunca e
+ * `partial`) e aqui nao ha mais nada a fazer. Refazer o banco do zero ficou
+ * barato: com o Jikan fora, o motor desiste dele no 1o pedido (motor/STUDIO.md).
  */
 
 const TREGUA_MS = 6 * 3600 * 1000

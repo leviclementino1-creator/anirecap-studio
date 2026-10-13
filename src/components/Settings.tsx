@@ -4,6 +4,7 @@ import type { PublicSettings } from "@shared/channels";
 import { useProject } from "@/store/project";
 import { Atalhos } from "./Atalhos";
 import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
+import { useGerar } from "@/store/gerar";
 
 /**
  * Um campo que importa: a chave da IA. O resto e escolha rara.
@@ -40,6 +41,8 @@ export function Settings() {
     setKeyInput("");
     setGeminiInput("");
     setTeste(null);
+    // "Trocar pasta" do Gerar recap: a Biblioteca do Studio fica na aba Geral.
+    if (useGerar.getState().ajustesPedidos) setAba("geral");
     void window.dangai.getSettings().then((result) => {
       if (result.ok) setSettings(result.value);
     });
@@ -395,8 +398,10 @@ export function Settings() {
 
               <div className="my-5 h-px bg-line" />
 
+              {/* "do AnCut": ao lado da "Biblioteca do Studio" (AjustesDoStudio),
+                  "Biblioteca de cenas" nao dizia qual das duas era. */}
               <label className="mb-1.5 block text-[11px] font-medium text-ink-2">
-                Biblioteca de cenas
+                Biblioteca do AnCut (so leitura)
               </label>
               <button
                 type="button"

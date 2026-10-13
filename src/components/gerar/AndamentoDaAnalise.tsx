@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { Check, Circle, Loader2, ScanFace } from 'lucide-react'
+import { Check, Circle, Loader2 } from 'lucide-react'
 import { ROTULO_DA_ETAPA, type EtapaDaAnalise } from '@shared/episodio'
 import { useGerar } from '@/store/gerar'
 import { Botao, formatarTempo, Secao } from './pecas'
@@ -9,15 +9,31 @@ import { Botao, formatarTempo, Secao } from './pecas'
  * A ORDEM DAS ETAPAS na tela e a ordem em que o motor de fato anda: ele busca o
  * elenco ANTES de cortar (a identidade do anime decide a pasta), corta, volta
  * ao elenco para as fotos de referencia e so entao reconhece. Por isso o
- * "Buscando o elenco" pode acender duas vezes -- e o motor, nao a tela.
+ * "Elenco" pode acender duas vezes -- e o motor, nao a tela.
  */
 const ORDEM: EtapaDaAnalise[] = ['preparando', 'elenco', 'detectando', 'cortando', 'personagens', 'organizando']
 const SO_COM_PERSONAGENS: EtapaDaAnalise[] = ['elenco', 'personagens']
 
 /**
- * (d) O ANDAMENTO DA ANALISE: as seis etapas, a barra, a frase do motor, o
- * tempo decorrido e o Cancelar. Analise leva minutos; nenhum minuto pode
- * passar sem sinal visivel.
+ * Uma palavra por etapa: os seis chips cabem numa linha ate a 1024 px. O nome
+ * por extenso (ROTULO_DA_ETAPA) fica no tooltip e na barra de status.
+ */
+const ROTULO_CURTO: Record<EtapaDaAnalise, string> = {
+  preparando: 'Preparar',
+  elenco: 'Elenco',
+  detectando: 'Cortes',
+  cortando: 'Cenas',
+  personagens: 'Personagens',
+  organizando: 'Finalizar',
+}
+
+/**
+ * (d) O ANDAMENTO DA ANALISE: as etapas, a barra, a frase do motor, o tempo
+ * decorrido e o Cancelar. Analise leva minutos; nenhum minuto pode passar sem
+ * sinal visivel.
+ *
+ * Analise so de corte nao mostra as etapas de personagens: riscadas, elas so
+ * ocupavam lugar e faziam o rotulo dos outros quebrar em duas linhas.
  */
 export function AndamentoDaAnalise() {
   const fase = useGerar((s) => s.fase)
@@ -32,12 +48,15 @@ export function AndamentoDaAnalise() {
   const atual: EtapaDaAnalise = progresso?.etapa ?? 'preparando'
   const decorrido = Math.max(0, (agora - job.inicio) / 1000)
   const fracao = progresso?.fracao ?? null
+  const etapas = job.reconhecer ? ORDEM : ORDEM.filter((e) => !SO_COM_PERSONAGENS.includes(e))
+  // A frase do motor ja vem curta do main (frase-do-motor.ts); vazia, vale o nome da etapa.
+  const frase =
+    progresso?.mensagem ||
+    (job.id === null ? 'Chamando o motor...' : `${ROTULO_DA_ETAPA[atual]}...`)
 
   return (
     <Secao
       titulo={job.motor === 'studio' ? 'Analisando no Studio' : 'Analisando com o AnCut'}
-      destaque
-      icone={<ScanFace size={13} strokeWidth={1.5} className="text-accent" />}
       acao={
         <div className="flex items-center gap-3">
           <span className="tnum text-[11px] text-ink-3" title="Tempo decorrido">
@@ -49,38 +68,34 @@ export function AndamentoDaAnalise() {
         </div>
       }
     >
-      <ol className="grid grid-cols-6 gap-1.5">
-        {ORDEM.map((etapa) => {
-          const pulada = !job.reconhecer && SO_COM_PERSONAGENS.includes(etapa)
-          const eAtual = !pulada && etapa === atual
-          const feita = !pulada && !eAtual && vistas.includes(etapa)
+      <ol className={['grid gap-1.5', etapas.length === 6 ? 'grid-cols-6' : 'grid-cols-4'].join(' ')}>
+        {etapas.map((etapa) => {
+          const eAtual = etapa === atual
+          const feita = !eAtual && vistas.includes(etapa)
           return (
             <li
               key={etapa}
-              title={pulada ? 'Pulado: a analise e so de corte' : ROTULO_DA_ETAPA[etapa]}
+              title={ROTULO_DA_ETAPA[etapa]}
+              aria-current={eAtual ? 'step' : undefined}
               className={[
-                'flex min-w-0 flex-col gap-1.5 rounded-sm border px-2 py-1.5',
+                'flex h-7 min-w-0 items-center gap-1.5 rounded-sm border px-2',
                 eAtual ? 'border-accent bg-accent-dim' : 'border-line bg-elevated',
-                pulada ? 'opacity-40' : '',
               ].join(' ')}
             >
-              <span className="flex items-start gap-1.5">
-                {eAtual ? (
-                  <Loader2 size={11} strokeWidth={1.75} className="mt-px shrink-0 animate-spin text-accent" />
-                ) : feita ? (
-                  <Check size={11} strokeWidth={2} className="mt-px shrink-0 text-accent" />
-                ) : (
-                  <Circle size={11} strokeWidth={1.5} className="mt-px shrink-0 text-ink-3" />
-                )}
-                <span
-                  className={[
-                    'min-w-0 text-[11px] leading-tight',
-                    eAtual ? 'text-ink' : feita ? 'text-ink-2' : 'text-ink-3',
-                    pulada ? 'line-through' : '',
-                  ].join(' ')}
-                >
-                  {ROTULO_DA_ETAPA[etapa]}
-                </span>
+              {eAtual ? (
+                <Loader2 size={11} strokeWidth={1.75} className="shrink-0 animate-spin text-accent" />
+              ) : feita ? (
+                <Check size={11} strokeWidth={2} className="shrink-0 text-ink-2" />
+              ) : (
+                <Circle size={11} strokeWidth={1.5} className="shrink-0 text-ink-3" />
+              )}
+              <span
+                className={[
+                  'min-w-0 truncate text-[11px]',
+                  eAtual ? 'text-ink' : feita ? 'text-ink-2' : 'text-ink-3',
+                ].join(' ')}
+              >
+                {ROTULO_CURTO[etapa]}
               </span>
             </li>
           )
@@ -90,15 +105,11 @@ export function AndamentoDaAnalise() {
       <Barra fracao={fracao} />
 
       <div className="flex min-w-0 items-center gap-2">
-        <p className="min-w-0 flex-1 select-text truncate text-[11px] text-ink-2" title={progresso?.mensagem}>
-          {progresso?.mensagem || (job.id === null ? 'Chamando o motor...' : 'Preparando o ambiente de analise...')}
+        <p className="min-w-0 flex-1 select-text truncate text-[11px] text-ink-2" title={frase}>
+          {frase}
         </p>
         {fracao !== null && <span className="tnum shrink-0 text-[11px] text-ink-3">{Math.round(fracao * 100)}%</span>}
       </div>
-      <p className="text-[11px] text-ink-3">
-        {job.reconhecer ? 'Corte e personagens.' : 'So corte, sem personagens.'} Pode fechar o assistente: a analise
-        continua, e reabrir mostra onde parou.
-      </p>
     </Secao>
   )
 }
@@ -136,21 +147,21 @@ function useRelogio(ligado: boolean): number {
   return agora
 }
 
-/** A indexacao: ler a legenda, cruzar com as cenas, sugerir OP/ED. Segundos, nao minutos. */
+/**
+ * Lendo a legenda e cruzando as falas com as cenas, e sugerindo OP/ED.
+ * Segundos, nao minutos: uma linha e a barra bastam.
+ */
 export function Indexando() {
   const fase = useGerar((s) => s.fase)
   const mensagem = useGerar((s) => s.indexando)
   if (fase !== 'indexando') return null
   return (
-    <Secao titulo="Montando o indice" destaque>
+    <Secao titulo="Lendo as falas">
       <p className="flex items-center gap-2 text-[12px] text-ink-2">
         <Loader2 size={13} strokeWidth={1.5} className="shrink-0 animate-spin text-accent" />
         <span className="min-w-0 truncate">{mensagem ?? 'Lendo a legenda...'}</span>
       </p>
       <Barra fracao={null} />
-      <p className="text-[11px] text-ink-3">
-        Le a legenda, cruza cada fala (e quem fala) com as cenas e procura a abertura e o encerramento.
-      </p>
     </Secao>
   )
 }

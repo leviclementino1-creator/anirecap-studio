@@ -17,7 +17,9 @@ import { desarmarCorteDeOutroArquivo, pastaLembradaPeloMotor } from './episodio/
 import { impressaoLembrada } from './episodio/impressao'
 import { garantirGravavel, saidaDoCorteCenas } from './episodio/protegidas'
 import { porDeLadoElencoDegradado } from './elenco-degradado'
+import { fotosDoElenco, idDaPastaDeRefs, reservarElenco, type ReservaDoElenco } from './elenco-reserva'
 import { ffmpegPath } from './ffmpeg-path'
+import { ascii, fraseDoMotor } from './frase-do-motor'
 import { pastaDaBibliotecaStudio, pastaDeDocumentos } from './settings'
 
 /**
@@ -214,16 +216,6 @@ function lerEvento(linha: string): Evento | null {
   } catch {
     return null
   }
-}
-
-/** Interface em ASCII, como o resto do app: a frase do motor vem com acento. */
-function ascii(texto: string): string {
-  return texto
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[\u2014\u2013]/g, '-')
-    .replace(/\u2026/g, '...')
-    .replace(/\u2192/g, '->')
 }
 
 /**
@@ -426,6 +418,10 @@ interface Job {
   id: string
   motor: Motor
   anime: string
+  temporada: number
+  reconhecer: boolean
+  backend: Backend
+  requisicao: Record<string, unknown>
   ouvintes: OuvintesDaAnalise
   filho: ChildProcessWithoutNullStreams | null
   inicio: number
@@ -437,6 +433,18 @@ interface Job {
   relogio: NodeJS.Timeout | null
   /** O que o Studio arrumou nas proprias pastas antes de subir o motor. So para o log. */
   preparo: string[]
+  /**
+   * O motor voltou sem fotos do elenco (needs-input) e o fim esta SEGURO ate a
+   * reserva (elenco-reserva.ts) dizer se ha fotos para copiar. Entregue no close
+   * do processo, se a reserva nao der em nada.
+   */
+  fimPendente: FimDaAnalise | null
+  /** A pasta de refs do needs-input: o id da franquia esta no nome dela. */
+  refsDir: string | null
+  /** O motor ja rodou de novo com a reserva: uma vez por job, nunca em laco. */
+  repetiu: boolean
+  /** As fotos do elenco que a reserva copiou neste job. */
+  fotos: ReservaDoElenco | null
 }
 
 /** O job da vez. Um por vez: o motor ocupa a GPU inteira. */
@@ -513,7 +521,8 @@ function tratarEvento(job: Job, ev: Evento): void {
           etapaDoMotor: estagio,
           // -1 e o "nao sei quanto falta" do motor.
           fracao: Number.isFinite(fracao) && fracao >= 0 ? Math.min(1, fracao) : null,
-          mensagem: ascii(typeof ev['message'] === 'string' ? ev['message'] : ''),
+          // A frase de log do motor vira uma curta de tela (frase-do-motor.ts).
+          mensagem: fraseDoMotor(typeof ev['message'] === 'string' ? ev['message'] : ''),
         })
       } catch (e) {
         console.error('[motor] ouvinte do progresso falhou:', e)
@@ -531,6 +540,13 @@ function tratarEvento(job: Job, ev: Evento): void {
       const nomes = Array.isArray(r['identifiedCharacters'])
         ? r['identifiedCharacters'].filter((n): n is string => typeof n === 'string' && n.trim() !== '')
         : []
+      let fotos: ReservaDoElenco | null = null
+      if (job.motor === 'studio' && job.reconhecer) {
+        // De onde vieram as fotos do elenco: a reserva deste job, ou a de uma
+        // analise anterior (reserva-do-studio.json na pasta do banco).
+        fotos = job.fotos ?? fotosDoElenco(pastaDeDadosDoMotor(), job.anime, job.temporada)
+        job.log?.write(`[studio] fotos do elenco: ${fotos ? `${fotos.origem} (${fotos.de})` : 'busca online'}\n`)
+      }
       entregar(job, {
         jobId: job.id,
         ok: true,
@@ -539,6 +555,8 @@ function tratarEvento(job: Job, ev: Evento): void {
         totalCenas: Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0,
         personagens: nomes,
         segundos: segundosDesde(job.inicio),
+        // A tela diz "Fotos: Corte Cenas" quando o elenco veio da reserva.
+        fotosDoElenco: fotos?.origem ?? null,
       })
       return
     }
@@ -547,15 +565,35 @@ function tratarEvento(job: Job, ev: Evento): void {
       // elenco, ou ninguem ficou com fotos suficientes. A saida do passo 1 e
       // cortar sem reconhecer; a rodada de descoberta com nomes fica para depois.
       const semAnime = ev['kind'] === 'anime-not-found'
-      entregar(job, {
+      const fim: FimDaAnalise = {
         jobId: job.id,
         ok: false,
         cancelado: false,
+        // Curto: a tela mostra o pedido de descoberta com as proprias frases,
+        // e este vai para o tooltip dela e para o log.
         erro: semAnime
-          ? `Nao achei "${job.anime}" no AniList nem no MyAnimeList, entao nao da para buscar o elenco. Confira o nome do anime ou corte sem reconhecer personagens.`
-          : `Nenhum personagem de "${job.anime}" ficou com fotos de referencia suficientes (as fontes de imagem podem estar fora do ar). Tente de novo mais tarde ou corte sem reconhecer personagens.`,
+          ? `Nao achei "${job.anime}" no AniList nem no MyAnimeList.`
+          : `Nenhum personagem de "${job.anime}" ficou com fotos suficientes, nem com as do Corte Cenas (as fontes de imagem podem estar fora do ar).`,
         precisaDescoberta: semAnime ? 'anime-nao-encontrado' : 'sem-referencias',
-      })
+      }
+      // Sem fotos: antes de desistir, a reserva do elenco. O motor ja resolveu
+      // o id da franquia (esta no nome da refsDir) e o corte ja esta no disco,
+      // entao rodar de novo com as fotos copiadas custa so o reconhecimento.
+      // Uma vez por job; o fim fica seguro ate o close do processo.
+      if (!semAnime && job.motor === 'studio' && !job.repetiu && !job.cancelado && !job.entregue) {
+        job.fimPendente = fim
+        job.refsDir = typeof ev['refsDir'] === 'string' ? ev['refsDir'] : null
+        job.log?.write('\n[studio] sem fotos do elenco: tentando a reserva antes de entregar\n')
+        // O processo sai sozinho depois do needs-input; preso, so seguraria a
+        // GPU (a mesma rede de seguranca do entregar). O close segue o fluxo.
+        const filho = job.filho
+        if (filho) {
+          if (job.relogio) clearTimeout(job.relogio)
+          job.relogio = setTimeout(() => matarArvore(filho), 30_000)
+        }
+        return
+      }
+      entregar(job, fim)
       return
     }
     case 'cancelled':
@@ -584,28 +622,113 @@ function tratarEvento(job: Job, ev: Evento): void {
   }
 }
 
-/** Sobe o processo do job. Roda em setImmediate, depois do jobId ter voltado. */
-function iniciar(job: Job, backend: Backend, requisicao: Record<string, unknown>): void {
+/**
+ * Andamento que o proprio Studio manda (a reserva do elenco). A copia de antes
+ * do motor subir conta como 'preparando': na etapa 'elenco' ela acendia o
+ * Elenco antes do Preparar, e a tela andava elenco -> preparando -> elenco.
+ */
+function avisar(job: Job, etapa: 'preparando' | 'elenco', mensagem: string): void {
+  if (job.entregue) return
+  try {
+    job.ouvintes.progresso({ jobId: job.id, etapa, etapaDoMotor: 'studio_reserva_elenco', fracao: null, mensagem })
+  } catch (e) {
+    console.error('[motor] ouvinte do progresso falhou:', e)
+  }
+}
+
+/**
+ * O que roda entre o jobId voltar e o processo subir: a reserva do elenco
+ * (elenco-reserva.ts), quando a analise reconhece personagens. Assincrona
+ * porque copia centenas de fotos, e o main nao pode parar.
+ */
+async function prepararEIniciar(job: Job): Promise<void> {
+  if (job.motor === 'studio' && job.reconhecer && !job.cancelado) {
+    try {
+      const r = await reservarElenco(pastaDeDadosDoMotor(), {
+        anime: job.anime,
+        temporada: job.temporada,
+        aoCopiar: (origem, n) => avisar(job, 'preparando', `Copiando as fotos do elenco do ${origem} (${n} personagens)...`),
+      })
+      job.preparo.push(r.linha)
+      if (r.reserva) job.fotos = r.reserva
+    } catch (e) {
+      job.preparo.push(`reserva do elenco falhou: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    // O app fechou (encerrarMotor soltou a vaga) enquanto copiava: nada sobe.
+    if (atual !== job) return
+    // Sincrono e sem lancar. Banco copiado pela reserva nunca e `partial`.
+    for (const pasta of porDeLadoElencoDegradado(pastaDeDadosDoMotor())) {
+      job.preparo.push(`elenco degradado posto de lado (o motor busca de novo): ${pasta}`)
+    }
+  }
+  iniciar(job, false)
+}
+
+/**
+ * O motor voltou sem fotos do elenco: tenta a reserva com o id que ele
+ * resolveu e, se ela copiou alguma coisa, roda o motor de novo (o corte ja
+ * esta no disco e e reaproveitado). Sem reserva, entrega o fim que estava
+ * seguro. job.filho ja e null aqui: o entregar solta a vaga sozinho.
+ */
+async function tentarComAReserva(job: Job, pendente: FimDaAnalise): Promise<void> {
+  let reserva: ReservaDoElenco | null = null
+  try {
+    const r = await reservarElenco(pastaDeDadosDoMotor(), {
+      anime: job.anime,
+      temporada: job.temporada,
+      cacheId: job.refsDir ? idDaPastaDeRefs(job.refsDir) : null,
+      aoCopiar: (origem, n) => avisar(job, 'elenco', `Sem fotos online; copiando as do ${origem} (${n} personagens)...`),
+    })
+    job.log?.write(`[studio] ${r.linha}\n`)
+    reserva = r.reserva
+  } catch (e) {
+    job.log?.write(`[studio] reserva do elenco falhou: ${e instanceof Error ? e.message : String(e)}\n`)
+  }
+  if (atual !== job) return
+  if (job.cancelado) {
+    entregar(job, cancelou(job))
+    return
+  }
+  if (!reserva) {
+    entregar(job, pendente)
+    return
+  }
+  job.fotos = reserva
+  job.repetiu = true
+  iniciar(job, true)
+}
+
+/**
+ * Sobe o processo do job. A 1a vez roda depois do jobId ter voltado (via
+ * prepararEIniciar); a 2a (`repeticao`) so depois da reserva do elenco, no
+ * mesmo job e no mesmo log.
+ */
+function iniciar(job: Job, repeticao: boolean): void {
+  const { backend, requisicao } = job
   if (job.cancelado) {
     entregar(job, cancelou(job))
     return
   }
 
-  try {
-    const logs = join(pastaDeDadosDoMotor(), 'logs')
-    mkdirSync(logs, { recursive: true })
-    // Um arquivo so, sobrescrito: o log do pipeline e longo, e o que importa
-    // depurar e sempre a ultima analise.
-    job.log = createWriteStream(join(logs, 'ultima-analise.log'), { flags: 'w' })
-    job.log.on('error', () => {
+  if (repeticao) {
+    job.log?.write('\n[studio] ---- motor de novo, com as fotos do elenco da reserva ----\n\n')
+  } else {
+    try {
+      const logs = join(pastaDeDadosDoMotor(), 'logs')
+      mkdirSync(logs, { recursive: true })
+      // Um arquivo so, sobrescrito: o log do pipeline e longo, e o que importa
+      // depurar e sempre a ultima analise.
+      job.log = createWriteStream(join(logs, 'ultima-analise.log'), { flags: 'w' })
+      job.log.on('error', () => {
+        job.log = null
+      })
+      job.log.write(`[studio] ${new Date().toISOString()} job ${job.id} motor ${job.motor}\n`)
+      job.log.write(`[studio] ${backend.cmd} ${backend.args.join(' ')} run\n[studio] ${JSON.stringify(requisicao)}\n`)
+      for (const linha of job.preparo) job.log.write(`[studio] ${linha}\n`)
+      job.log.write('\n')
+    } catch {
       job.log = null
-    })
-    job.log.write(`[studio] ${new Date().toISOString()} job ${job.id} motor ${job.motor}\n`)
-    job.log.write(`[studio] ${backend.cmd} ${backend.args.join(' ')} run\n[studio] ${JSON.stringify(requisicao)}\n`)
-    for (const linha of job.preparo) job.log.write(`[studio] ${linha}\n`)
-    job.log.write('\n')
-  } catch {
-    job.log = null
+    }
   }
 
   let filho: ChildProcessWithoutNullStreams
@@ -654,6 +777,18 @@ function iniciar(job: Job, backend: Backend, requisicao: Record<string, unknown>
   filho.on('close', (codigo) => {
     leitor.flush()
     leitorErro.flush()
+    if (job.fimPendente && !job.entregue) {
+      // Sem fotos do elenco (needs-input seguro): o processo saiu, a vaga
+      // continua do job enquanto a reserva olha os caches.
+      const pendente = job.fimPendente
+      job.fimPendente = null
+      job.filho = null
+      if (job.relogio) clearTimeout(job.relogio)
+      job.relogio = null
+      if (job.cancelado) entregar(job, cancelou(job))
+      else void tentarComAReserva(job, pendente)
+      return
+    }
     if (!job.entregue) {
       if (job.cancelado) {
         entregar(job, cancelou(job))
@@ -680,6 +815,10 @@ function iniciar(job: Job, backend: Backend, requisicao: Record<string, unknown>
  * - `reconhecer: false` -> `cutOnly: true`. O corte sai em renderExportMode
  *   'compat' (8 bits, 23,976 CFR), para os pontos de corte sairem iguais aos do
  *   AnCut.
+ * - Com reconhecimento no motor do Studio, as fotos do elenco ja baixadas pelo
+ *   Corte Cenas sao copiadas antes de o motor subir (elenco-reserva.ts); e, se
+ *   ele ainda voltar sem fotos, a reserva tenta de novo com o id que ele
+ *   resolveu e o motor roda uma 2a vez no mesmo job.
  * - `fim` e chamado exatamente uma vez por job, sempre.
  */
 export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: OuvintesDaAnalise): Promise<string> {
@@ -722,11 +861,9 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     })) {
       preparo.push(`cortada de outro arquivo, recorte forcado se o motor usar: ${pasta}`)
     }
-    if (pedido.reconhecer) {
-      for (const pasta of porDeLadoElencoDegradado(pastaDeDadosDoMotor())) {
-        preparo.push(`elenco degradado posto de lado (o motor busca de novo): ${pasta}`)
-      }
-    }
+    // O elenco degradado (elenco-degradado.ts) e conferido no prepararEIniciar,
+    // DEPOIS da reserva do elenco: ela precisa ver o banco do Studio como ele
+    // esta para decidir se ele ja reconhece alguem.
   }
 
   // Os nomes sao os de headless._run/_apply_request_to_config. Sem `params`:
@@ -749,11 +886,19 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     useDanbooru: false,
     mediaKind: 'anime',
   }
+  // Pasta do anime que ja existe (o "Reconhecer agora" sobre cenas cortadas):
+  // o motor grava nela mesmo com o nome corrigido para achar o elenco, e o
+  // corte que esta la e reaproveitado em vez de refeito noutra pasta.
+  if (pedido.motor === 'studio' && pedido.pastaDoAnime) requisicao['outputFolder'] = pedido.pastaDoAnime
 
   const job: Job = {
     id: `job_${Date.now().toString(36)}_${randomBytes(3).toString('hex')}`,
     motor: pedido.motor,
     anime: pedido.anime,
+    temporada: pedido.temporada,
+    reconhecer: pedido.reconhecer,
+    backend,
+    requisicao,
     ouvintes,
     filho: null,
     inicio: Date.now(),
@@ -763,11 +908,15 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     log: null,
     relogio: null,
     preparo,
+    fimPendente: null,
+    refsDir: null,
+    repetiu: false,
+    fotos: null,
   }
   // A vaga e reservada JA, antes do processo subir: um segundo clique no
   // mesmo instante leva "ja existe" em vez de subir dois motores.
   atual = job
-  setImmediate(() => iniciar(job, backend, requisicao))
+  setImmediate(() => void prepararEIniciar(job))
   return job.id
 }
 
@@ -785,7 +934,8 @@ export async function cancelarAnalise(jobId: string): Promise<void> {
   if (!job || job.id !== jobId || job.entregue || job.cancelado) return
   job.cancelado = true
   const filho = job.filho
-  // Ainda nao subiu: o iniciar ve o `cancelado` e entrega o fim sem subir.
+  // Ainda nao subiu, ou esta entre as duas rodadas copiando a reserva do
+  // elenco: quem viria subir o processo ve o `cancelado` e entrega o fim.
   if (!filho) return
   try {
     filho.stdin.write('{"cmd":"cancel"}\n')

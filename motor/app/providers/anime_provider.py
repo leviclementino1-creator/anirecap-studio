@@ -534,6 +534,10 @@ class AnimeProvider:
             franchise_anilist_ids: list[int] = []
             root_id = None
             cache_id = f"mal{mal_id}"
+        # [Studio] O MAL id da RAIZ da franquia, para a reserva da Kitsu (2c).
+        root_mal_id = mal_id if root_id in (None, anilist_id) else next(
+            (r.mal_id for r in relations if r.anilist_id == root_id), None
+        )
 
         cached = self.load_cached(cache_id)
         if cached is not None and cached.characters:
@@ -624,6 +628,15 @@ class AnimeProvider:
         if mal_id is not None:
             try:
                 kitsu_chars = self.kitsu.characters_by_mal_id(mal_id)
+            except Exception:
+                kitsu_chars = []
+        # [Studio] A Kitsu parou de cadastrar elenco por volta de 2020: a
+        # temporada nova de franquia velha volta vazia (medido em out/2026:
+        # Re:Zero 3a e Slime 3a = 0; as 1as temporadas = 50 e 11). O elenco
+        # da AniList (2b) ja vem da RAIZ, entao a raiz e o par certo dele.
+        if not kitsu_chars and root_mal_id and root_mal_id != mal_id:
+            try:
+                kitsu_chars = self.kitsu.characters_by_mal_id(root_mal_id)
             except Exception:
                 kitsu_chars = []
         if kitsu_chars and merged:

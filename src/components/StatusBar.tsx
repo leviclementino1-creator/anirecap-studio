@@ -12,6 +12,7 @@ import {
   ShieldAlert,
 } from 'lucide-react'
 import { useProject } from '@/store/project'
+import { AnaliseNaBarra } from '@/components/gerar/AnaliseNaBarra'
 import { RELEASES_URL } from '@shared/channels'
 import type { PlanOrigin } from '@shared/contract'
 
@@ -104,6 +105,9 @@ export function StatusBar({ isDragging }: StatusBarProps) {
           <span className="truncate text-[11px] text-ink-3">{idleMessage}</span>
         )}
       </div>
+
+      {/* A analise do Gerar recap rodando com o assistente fechado. */}
+      <AnaliseNaBarra />
 
       {/* Antes do aviso do roteiro: quando o usuario soltou pastas e elas nao
           foram respeitadas, e isto que ele precisa ler primeiro. */}

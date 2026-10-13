@@ -36,6 +36,7 @@ import {
   escolherProvedor,
   limparSchema,
   melhorFlash,
+  sucessorSugerido,
   schemaParaGemini,
   testarGemini,
 } from '../../electron/services/llm'
@@ -411,7 +412,13 @@ async function main(): Promise<void> {
 
   console.log('o modelo do automatico')
   {
-    conferir('o do AniRecap quando existe', melhorFlash(['gemini-3.5-flash', 'gemini-2.5-flash']), 'gemini-2.5-flash')
+    conferir('o mais novo, mesmo com o do AniRecap na lista', melhorFlash(['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.5-flash']), 'gemini-3.8-flash')
+    conferir(
+      'sucessor do 404 de modelo aposentado',
+      sucessorSugerido('This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash for the latest features and improvements.'),
+      'gemini-3.8-flash',
+    )
+    conferir('404 sem sucessor', sucessorSugerido('models/x is not found for API version v1beta'), null)
     conferir('senao o flash estavel e cheio', melhorFlash(['gemini-3.8-flash-preview', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3-pro']), 'gemini-3.5-flash')
     conferir('so preview: o preview', melhorFlash(['gemini-3.8-flash-preview-09-2026', 'gemini-3-pro']), 'gemini-3.8-flash-preview-09-2026')
     conferir('sem flash: um gemini de texto', melhorFlash(['gemini-3-pro', 'gemini-3-pro-image', 'gemma-3-27b-it']), 'gemini-3-pro')
@@ -468,7 +475,7 @@ async function main(): Promise<void> {
       'models?pageSize=1000&pageToken=pagina-2',
     ])
     const gerar = pedidos[2]!
-    conferir('automatico = gemini-2.5-flash', gerar.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
+    conferir('automatico = o flash mais novo da lista', gerar.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent')
     conferir('POST com a chave no cabecalho', [gerar.metodo, gerar.cabecalhos['x-goog-api-key']], ['POST', 'AIza-falsa-de-teste-0006'])
     conferir('chave fora da URL', pedidos.some((p) => p.url.includes('AIza')), false)
     const config = gerar.corpo!['generationConfig'] as Record<string, unknown>
@@ -611,12 +618,30 @@ async function main(): Promise<void> {
     preparar([...listaDeModelos(), respostaDoGemini({ ok: true })])
     const teste = await testarGemini('AIza-digitada-0007', '')
     conferir('lista so os Gemini de texto, mais novos primeiro', teste.modelos, ['gemini-3.5-flash', 'gemini-2.5-flash'])
-    conferir('usou o automatico e deu certo', [teste.modelo, teste.aviso], ['gemini-2.5-flash', null])
+    conferir('usou o automatico e deu certo', [teste.modelo, teste.aviso], ['gemini-3.5-flash', null])
     conferir('com a chave digitada', pedidos[0]!.cabecalhos['x-goog-api-key'], 'AIza-digitada-0007')
 
     preparar([...listaDeModelos(), cota(true, null)])
     const semCota = await testarGemini('AIza-digitada-0007', 'gemini-3.5-flash')
     conferir('chave boa sem cota vira aviso', [semCota.modelo, semCota.aviso?.startsWith('A cota gratis') ?? false], ['gemini-3.5-flash', true])
+
+    // O caso real de 13/10/2026: o modelo aparece na lista mas da 404 para
+    // chave nova, e a mensagem indica o sucessor.
+    preparar([
+      ...listaDeModelos(),
+      json(404, {
+        error: {
+          code: 404,
+          message:
+            'This model models/gemini-3.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash for the latest features and improvements.',
+          status: 'NOT_FOUND',
+        },
+      }),
+      respostaDoGemini({ ok: true }),
+    ])
+    const aposentado = await testarGemini('AIza-digitada-0007', '')
+    conferir('modelo aposentado: vai no sucessor indicado', [aposentado.modelo, aposentado.aviso], ['gemini-3.8-flash', null])
+    conferir('e o aposentado sai da lista', aposentado.modelos.includes('gemini-3.5-flash'), false)
 
     preparar([json(400, { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } })])
     {

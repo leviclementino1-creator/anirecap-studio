@@ -76,8 +76,25 @@ export const SEM_CHAVE =
 
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta'
 
-/** O do AniRecap, e o que esta na cota gratis. O automatico prefere este. */
+/**
+ * Ultimo recurso do automatico, quando nem a lista de modelos veio (rede, chave).
+ * NAO e preferencia: o Google tira modelos do ar para quem chega agora (o
+ * gemini-2.5-flash do AniRecap ainda aparece na lista, mas da 404 "no longer
+ * available to new users"), entao o automatico escolhe pela lista.
+ */
 export const GEMINI_PADRAO = 'gemini-2.5-flash'
+
+/**
+ * Modelos que deram 404 nesta sessao. A lista do Google continua mostrando
+ * modelo aposentado, e sem isto o automatico escolheria o mesmo de novo.
+ */
+const aposentados = new Set<string>()
+
+/** O 404 de modelo aposentado as vezes diz qual usar: "use models/gemini-X". */
+export function sucessorSugerido(mensagem: string): string | null {
+  const achou = /use\s+(?:models\/)?(gemini-[\w.-]*\w)/i.exec(mensagem)
+  return achou ? achou[1]! : null
+}
 
 /** Retentativas depois da primeira chamada, so para erro passageiro. */
 const MAX_RETENTATIVAS = 2
@@ -256,13 +273,18 @@ async function viaGemini<S extends z.ZodType>(
       trocouFormato = true
       continue
     }
-    // O automatico guardou um modelo que saiu do ar: escolhe de novo, uma vez.
+    // O automatico caiu num modelo que saiu do ar: marca, e vai no sucessor que
+    // o proprio Google sugere ou no proximo da lista. Uma troca so.
     if (erro.status === 404 && !modeloConfigurado && !trocouModelo) {
+      aposentados.add(modelo)
       automatico = null
-      const outro = await modeloAutomatico(chave)
+      const sugerido = sucessorSugerido(erro.mensagem)
+      const outro =
+        sugerido && !aposentados.has(sugerido) ? sugerido : await modeloAutomatico(chave)
       trocouModelo = true
       if (outro !== modelo) {
         modelo = outro
+        automatico = { chave, modelo }
         continue
       }
     }
@@ -535,6 +557,10 @@ export function notaDoGemini(erro: ErroGemini, modelo: string): string {
     return 'A chave do Gemini nao tem permissao para isto. Gere outra em aistudio.google.com/apikey.'
   }
   if (erro.status === 404) {
+    const sucessor = sucessorSugerido(erro.mensagem)
+    if (/no longer available/i.test(erro.mensagem)) {
+      return `O Google aposentou o ${modelo || 'modelo escolhido'} para chaves novas.${sucessor ? ` Ele indica o ${sucessor}.` : ''} Escolha outro em configuracoes ou deixe no automatico.`
+    }
     return `O modelo ${modelo || 'escolhido'} nao existe no Gemini. Escolha outro em configuracoes ou deixe no automatico.`
   }
   if (erro.status >= 500) return 'O Gemini esta instavel agora. Tente de novo em alguns minutos.'
@@ -691,16 +717,16 @@ export function modelosDeTexto(ids: readonly string[]): string[] {
 }
 
 /**
- * O modelo do automatico: o gemini-2.5-flash se a chave enxerga ele; senao o
- * melhor "flash" estavel e cheio (nao lite), do mais novo; senao qualquer
- * Gemini de texto.
+ * O modelo do automatico: o melhor "flash" estavel e cheio (nao lite), do mais
+ * novo; senao qualquer Gemini de texto. Os que ja deram 404 nesta sessao ficam
+ * de fora.
  *
  * "Flash" porque e a familia da cota gratis, e e rapido o bastante para a
- * analise nao parecer travada.
+ * analise nao parecer travada. Nao ha preferencia fixa por versao: o Google
+ * aposenta modelo para chave nova antes de tira-lo da lista.
  */
 export function melhorFlash(ids: readonly string[]): string | null {
-  if (ids.includes(GEMINI_PADRAO)) return GEMINI_PADRAO
-  const texto = modelosDeTexto(ids)
+  const texto = modelosDeTexto(ids.filter((id) => !aposentados.has(id)))
   const flashes = texto
     .filter((id) => id.includes('flash'))
     .sort(
@@ -774,9 +800,10 @@ export async function testarGemini(chave: string, modeloConfigurado: string): Pr
     throw new Error(err instanceof ErroDeIa ? err.nota : String(err))
   }
 
-  const modelo = modeloConfigurado || melhorFlash(ids) || GEMINI_PADRAO
-  if (!modeloConfigurado) automatico = { chave, modelo }
+  if (!modeloConfigurado) automatico = { chave, modelo: melhorFlash(ids) || GEMINI_PADRAO }
 
+  // Passa o configurado (ou vazio), e nao o modelo ja escolhido: no automatico
+  // o viaGemini precisa poder trocar de modelo se o escolhido estiver aposentado.
   const resposta = await viaGemini(
     {
       schema: z.object({ ok: z.boolean() }),
@@ -785,8 +812,15 @@ export async function testarGemini(chave: string, modeloConfigurado: string): Pr
       etapa: 'teste',
     },
     chave,
-    modelo,
+    modeloConfigurado,
   )
   if (!resposta.ok) console.warn(`[llm:teste] gemini: ${resposta.bruto}`)
-  return { modelos: modelosDeTexto(ids), modelo, aviso: resposta.ok ? null : resposta.nota }
+  const modelo = resposta.ok
+    ? resposta.modelo
+    : modeloConfigurado || automatico?.modelo || GEMINI_PADRAO
+  return {
+    modelos: modelosDeTexto(ids.filter((id) => !aposentados.has(id))),
+    modelo,
+    aviso: resposta.ok ? null : resposta.nota,
+  }
 }

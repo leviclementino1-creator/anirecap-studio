@@ -56,7 +56,8 @@ function distancia(a: string, b: string, teto: number): number {
  *   - SO UMA palavra difere, e as outras sao identicas -- o nome proprio igual
  *     segura que e a mesma pessoa;
  *   - a palavra que difere tem 5 letras ou mais dos dois lados, e fica a no
- *     maximo 2 edicoes da outra.
+ *     maximo 2 edicoes da outra -- ou so difere na vogal longa do romaji
+ *     (semVogalLonga), em qualquer tamanho.
  *
  * "Rem" e "Ram" nao se juntam (uma palavra so, e curtas). "Kurosaki, Ichigo" e
  * "Kurosaki, Isshin" nao se juntam (4 edicoes).
@@ -73,8 +74,21 @@ export function mesmaPessoaComErro(a: readonly string[], b: readonly string[]): 
   if (sobraA.length !== 1 || sobraB.length !== 1) return false
   const x = sobraA[0]!
   const y = sobraB[0]!
+  if (semVogalLonga(x) === semVogalLonga(y)) return true
   if (Math.min(x.length, y.length) < 5) return false
   return distancia(x, y, 2) <= 2
+}
+
+/**
+ * A vogal longa do romaji, que cada fonte escreve de um jeito: o MyAnimeList
+ * da "Saionji, Ukyou" e "Ishigami, Senkuu", o AniList "Ukyo Saionji" e
+ * "Senku Ishigami". No Dr. Stone S4E37 do Corte Cenas os dois nomes do Ukyo
+ * vieram com ids diferentes, e "ukyo" tem 4 letras -- abaixo do piso do erro
+ * de digitacao. Fica estreito pelo resto da regra: o sobrenome tem que ser
+ * identico.
+ */
+function semVogalLonga(palavra: string): string {
+  return palavra.replace(/ou/g, 'o').replace(/uu/g, 'u').replace(/oo/g, 'o')
 }
 
 /** nome cru -> nome escolhido, para uma serie. `contagem` e quantas cenas usam cada nome cru. */

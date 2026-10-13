@@ -8,6 +8,18 @@ import type {
   Transcript,
 } from './contract'
 import type { OpenedProject, ProjectFile } from './project-file'
+import type {
+  EpisodeIndex,
+  EpisodioEncontrado,
+  Exclusao,
+  FimDaAnalise,
+  IndexarEpisodioArgs,
+  PalpiteDoEpisodio,
+  PedidoDeAnalise,
+  ProgressoDaAnalise,
+  SondaDoEpisodio,
+  StatusDoMotor,
+} from './episodio'
 
 /**
  * Valores de runtime que o preload precisa, sem dependencias.
@@ -98,6 +110,22 @@ export const IPC = {
   toggleFavorite: 'favorites:toggle',
   /** main -> renderer, andamento da varredura da biblioteca */
   libraryProgress: 'library:progress',
+
+  // Gerar recap, passo 1 (Episodio). Tipos em shared/episodio.ts.
+  escolherEpisodio: 'dialog:escolher-episodio',
+  sondarEpisodio: 'episodio:sondar',
+  procurarEpisodio: 'episodio:procurar',
+  indexarEpisodio: 'episodio:indexar',
+  salvarExclusoes: 'episodio:salvar-exclusoes',
+  /** main -> renderer, texto de andamento da indexacao (legenda, OP/ED, indice) */
+  indexarProgresso: 'episodio:indexar-progresso',
+  statusDoMotor: 'motor:status',
+  analisarEpisodio: 'motor:analisar',
+  cancelarAnalise: 'motor:cancelar',
+  /** main -> renderer, ProgressoDaAnalise */
+  analiseProgresso: 'motor:progresso',
+  /** main -> renderer, FimDaAnalise (uma vez por job) */
+  analiseFim: 'motor:fim',
 } as const
 
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
@@ -467,6 +495,14 @@ export interface PublicSettings {
   sfxDir: string
   /** Raiz da biblioteca do AnCut. Vazio = o usuario ainda nao escolheu. */
   libraryDir: string
+  /**
+   * Onde o Studio grava as cenas que ele corta e o episodio.json de cada
+   * episodio. Vazio = o padrao. E o valor CRU: a tela usa
+   * `bibliotecaStudioEfetiva` para mostrar o caminho.
+   */
+  bibliotecaStudio: string
+  /** O caminho de fato, ja resolvido no main (padrao: <Documentos>/AniRecap Studio/Biblioteca). */
+  bibliotecaStudioEfetiva: string
   /** Chave da Anthropic: so se existe e os quatro ultimos caracteres. */
   hasApiKey: boolean
   apiKeyHint: string
@@ -504,6 +540,8 @@ export interface SettingsPatch {
   whisperModel?: 'base' | 'small' | 'medium'
   sfxDir?: string
   libraryDir?: string
+  /** '' volta ao padrao. O main recusa pasta de biblioteca do AnCut/Corte Cenas. */
+  bibliotecaStudio?: string
   curvePresets?: { nome: string; pontos: [number, number, number, number] }[]
   captionStyle?: Record<string, unknown>
   captionPresets?: Record<string, unknown>[]
@@ -814,4 +852,46 @@ export interface DangaiBridge {
   /** Assina o progresso do render. Devolve a funcao para cancelar a assinatura. */
   onRenderProgress(listener: (progress: RenderProgress) => void): () => void
   onAnalyzeProgress(listener: (message: string) => void): () => void
+
+  // ------------------------------------------- Gerar recap, passo 1 (Episodio)
+  // Tipos em shared/episodio.ts. So o botao "Gerar recap" e a area do proprio
+  // assistente chegam aqui: soltar um .mkv na tela inicial continua sendo o
+  // que o Dangai faz (o video vira clipe).
+
+  /** Dialogo de abrir UM episodio (.mkv/.mp4). null = fechou sem escolher. */
+  escolherEpisodio(): Promise<IpcResult<string | null>>
+  /**
+   * Sonda o arquivo: medidas, faixas de legenda, capitulos, impressao digital
+   * e o palpite de anime/temporada/episodio pelo nome. Nao escreve nada.
+   */
+  sondarEpisodio(path: string): Promise<IpcResult<SondaDoEpisodio>>
+  /**
+   * Procura o episodio nas bibliotecas (Studio, AnCut HUB, Corte Cenas e a raiz
+   * do Dangai), do achado mais forte ao mais fraco. Lista vazia = nao achou.
+   * So le.
+   */
+  procurarEpisodio(path: string, palpite: PalpiteDoEpisodio): Promise<IpcResult<EpisodioEncontrado[]>>
+  /** Se o motor do Studio responde (e com qual GPU) e se o AnCut HUB esta instalado. */
+  statusDoMotor(): Promise<IpcResult<StatusDoMotor>>
+  /**
+   * Comeca a analise (corte + personagens) e devolve o jobId na hora. O
+   * andamento e o fim chegam por onAnaliseProgresso/onAnaliseFim. Um job por
+   * vez: com outro rodando, devolve erro.
+   */
+  analisarEpisodio(pedido: PedidoDeAnalise): Promise<IpcResult<string>>
+  /** Pede para parar. O fim chega por onAnaliseFim com `cancelado: true`. */
+  cancelarAnalise(jobId: string): Promise<IpcResult<null>>
+  onAnaliseProgresso(listener: (progresso: ProgressoDaAnalise) => void): () => void
+  onAnaliseFim(listener: (fim: FimDaAnalise) => void): () => void
+  /**
+   * Cria (ou le, se ja existe e confere) o episodio.json: legenda com falante,
+   * planos com as falas, sugestoes de OP/ED. Grava so na biblioteca do Studio.
+   */
+  indexarEpisodio(args: IndexarEpisodioArgs): Promise<IpcResult<EpisodeIndex>>
+  onIndexarProgresso(listener: (mensagem: string) => void): () => void
+  /**
+   * Troca a lista INTEIRA de exclusoes do indice (o que a regua confirmou,
+   * removeu ou ajustou) e devolve o indice gravado.
+   */
+  salvarExclusoes(indiceId: string, exclusoes: readonly Exclusao[]): Promise<IpcResult<EpisodeIndex>>
 }

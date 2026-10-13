@@ -13,6 +13,7 @@ import { useProject } from "@/store/project";
 import { classifyFile } from "@shared/channels";
 import { useRecentes } from "@/store/recentes";
 import { FORMATOS, medidasDo, type Formato } from "@shared/contract";
+import { BotaoGerarRecap } from "@/components/gerar/BotaoGerarRecap";
 
 interface DropzoneProps {
   isDragging: boolean;
@@ -69,6 +70,11 @@ export function Dropzone({ isDragging }: DropzoneProps) {
         </button>
 
         <EscolhaDeFormato />
+        {/* No canto esquerdo: no grupo da direita ele empurrava os botoes por
+            cima do "Short / Long form" ja na largura padrao da janela. */}
+        <div className="absolute left-6 top-6">
+          <BotaoGerarRecap />
+        </div>
         <div className="absolute right-6 top-6 flex items-center gap-2">
           <LegendarVideoPronto />
           <MelhorarVideoPronto />

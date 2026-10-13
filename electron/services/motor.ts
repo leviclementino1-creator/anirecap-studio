@@ -1,0 +1,823 @@
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'node:fs'
+import { homedir } from 'node:os'
+import { delimiter, dirname, join } from 'node:path'
+import {
+  etapaDoEstagio,
+  kindDoEpisodioSchema,
+  type FimDaAnalise,
+  type Motor,
+  type PalpiteDoEpisodio,
+  type PedidoDeAnalise,
+  type ProgressoDaAnalise,
+  type StatusDoMotor,
+} from '@shared/episodio'
+import { desarmarCorteDeOutroArquivo, pastaLembradaPeloMotor } from './episodio/corte-de-outro-arquivo'
+import { impressaoLembrada } from './episodio/impressao'
+import { garantirGravavel, saidaDoCorteCenas } from './episodio/protegidas'
+import { porDeLadoElencoDegradado } from './elenco-degradado'
+import { ffmpegPath } from './ffmpeg-path'
+import { pastaDaBibliotecaStudio, pastaDeDocumentos } from './settings'
+
+/**
+ * O MOTOR: corta o episodio em cenas e reconhece os personagens pelo rosto,
+ * com o mesmo codigo do AnCut (motor/, copia do ancut-hub-engine).
+ *
+ * O Studio continua em TypeScript. So o corte e o reconhecimento rodam num
+ * processo Python separado, falando JSON-lines (motor/app/headless.py, modo
+ * `run`, com `cutOnly` quando nao e para reconhecer).
+ *
+ * Duas formas, mesmo resultado:
+ * - 'studio': motor/.venv/Scripts/python.exe -m app.headless, com cwd motor/,
+ *   gravando na biblioteca do Studio (pastaDaBibliotecaStudio, depois de
+ *   garantirGravavel) e com pasta de dados, banco e config PROPRIOS -- nunca
+ *   %LOCALAPPDATA%\CorteCenas. O host passa ANIRECAP_MOTOR_DADOS e o
+ *   motor/app/config.py ja nao usa o APP_NAME 'CorteCenas' (motor/STUDIO.md).
+ * - 'ancut': o CorteCenas.exe --headless do AnCut HUB instalado, com outputDir
+ *   = a saida dele (saidaDoCorteCenas). Quem grava e o motor do AnCut, que e a
+ *   escolha do usuario; o Studio so le depois.
+ *
+ * O desenho segue o python-service.ts do AnCut HUB, com as armadilhas de
+ * Windows que ele ja pagou para descobrir (ver os comentarios abaixo).
+ */
+
+export interface ConfigDoMotor {
+  /** %APPDATA%/AniRecap Studio. Base da pasta de dados do motor do Studio. */
+  userData: string
+  /** app.getAppPath(): em dev, a raiz do repositorio (onde mora motor/). */
+  appPath: string
+  /** app.isPackaged. O pacote do motor para download fica na F5. */
+  empacotado: boolean
+}
+
+let config: ConfigDoMotor | null = null
+
+/** Chamada pelo main.ts depois do ready. */
+export function configurarMotor(c: ConfigDoMotor): void {
+  config = c
+}
+
+/** A configuracao do main. Lanca antes do configurarMotor. */
+export function configDoMotor(): ConfigDoMotor {
+  if (!config) throw new Error('Motor nao configurado')
+  return config
+}
+
+/** Para onde o motor manda andamento e fim de um job. O ipc.ts liga isto aos canais. */
+export interface OuvintesDaAnalise {
+  progresso(progresso: ProgressoDaAnalise): void
+  fim(fim: FimDaAnalise): void
+}
+
+// ------------------------------------------------------------------ onde mora
+
+/**
+ * Config, cache (index.db, refs do elenco), modelos e logs do motor do Studio.
+ *
+ * Vai para o motor pela env ANIRECAP_MOTOR_DADOS. E o que separa o Studio do
+ * Corte Cenas e do AnCut: os dois dividem %LOCALAPPDATA%\CorteCenas, e um
+ * index.db misturado nao tem volta.
+ */
+export function pastaDeDadosDoMotor(): string {
+  return join(configDoMotor().userData, 'motor')
+}
+
+/** Como subir um motor: executavel, argumentos antes do modo e cwd. */
+interface Backend {
+  cmd: string
+  args: string[]
+  cwd: string
+}
+
+/**
+ * O motor do Studio, ou o motivo de nao haver um (texto para a tela).
+ *
+ * Em dev e o venv de motor/ rodando o modulo direto (mexer no Python vale na
+ * hora). O venv e PROPRIO, nunca o do Corte Cenas: o torch dele e o cu128 que
+ * roda na RTX 5080.
+ */
+function backendDoStudio(): Backend | { erro: string } {
+  const c = configDoMotor()
+  if (c.empacotado) {
+    // F5: no app instalado o motor vira um pacote para download opcional
+    // (~2 a 5 GB de torch + CUDA), fora do asar e fora do instalador -- o
+    // mesmo motivo do AnCut HUB (NSIS 32-bit nao mapeia pacote acima de ~2 GB).
+    // Quando existir, ele entra aqui, antes do venv.
+    return { erro: 'O motor de personagens ainda nao vem no app instalado. Por enquanto ele roda so na versao de desenvolvimento.' }
+  }
+  const pasta = join(c.appPath, 'motor')
+  const python =
+    process.platform === 'win32'
+      ? join(pasta, '.venv', 'Scripts', 'python.exe')
+      : join(pasta, '.venv', 'bin', 'python')
+  if (!existsSync(python)) {
+    return { erro: `O motor de personagens nao esta instalado: falta o Python dele em ${python}.` }
+  }
+  return { cmd: python, args: ['-m', 'app.headless'], cwd: pasta }
+}
+
+/**
+ * O CorteCenas.exe do AnCut HUB instalado, ou null.
+ *
+ * Os mesmos lugares do resolveBackend do AnCut HUB: ANCUT_BACKEND, o
+ * instalador unico (motor em engine\, ao lado da interface) e o instalador do
+ * motor (exe direto na pasta), em Program Files ou por usuario.
+ *
+ * De fora DE PROPOSITO: a pasta "CorteCenas" que o AnCut HUB tambem aceita.
+ * E onde instala o Corte Cenas ORIGINAL do Levi, que nao tem o modo
+ * --headless -- chamar o exe dele com a flag abriria a janela Qt dele em vez
+ * de analisar.
+ */
+export function acharAnCut(): string | null {
+  const override = process.env['ANCUT_BACKEND']
+  if (override && existsSync(override)) return override
+  const programFiles = process.env['ProgramFiles'] ?? 'C:\\Program Files'
+  const porUsuario = join(process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local'), 'Programs')
+  for (const base of [join(programFiles, 'AnCut HUB'), join(porUsuario, 'AnCut HUB')]) {
+    for (const exe of [join(base, 'engine', 'CorteCenas.exe'), join(base, 'CorteCenas.exe')]) {
+      if (existsSync(exe)) return exe
+    }
+  }
+  return null
+}
+
+function backendDoAnCut(): Backend | { erro: string } {
+  const exe = acharAnCut()
+  if (!exe) return { erro: 'O AnCut HUB nao esta instalado neste computador.' }
+  return { cmd: exe, args: ['--headless'], cwd: dirname(exe) }
+}
+
+/**
+ * Ambiente dos processos do motor.
+ *
+ * - PYTHONIOENCODING: sem ele o Python abre a saida em cp1252 e todo acento
+ *   do log chega quebrado (a licao do AnCut HUB). O canal de eventos ja vai em
+ *   ASCII puro, mas o stderr nao.
+ * - YOLO_AUTOINSTALL: o run.py do exe liga isto antes de tudo; rodando o
+ *   modulo direto (dev) o run.py nao entra, e a ultralytics tentaria um
+ *   `pip install` sozinha no meio da analise.
+ * - PATH: o ffmpeg do sistema primeiro (ele tem ffprobe e NVENC); o
+ *   ffmpeg-static do app no FIM, so de reserva. O motor acha o ffmpeg pelo
+ *   PATH (motor/app/ffmpeg_locate.py) quando nao ha motor/bin/.
+ * - ANIRECAP_MOTOR_DADOS: so no motor do Studio. O do AnCut usa a pasta dele,
+ *   que e a escolha do usuario quando ele pede "Analisar com o AnCut".
+ */
+function ambiente(motor: Motor): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', YOLO_AUTOINSTALL: 'false' }
+  // No Windows a chave e 'Path'. Criar 'PATH' ao lado deixaria duas, e qual
+  // vale fica por conta da ordem.
+  const chave = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+  env[chave] = [env[chave], dirname(ffmpegPath)].filter(Boolean).join(delimiter)
+  if (motor === 'studio') env['ANIRECAP_MOTOR_DADOS'] = pastaDeDadosDoMotor()
+  else delete env['ANIRECAP_MOTOR_DADOS']
+  return env
+}
+
+// ------------------------------------------------------------- utilidades
+
+/**
+ * Le um stream de JSON-lines respeitando fronteira de linha.
+ *
+ * O chunk do pipe NAO e uma linha: vem cortado no meio de um objeto ou com
+ * tres de uma vez. Sem o buffer o JSON.parse quebra justo nos eventos longos.
+ */
+class LeitorDeLinhas {
+  private resto = ''
+
+  constructor(private readonly aoLer: (linha: string) => void) {}
+
+  push(pedaco: string): void {
+    this.resto += pedaco
+    let i = this.resto.indexOf('\n')
+    while (i >= 0) {
+      const linha = this.resto.slice(0, i).trim()
+      this.resto = this.resto.slice(i + 1)
+      if (linha) this.aoLer(linha)
+      i = this.resto.indexOf('\n')
+    }
+  }
+
+  flush(): void {
+    const linha = this.resto.trim()
+    this.resto = ''
+    if (linha) this.aoLer(linha)
+  }
+}
+
+type Evento = Record<string, unknown> & { type?: unknown }
+
+function lerEvento(linha: string): Evento | null {
+  try {
+    const cru: unknown = JSON.parse(linha)
+    return cru && typeof cru === 'object' && !Array.isArray(cru) ? (cru as Evento) : null
+  } catch {
+    return null
+  }
+}
+
+/** Interface em ASCII, como o resto do app: a frase do motor vem com acento. */
+function ascii(texto: string): string {
+  return texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2014\u2013]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\u2192/g, '->')
+}
+
+/**
+ * Mata o processo e os filhos dele (o ffmpeg que o motor sobe por cena).
+ *
+ * No Windows o child.kill() so derruba o python; o ffmpeg continuaria
+ * gravando um mp4 pela metade e segurando o arquivo. taskkill /T leva a
+ * arvore. `sincrono` e para a saida do app, quando nao ha depois.
+ */
+function matarArvore(filho: ChildProcess, sincrono = false): void {
+  const pid = filho.pid
+  if (!pid || filho.exitCode !== null || filho.signalCode !== null) return
+  if (process.platform !== 'win32') {
+    filho.kill('SIGKILL')
+    return
+  }
+  const args = ['/PID', String(pid), '/T', '/F']
+  if (sincrono) {
+    spawnSync('taskkill', args, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
+  } else {
+    spawn('taskkill', args, { windowsHide: true, stdio: 'ignore' }).on('error', () => {
+      filho.kill()
+    })
+  }
+}
+
+/** As ultimas linhas do stderr, para explicar uma morte sem evento final. */
+function cauda(linhas: string[]): string {
+  // O traceback do Python termina na linha que importa; as 6 ultimas bastam
+  // para a tela, o resto fica no log.
+  return ascii(linhas.slice(-6).join(' | ')).slice(0, 600)
+}
+
+// ------------------------------------------------------- consultas curtas
+
+/** Processos curtos vivos (probe, parse), para o encerrarMotor nao deixar orfao. */
+const curtos = new Set<ChildProcess>()
+
+interface SaidaCurta {
+  eventos: Evento[]
+  stderr: string[]
+  /** Por que nao houve resposta: spawn falhou ou o tempo estourou. null = saiu sozinho. */
+  falha: string | null
+}
+
+/**
+ * Roda um modo de tiro curto do headless e devolve os eventos.
+ *
+ * spawn assincrono, nunca execFileSync: o probe importa o torch e leva
+ * segundos, e o main nao pode parar (a licao do tracker.ts).
+ */
+function rodarCurto(backend: Backend, motor: Motor, args: string[], limiteMs: number): Promise<SaidaCurta> {
+  return new Promise((resolver) => {
+    const eventos: Evento[] = []
+    const stderr: string[] = []
+    let falha: string | null = null
+    let acabou = false
+    const terminar = (): void => {
+      if (acabou) return
+      acabou = true
+      clearTimeout(relogio)
+      resolver({ eventos, stderr, falha })
+    }
+
+    let filho: ChildProcessWithoutNullStreams
+    try {
+      filho = spawn(backend.cmd, [...backend.args, ...args], {
+        cwd: backend.cwd,
+        windowsHide: true,
+        env: ambiente(motor),
+      })
+    } catch (e) {
+      resolver({ eventos, stderr, falha: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    curtos.add(filho)
+    // Sem stdin: o modo curto nao le nada, e o pipe aberto nao serve a ninguem.
+    filho.stdin.on('error', () => {})
+    filho.stdin.end()
+
+    const leitor = new LeitorDeLinhas((linha) => {
+      const ev = lerEvento(linha)
+      if (ev) eventos.push(ev)
+    })
+    filho.stdout.setEncoding('utf8')
+    filho.stdout.on('data', (d: string) => leitor.push(d))
+    const leitorErro = new LeitorDeLinhas((linha) => {
+      stderr.push(linha)
+      if (stderr.length > 200) stderr.shift()
+    })
+    filho.stderr.setEncoding('utf8')
+    filho.stderr.on('data', (d: string) => leitorErro.push(d))
+
+    filho.on('error', (e) => {
+      falha = e.message
+      curtos.delete(filho)
+      terminar()
+    })
+    filho.on('close', () => {
+      leitor.flush()
+      leitorErro.flush()
+      curtos.delete(filho)
+      terminar()
+    })
+
+    // Rede de seguranca: motor travado nao pode deixar a promessa pendurada.
+    const relogio = setTimeout(() => {
+      falha = `o motor nao respondeu em ${Math.round(limiteMs / 1000)} s`
+      matarArvore(filho)
+      terminar()
+    }, limiteMs)
+  })
+}
+
+function explicar(saida: SaidaCurta, padrao: string): string {
+  const falhou = saida.eventos.find((e) => e.type === 'failed')
+  if (falhou && typeof falhou['message'] === 'string') return `${padrao}: ${ascii(falhou['message'])}`
+  if (saida.falha) return `${padrao}: ${ascii(saida.falha)}`
+  if (saida.stderr.length) return `${padrao}: ${cauda(saida.stderr)}`
+  return padrao
+}
+
+// ----------------------------------------------------------------- status
+
+/**
+ * A sondagem do motor do Studio. O probe importa torch e CUDA (~4 s, mais na
+ * primeira vez do disco frio); a resposta BOA nao muda enquanto o app esta
+ * aberto e fica para a sessao inteira. A ruim nao: o probe que estourou o
+ * tempo com o disco frio, ou o venv que ainda estava sendo instalado, tem que
+ * poder ser conferido de novo sem reiniciar o app.
+ */
+let sondaDoStudio: Promise<StatusDoMotor['studio']> | null = null
+
+async function sondarStudio(): Promise<StatusDoMotor['studio']> {
+  const vazio = { pronto: false, versao: null, gpu: null }
+  try {
+    const backend = backendDoStudio()
+    if ('erro' in backend) return { ...vazio, erro: backend.erro }
+    // 2 min: o primeiro import do torch com o disco frio passa de 30 s.
+    const saida = await rodarCurto(backend, 'studio', ['probe'], 120_000)
+    const probe = saida.eventos.find((e) => e.type === 'probe')
+    if (!probe) return { ...vazio, erro: explicar(saida, 'O motor de personagens nao respondeu') }
+    const versao = typeof probe['version'] === 'string' ? probe['version'] : null
+    const gpu = typeof probe['gpuName'] === 'string' && probe['gpuName'] ? probe['gpuName'] : null
+    // Sem ffmpeg o motor nao corta nada: melhor dizer agora do que no meio.
+    if (probe['ffmpeg'] === false) {
+      return { pronto: false, versao, gpu, erro: 'O motor de personagens nao achou o ffmpeg.' }
+    }
+    return { pronto: true, versao, gpu, erro: null }
+  } catch (e) {
+    return { ...vazio, erro: ascii(e instanceof Error ? e.message : String(e)) }
+  }
+}
+
+/**
+ * O motor do Studio responde? E o AnCut HUB esta instalado?
+ *
+ * Chamadas ao mesmo tempo dividem um probe so (a promessa fica guardada), que
+ * nunca trava o main. Depois que ele responde pronto, a resposta vale para a
+ * sessao; `pronto: false` (motor ausente, timeout, crash) volta com o `erro`
+ * em texto para a tela e e esquecido, para a proxima chamada sondar de novo.
+ * O AnCut e conferido a cada chamada: e so olhar se um arquivo existe, e ele
+ * pode ter sido instalado com o app aberto.
+ */
+export async function statusDoMotor(): Promise<StatusDoMotor> {
+  const sonda = (sondaDoStudio ??= sondarStudio())
+  const caminho = acharAnCut()
+  const studio = await sonda
+  if (!studio.pronto && sondaDoStudio === sonda) sondaDoStudio = null
+  return { studio, ancut: { instalado: caminho !== null, caminho } }
+}
+
+/**
+ * Anime, temporada, episodio e kind pelo nome do arquivo, com o parse do
+ * proprio motor (`python -m app.headless parse <path>`, sem torch, ~0,2 s).
+ *
+ * Fica no motor e nao reescrito em TS porque a heuristica tem dezenas de
+ * padroes e o nome da pasta como reserva. null quando o motor nao esta pronto
+ * ou nao entendeu o nome; quem chama (sondar.ts) cai no parse do Studio.
+ */
+export async function adivinharPeloMotor(path: string): Promise<PalpiteDoEpisodio | null> {
+  const backend = backendDoStudio()
+  if ('erro' in backend) return null
+  const saida = await rodarCurto(backend, 'studio', ['parse', path], 30_000)
+  const p = saida.eventos.find((e) => e.type === 'parsed')
+  if (!p) return null
+  const anime = typeof p['anime'] === 'string' ? p['anime'].trim() : ''
+  const temporada = Number(p['season'])
+  const episodio = Number(p['episode'])
+  if (!anime || !Number.isInteger(temporada) || temporada < 0 || !Number.isInteger(episodio) || episodio < 0) {
+    return null
+  }
+  const kind = kindDoEpisodioSchema.safeParse(p['kind'])
+  return { anime, temporada, episodio, kind: kind.success ? kind.data : '' }
+}
+
+// ---------------------------------------------------------------- analise
+
+interface Job {
+  id: string
+  motor: Motor
+  anime: string
+  ouvintes: OuvintesDaAnalise
+  filho: ChildProcessWithoutNullStreams | null
+  inicio: number
+  /** O fim ja foi entregue. Daqui em diante o processo so esta terminando de morrer. */
+  entregue: boolean
+  cancelado: boolean
+  stderr: string[]
+  log: WriteStream | null
+  relogio: NodeJS.Timeout | null
+  /** O que o Studio arrumou nas proprias pastas antes de subir o motor. So para o log. */
+  preparo: string[]
+}
+
+/** O job da vez. Um por vez: o motor ocupa a GPU inteira. */
+let atual: Job | null = null
+
+/**
+ * Espera o job anterior acabar de morrer, quando ele JA entregou o fim.
+ *
+ * O `done` chega antes do `close` do processo: quem recebe o fim e pede outra
+ * analise na hora (o "Analisar de novo") bateria em "ja existe uma analise"
+ * por um processo que so esta descarregando o torch. Job rodando de verdade
+ * nao espera: e erro na hora.
+ */
+async function esperarOAnterior(limiteMs = 15_000): Promise<void> {
+  const ate = Date.now() + limiteMs
+  while (atual && atual.entregue && Date.now() < ate) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+/** Entrega o fim UMA vez por job, aconteca o que acontecer depois. */
+function entregar(job: Job, fim: FimDaAnalise): void {
+  if (job.entregue) return
+  job.entregue = true
+  job.log?.write(`\n[studio] fim: ${JSON.stringify(fim)}\n`)
+  try {
+    job.ouvintes.fim(fim)
+  } catch (e) {
+    console.error('[motor] ouvinte do fim falhou:', e)
+  }
+  // O processo tem 30 s para sair sozinho depois do evento final. Preso alem
+  // disso (thread pendurada no shutdown do torch), ele so segura a GPU.
+  if (job.filho) {
+    const filho = job.filho
+    if (job.relogio) clearTimeout(job.relogio)
+    job.relogio = setTimeout(() => matarArvore(filho), 30_000)
+  } else {
+    soltar(job)
+  }
+}
+
+function falhou(job: Job, erro: string): FimDaAnalise {
+  return { jobId: job.id, ok: false, cancelado: false, erro, precisaDescoberta: null }
+}
+
+function cancelou(job: Job): FimDaAnalise {
+  return { jobId: job.id, ok: false, cancelado: true, erro: 'Analise cancelada.', precisaDescoberta: null }
+}
+
+/** Libera a vaga do job e fecha o log. */
+function soltar(job: Job): void {
+  if (job.relogio) clearTimeout(job.relogio)
+  job.relogio = null
+  job.log?.end()
+  job.log = null
+  if (atual === job) atual = null
+}
+
+function segundosDesde(inicio: number): number {
+  return Math.round((Date.now() - inicio) / 100) / 10
+}
+
+/** Um evento do headless -> progresso ou fim do contrato. */
+function tratarEvento(job: Job, ev: Evento): void {
+  switch (ev.type) {
+    case 'stage': {
+      if (job.entregue) return
+      const estagio = typeof ev['stage'] === 'string' ? ev['stage'] : ''
+      const fracao = Number(ev['fraction'])
+      try {
+        job.ouvintes.progresso({
+          jobId: job.id,
+          etapa: etapaDoEstagio(estagio),
+          etapaDoMotor: estagio,
+          // -1 e o "nao sei quanto falta" do motor.
+          fracao: Number.isFinite(fracao) && fracao >= 0 ? Math.min(1, fracao) : null,
+          mensagem: ascii(typeof ev['message'] === 'string' ? ev['message'] : ''),
+        })
+      } catch (e) {
+        console.error('[motor] ouvinte do progresso falhou:', e)
+      }
+      return
+    }
+    case 'done': {
+      const r = (ev['result'] ?? {}) as Record<string, unknown>
+      const pasta = typeof r['episodeRoot'] === 'string' ? r['episodeRoot'] : ''
+      if (!pasta) {
+        entregar(job, falhou(job, 'O motor terminou sem dizer onde gravou as cenas.'))
+        return
+      }
+      const total = Number(r['totalShots'])
+      const nomes = Array.isArray(r['identifiedCharacters'])
+        ? r['identifiedCharacters'].filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+        : []
+      entregar(job, {
+        jobId: job.id,
+        ok: true,
+        motor: job.motor,
+        pastaDoEpisodio: pasta,
+        totalCenas: Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0,
+        personagens: nomes,
+        segundos: segundosDesde(job.inicio),
+      })
+      return
+    }
+    case 'needs-input': {
+      // O motor parou antes de reconhecer: nao achou o anime nas fontes de
+      // elenco, ou ninguem ficou com fotos suficientes. A saida do passo 1 e
+      // cortar sem reconhecer; a rodada de descoberta com nomes fica para depois.
+      const semAnime = ev['kind'] === 'anime-not-found'
+      entregar(job, {
+        jobId: job.id,
+        ok: false,
+        cancelado: false,
+        erro: semAnime
+          ? `Nao achei "${job.anime}" no AniList nem no MyAnimeList, entao nao da para buscar o elenco. Confira o nome do anime ou corte sem reconhecer personagens.`
+          : `Nenhum personagem de "${job.anime}" ficou com fotos de referencia suficientes (as fontes de imagem podem estar fora do ar). Tente de novo mais tarde ou corte sem reconhecer personagens.`,
+        precisaDescoberta: semAnime ? 'anime-nao-encontrado' : 'sem-referencias',
+      })
+      return
+    }
+    case 'cancelled':
+      entregar(job, cancelou(job))
+      return
+    case 'failed': {
+      const msg = typeof ev['message'] === 'string' && ev['message'] ? ascii(ev['message']) : 'erro sem mensagem'
+      if (typeof ev['detail'] === 'string') job.log?.write(`\n[studio] detalhe do erro:\n${ev['detail']}\n`)
+      entregar(job, job.cancelado ? cancelou(job) : falhou(job, `O motor parou com erro: ${msg}`))
+      return
+    }
+    case 'discovery-ready': {
+      // So acontece com `discovery: true`, que o Studio nao pede. Se vier, o
+      // processo ficaria esperando nomes para sempre: dispensa e avisa.
+      try {
+        job.filho?.stdin.write('{"cmd":"cancel"}\n')
+      } catch {
+        /* o close cuida */
+      }
+      entregar(job, falhou(job, 'O motor pediu os nomes do elenco (descoberta), que o Studio ainda nao faz.'))
+      return
+    }
+    default:
+      // 'timings' e o que vier de novo: so para o log.
+      job.log?.write(`[studio] evento: ${JSON.stringify(ev)}\n`)
+  }
+}
+
+/** Sobe o processo do job. Roda em setImmediate, depois do jobId ter voltado. */
+function iniciar(job: Job, backend: Backend, requisicao: Record<string, unknown>): void {
+  if (job.cancelado) {
+    entregar(job, cancelou(job))
+    return
+  }
+
+  try {
+    const logs = join(pastaDeDadosDoMotor(), 'logs')
+    mkdirSync(logs, { recursive: true })
+    // Um arquivo so, sobrescrito: o log do pipeline e longo, e o que importa
+    // depurar e sempre a ultima analise.
+    job.log = createWriteStream(join(logs, 'ultima-analise.log'), { flags: 'w' })
+    job.log.on('error', () => {
+      job.log = null
+    })
+    job.log.write(`[studio] ${new Date().toISOString()} job ${job.id} motor ${job.motor}\n`)
+    job.log.write(`[studio] ${backend.cmd} ${backend.args.join(' ')} run\n[studio] ${JSON.stringify(requisicao)}\n`)
+    for (const linha of job.preparo) job.log.write(`[studio] ${linha}\n`)
+    job.log.write('\n')
+  } catch {
+    job.log = null
+  }
+
+  let filho: ChildProcessWithoutNullStreams
+  try {
+    filho = spawn(backend.cmd, [...backend.args, 'run'], {
+      cwd: backend.cwd,
+      windowsHide: true,
+      env: ambiente(job.motor),
+    })
+  } catch (e) {
+    entregar(job, falhou(job, `Nao deu para iniciar o motor: ${e instanceof Error ? e.message : String(e)}`))
+    return
+  }
+  job.filho = filho
+
+  const leitor = new LeitorDeLinhas((linha) => {
+    const ev = lerEvento(linha)
+    if (ev) tratarEvento(job, ev)
+    else job.log?.write(`[studio] linha fora do protocolo: ${linha.slice(0, 300)}\n`)
+  })
+  filho.stdout.setEncoding('utf8')
+  filho.stdout.on('data', (d: string) => leitor.push(d))
+
+  // stderr e o log humano do pipeline: vai para o arquivo, e a cauda explica
+  // uma morte sem evento final.
+  const leitorErro = new LeitorDeLinhas((linha) => {
+    job.stderr.push(linha)
+    if (job.stderr.length > 80) job.stderr.shift()
+  })
+  filho.stderr.setEncoding('utf8')
+  filho.stderr.on('data', (d: string) => {
+    job.log?.write(d)
+    leitorErro.push(d)
+  })
+
+  // Escrever num processo que ja morreu da EPIPE como evento 'error' do stdin;
+  // sem ouvinte, o Node derrubaria o main inteiro.
+  filho.stdin.on('error', () => {})
+
+  filho.on('error', (e) => {
+    entregar(job, falhou(job, `Nao deu para iniciar o motor: ${e.message}`))
+    // Sem pid o close pode nao vir: libera a vaga aqui.
+    if (!filho.pid) soltar(job)
+  })
+
+  filho.on('close', (codigo) => {
+    leitor.flush()
+    leitorErro.flush()
+    if (!job.entregue) {
+      if (job.cancelado) {
+        entregar(job, cancelou(job))
+      } else {
+        const porque = job.stderr.length ? `: ${cauda(job.stderr)}` : '.'
+        entregar(job, falhou(job, `O motor parou sem terminar (codigo ${codigo ?? '?'})${porque}`))
+      }
+    }
+    soltar(job)
+  })
+
+  // A requisicao vai na 1a linha do stdin. O stdin fica ABERTO: e por ele que
+  // o cancelamento chega, e o motor le pipe fechado como "o host morreu" e
+  // cancela sozinho.
+  filho.stdin.write(`${JSON.stringify(requisicao)}\n`)
+}
+
+/**
+ * Comeca a analise e devolve o jobId.
+ *
+ * - Um job por vez: com outro rodando, lanca "Ja existe uma analise rodando.".
+ * - O processo sobe DEPOIS de devolver o jobId (setImmediate): nenhum evento
+ *   do job chega ao renderer antes da resposta do invoke.
+ * - `reconhecer: false` -> `cutOnly: true`. O corte sai em renderExportMode
+ *   'compat' (8 bits, 23,976 CFR), para os pontos de corte sairem iguais aos do
+ *   AnCut.
+ * - `fim` e chamado exatamente uma vez por job, sempre.
+ */
+export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: OuvintesDaAnalise): Promise<string> {
+  await esperarOAnterior()
+  // A impressao (para o desarme abaixo) vem ANTES da checagem da vaga: dali
+  // ate reservar o job nao pode haver await, ou dois cliques passariam juntos.
+  const impressao = pedido.motor === 'studio' ? await impressaoLembrada(pedido.path) : null
+  if (atual) throw new Error('Ja existe uma analise rodando.')
+
+  const backend = pedido.motor === 'studio' ? backendDoStudio() : backendDoAnCut()
+  if ('erro' in backend) throw new Error(backend.erro)
+
+  // Onde grava. A ordem importa: a guarda vem antes de tudo, e a pasta so e
+  // criada depois de conferir o video -- um pedido torto nao deixa nem pasta
+  // vazia para tras.
+  let outputDir: string
+  if (pedido.motor === 'studio') {
+    outputDir = pastaDaBibliotecaStudio()
+    garantirGravavel(outputDir)
+  } else {
+    // Quem grava e o AnCut, na saida dele (a do config.json que ele divide
+    // com o Corte Cenas). Sem config, o padrao do exe instalado.
+    outputDir = saidaDoCorteCenas() ?? join(pastaDeDocumentos(), 'CorteCenas', 'Output')
+  }
+  if (!existsSync(pedido.path)) throw new Error('Esse arquivo de video nao esta mais no disco.')
+  // Guardas do Studio sobre as proprias pastas, ate as correcoes do motor
+  // voltarem do ancut-hub-engine (ver cada arquivo). Sincronas e sem lancar.
+  const preparo: string[] = []
+  if (pedido.motor === 'studio') {
+    mkdirSync(outputDir, { recursive: true })
+    for (const pasta of desarmarCorteDeOutroArquivo({
+      biblioteca: outputDir,
+      path: pedido.path,
+      anime: pedido.anime,
+      temporada: pedido.temporada,
+      episodio: pedido.episodio,
+      kind: pedido.kind,
+      id: impressao,
+      pastaLembrada: pastaLembradaPeloMotor(pastaDeDadosDoMotor(), pedido.anime),
+    })) {
+      preparo.push(`cortada de outro arquivo, recorte forcado se o motor usar: ${pasta}`)
+    }
+    if (pedido.reconhecer) {
+      for (const pasta of porDeLadoElencoDegradado(pastaDeDadosDoMotor())) {
+        preparo.push(`elenco degradado posto de lado (o motor busca de novo): ${pasta}`)
+      }
+    }
+  }
+
+  // Os nomes sao os de headless._run/_apply_request_to_config. Sem `params`:
+  // limiar, margem e cia ficam no padrao do motor (config.py), que e o que o
+  // AnCut usa. Sem skipHead/skipTail: o episodio e cortado INTEIRO, e OP/ED
+  // viram exclusoes no indice do Studio.
+  const requisicao: Record<string, unknown> = {
+    videoPath: pedido.path,
+    anime: pedido.anime,
+    season: pedido.temporada,
+    episode: pedido.episodio,
+    kind: pedido.kind,
+    outputDir,
+    cutOnly: !pedido.reconhecer,
+    renderExportMode: 'compat',
+    aiReview: false,
+    discovery: false,
+    mergePrevious: false,
+    skipCreditShots: false,
+    useDanbooru: false,
+    mediaKind: 'anime',
+  }
+
+  const job: Job = {
+    id: `job_${Date.now().toString(36)}_${randomBytes(3).toString('hex')}`,
+    motor: pedido.motor,
+    anime: pedido.anime,
+    ouvintes,
+    filho: null,
+    inicio: Date.now(),
+    entregue: false,
+    cancelado: false,
+    stderr: [],
+    log: null,
+    relogio: null,
+    preparo,
+  }
+  // A vaga e reservada JA, antes do processo subir: um segundo clique no
+  // mesmo instante leva "ja existe" em vez de subir dois motores.
+  atual = job
+  setImmediate(() => iniciar(job, backend, requisicao))
+  return job.id
+}
+
+/**
+ * Pede para parar o job: {"cmd":"cancel"} no stdin e, se o processo nao sair
+ * em 10 s, mata a arvore dele.
+ *
+ * O motor so olha o pedido na proxima chamada de progresso -- entre uma cena
+ * e outra, segundos no maximo --, mas carregar o CLIP na GPU pode passar disso
+ * sem nenhum progresso no meio. jobId que nao esta rodando e no-op (o usuario
+ * pode clicar duas vezes).
+ */
+export async function cancelarAnalise(jobId: string): Promise<void> {
+  const job = atual
+  if (!job || job.id !== jobId || job.entregue || job.cancelado) return
+  job.cancelado = true
+  const filho = job.filho
+  // Ainda nao subiu: o iniciar ve o `cancelado` e entrega o fim sem subir.
+  if (!filho) return
+  try {
+    filho.stdin.write('{"cmd":"cancel"}\n')
+  } catch {
+    matarArvore(filho)
+    return
+  }
+  if (job.relogio) clearTimeout(job.relogio)
+  job.relogio = setTimeout(() => matarArvore(filho), 10_000)
+}
+
+/**
+ * Mata o processo do motor ao sair do app. Ligado ao before-quit no main.ts.
+ *
+ * Nunca lanca: roda no caminho de saida, e uma excecao aqui seguraria o app
+ * aberto. O Windows nao mata o filho junto (a licao do whisper-cli), e um
+ * motor orfao segura a GPU ate alguem abrir o Gerenciador de Tarefas.
+ */
+export function encerrarMotor(): void {
+  try {
+    const job = atual
+    if (job?.filho) matarArvore(job.filho, true)
+    if (job) soltar(job)
+  } catch {
+    /* saindo do app: nada a fazer */
+  }
+  for (const filho of curtos) {
+    try {
+      filho.kill()
+    } catch {
+      /* ja morreu */
+    }
+  }
+  curtos.clear()
+}

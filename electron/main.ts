@@ -20,6 +20,8 @@ import { configureUpscale, configureUpscaleCache } from './services/upscale'
 import { startUpdater } from './services/updater'
 import { configureWhisper, encerrarWhisper } from './services/whisper'
 import { configureFaces } from './services/faces'
+import { configurarMotor, encerrarMotor } from './services/motor'
+import { configurarEpisodios } from './services/episodio/indice'
 
 const isDev = !app.isPackaged
 
@@ -145,6 +147,10 @@ app.whenReady().then(async () => {
   configureInverter(userData)
   configureSobreposicao(userData)
   configureDescribe(userData)
+  // Gerar recap: o motor Python (motor/) e o indice dos episodios. O que eles
+  // guardam no perfil fica aqui; as cenas vao para a biblioteca do Studio.
+  configurarEpisodios(userData)
+  configurarMotor({ userData, appPath: app.getAppPath(), empacotado: app.isPackaged })
 
   // Os SFX moram no userData para o usuario poder trocar os arquivos: a pasta
   // do app some numa atualizacao e pode nem ter permissao de escrita.
@@ -212,6 +218,8 @@ app.whenReady().then(async () => {
  * de leva-lo embora.
  */
 app.on('before-quit', encerrarWhisper)
+// O motor do Gerar recap tambem: torch na GPU nao pode sobrar depois da janela.
+app.on('before-quit', encerrarMotor)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

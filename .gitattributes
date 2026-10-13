@@ -30,3 +30,9 @@
 *.dll binary
 *.7z binary
 *.zip binary
+
+# Scripts do Windows (os do motor vieram do AnCut) precisam de CRLF: o cmd.exe
+# erra rotulo e goto em .bat com LF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

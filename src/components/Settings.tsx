@@ -3,6 +3,7 @@ import { FolderOpen, X } from "lucide-react";
 import type { PublicSettings } from "@shared/channels";
 import { useProject } from "@/store/project";
 import { Atalhos } from "./Atalhos";
+import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
 
 /**
  * Um campo que importa: a chave da IA. O resto e escolha rara.
@@ -411,6 +412,8 @@ export function Settings() {
                 A pasta onde o AnCut grava as cenas. O AniRecap Studio so le: nunca
                 renomeia, move nem apaga nada ai dentro. Ctrl+B abre a busca.
               </p>
+
+              <AjustesDoStudio settings={settings} onSettings={setSettings} />
             </>
           )}
         </div>

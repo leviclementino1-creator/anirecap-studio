@@ -19,3 +19,13 @@ Thumbs.db
 
 # Permissoes locais do Claude Code: so valem nesta maquina.
 .claude/settings.local.json
+
+# Motor de personagens (motor/): o venv (torch + CUDA, ~5 GB), o cache e os
+# modelos sao desta maquina. A pasta de dados do motor pelo Studio fica no
+# userData (motor/STUDIO.md); estas sao as do motor rodado a mao, do fonte.
+motor/.venv/
+motor/cache/
+motor/models/
+motor/Output/
+__pycache__/
+*.pyc

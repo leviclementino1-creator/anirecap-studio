@@ -1,0 +1,599 @@
+import { z } from 'zod'
+import { canonizar } from './nomes'
+
+/**
+ * O EPISODIO, do jeito que o Studio o entende: o contrato do passo 1 do
+ * assistente "Gerar recap" (Episodio -> Roteiro -> Voz -> Cenas).
+ *
+ * Fonte unica da verdade para os tres lados que mexem nele:
+ *   - o motor (electron/services/motor.ts), que corta e reconhece personagens;
+ *   - o episodio (electron/services/episodio/*), que sonda, procura, le a
+ *     legenda, sugere OP/ED e grava o indice;
+ *   - a interface (src/components/gerar/GerarRecap.tsx e src/store/gerar.ts),
+ *     que mostra e confirma.
+ *
+ * Os tipos saem de z.infer, como em contract.ts. channels.ts so importa TIPOS
+ * daqui (`import type`): este arquivo puxa zod, e o preload tem que ficar
+ * pequeno.
+ *
+ * TEMPO: todo segundo neste arquivo (cues, planos, exclusoes, capitulos) e o
+ * tempo de REPRODUCAO do .mkv -- 0 e o primeiro quadro que o player mostra, ou
+ * seja PTS menos `startTimeSec`. E a mesma base do shots.json do AnCut (quadro
+ * dividido por fps, contado do primeiro quadro). Quem le algo com PTS absoluto
+ * (a legenda extraida, por exemplo) subtrai `startTimeSec` antes de gravar.
+ */
+
+/** Sobe quando a forma do episodio.json muda de um jeito que o leitor antigo nao entende. */
+export const EPISODIO_VERSAO = 1 as const
+
+/** O nome do arquivo do indice dentro da pasta do episodio no Studio. */
+export const NOME_DO_INDICE = 'episodio.json'
+
+// ------------------------------------------------------------------ identidade
+
+/** '' = episodio normal. OP/ED/MOVIE seguem o `kind` do motor do AnCut. */
+export const kindDoEpisodioSchema = z.enum(['', 'OP', 'ED', 'MOVIE'])
+export type KindDoEpisodio = z.infer<typeof kindDoEpisodioSchema>
+
+/**
+ * De que biblioteca vem a pasta do episodio (a que tem shots/).
+ *
+ * - studio: a do proprio Studio (settings.bibliotecaStudio). E a unica em que
+ *   o Studio grava.
+ * - ancut: a saida do AnCut HUB instalado.
+ * - cortecenas: a saida do Corte Cenas do Levi (o `output_dir` do config dele).
+ * - dangai: a raiz de biblioteca herdada do Dangai (settings.libraryDir),
+ *   quando ela nao e nenhuma das de cima.
+ *
+ * So `studio` aceita escrita. As outras sao so leitura, sempre.
+ */
+export const origemDaBibliotecaSchema = z.enum(['studio', 'ancut', 'cortecenas', 'dangai'])
+export type OrigemDaBiblioteca = z.infer<typeof origemDaBibliotecaSchema>
+
+/**
+ * Anime, temporada e episodio, adivinhados pelo nome do arquivo e corrigiveis
+ * pelo usuario. E a mesma tupla que o motor usa para nomear a pasta.
+ */
+export const palpiteDoEpisodioSchema = z.object({
+  anime: z.string(),
+  temporada: z.number().int().nonnegative(),
+  /** Num MOVIE e o ano, como no motor ("Filme (2019)"). */
+  episodio: z.number().int().nonnegative(),
+  kind: kindDoEpisodioSchema,
+})
+export type PalpiteDoEpisodio = z.infer<typeof palpiteDoEpisodioSchema>
+
+// ------------------------------------------------------------------- sondagem
+
+/**
+ * O arquivo de video em si: medidas e tempo. Vai inteiro para o indice, para
+ * quem abrir o episodio.json saber de que arquivo ele fala sem reabrir o .mkv.
+ */
+export const fonteDoEpisodioSchema = z.object({
+  /** Caminho absoluto do .mkv/.mp4 no momento da sondagem. */
+  path: z.string().min(1),
+  /** Bytes. Entra na impressao digital. */
+  tamanho: z.number().int().nonnegative(),
+  duracaoSec: z.number().positive(),
+  /** Quadros por segundo do stream de video (23.976 = 24000/1001). */
+  fps: z.number().positive(),
+  /**
+   * start_time do stream de video (o do container de reserva): o zero do
+   * shots.json. Quase sempre 0; quando nao e, desloca a legenda (ver sondar.ts).
+   */
+  startTimeSec: z.number(),
+  largura: z.number().int().positive(),
+  altura: z.number().int().positive(),
+  /** BT.2020 + PQ/HLG. Muda a miniatura e a conversao para SDR. */
+  hdr: z.boolean(),
+  /** codec_name do video: 'h264', 'hevc', 'av1'... */
+  codec: z.string(),
+})
+export type FonteDoEpisodio = z.infer<typeof fonteDoEpisodioSchema>
+
+/** Uma faixa de legenda dentro do arquivo. */
+export const faixaDeLegendaSchema = z.object({
+  /**
+   * Indice ABSOLUTO do stream no arquivo (o `index` do ffprobe, o N de
+   * "Stream #0:N" do ffmpeg). Extrair com `-map 0:<index>`, nunca `0:s:<index>`.
+   */
+  index: z.number().int().nonnegative(),
+  /** Tag language como vem no arquivo ('por', 'eng', 'jpn'). '' sem tag. */
+  idioma: z.string(),
+  /** Tag title ('Brazilian Portuguese', 'Signs & Songs'). '' sem tag. */
+  nome: z.string(),
+  /**
+   * codec_name: 'ass', 'ssa', 'subrip', 'webvtt', 'mov_text' sao texto.
+   * 'hdmv_pgs_subtitle' e 'dvd_subtitle' sao imagem e nao servem para falas.
+   */
+  codec: z.string(),
+  default: z.boolean(),
+  forced: z.boolean(),
+})
+export type FaixaDeLegenda = z.infer<typeof faixaDeLegendaSchema>
+
+/** Codecs de legenda que tem TEXTO. Os outros sao imagem e nao dao falas. */
+export const CODECS_DE_LEGENDA_TEXTO = ['ass', 'ssa', 'subrip', 'srt', 'webvtt', 'mov_text', 'text'] as const
+
+export function legendaTemTexto(faixa: Pick<FaixaDeLegenda, 'codec'>): boolean {
+  return (CODECS_DE_LEGENDA_TEXTO as readonly string[]).includes(faixa.codec.toLowerCase())
+}
+
+/** Um capitulo do container. CR, Netflix e Erai costumam marcar OP/ED assim. */
+export const capituloSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  titulo: z.string(),
+})
+export type Capitulo = z.infer<typeof capituloSchema>
+
+/** O que a sondagem devolve: o arquivo, as faixas, os capitulos e o palpite. */
+export const sondaDoEpisodioSchema = fonteDoEpisodioSchema.extend({
+  /** Impressao digital, a mesma que vira o `id` do indice ('ep_' + sha1). */
+  id: z.string().regex(/^ep_[0-9a-f]{40}$/),
+  legendas: z.array(faixaDeLegendaSchema),
+  /**
+   * A faixa que o Studio escolheria sozinho (`index` absoluto): PT > EN, texto
+   * antes de imagem, .ass antes de .srt, pulando "Signs"/"Songs"/forced.
+   * null = nenhuma faixa de texto (o episodio fica sem falas).
+   */
+  legendaSugerida: z.number().int().nonnegative().nullable(),
+  capitulos: z.array(capituloSchema),
+  palpite: palpiteDoEpisodioSchema,
+  /** De onde saiu o palpite: o parse do motor ou o do Studio (reserva). */
+  palpiteOrigem: z.enum(['motor', 'nome']),
+})
+export type SondaDoEpisodio = z.infer<typeof sondaDoEpisodioSchema>
+
+// ---------------------------------------------------------------------- busca
+
+/**
+ * Como a busca nas bibliotecas reconheceu o episodio, do mais forte ao mais
+ * fraco:
+ * - source: o `shot_bounds.json.source` (ou `fonte.path` de um indice do
+ *   Studio) e este mesmo arquivo;
+ * - impressao: um indice do Studio com o mesmo `id` (o arquivo mudou de lugar);
+ * - nome: o source aponta para outro lugar, mas o nome do arquivo e o mesmo;
+ * - anime+episodio: so a pasta bate (anime parecido + SxxEyy). O mais fraco: a
+ *   interface avisa que pode ser outro release.
+ */
+export const comoAchouSchema = z.enum(['source', 'impressao', 'nome', 'anime+episodio'])
+export type ComoAchou = z.infer<typeof comoAchouSchema>
+
+export const episodioEncontradoSchema = z.object({
+  origem: origemDaBibliotecaSchema,
+  /** Pasta do episodio (a que tem shots/, keyframes/ e metadata/). */
+  pasta: z.string(),
+  /** O nome da pasta da serie, que e o que agrupa na Biblioteca. */
+  anime: z.string(),
+  temporada: z.number().int().nonnegative(),
+  episodio: z.number().int().nonnegative(),
+  kind: kindDoEpisodioSchema,
+  /** Cenas que EXISTEM em shots/ (o disco manda, como na Biblioteca). */
+  totalCenas: z.number().int().nonnegative(),
+  /** Personagens reconhecidos e em quantas cenas, do mais frequente ao menos. */
+  personagens: z.array(z.object({ nome: z.string(), cenas: z.number().int().nonnegative() })),
+  comoAchou: comoAchouSchema,
+  /** episodio.json do Studio que ja aponta para esta pasta. null = ainda nao indexado. */
+  indice: z.string().nullable(),
+  /** ISO, mtime do shots.json. null quando nao deu para ler. */
+  analisadoEm: z.string().nullable(),
+})
+export type EpisodioEncontrado = z.infer<typeof episodioEncontradoSchema>
+
+// ---------------------------------------------------------------------- motor
+
+/** Qual motor corta: o do Studio (motor/) ou o do AnCut HUB instalado. */
+export const motorSchema = z.enum(['studio', 'ancut'])
+export type Motor = z.infer<typeof motorSchema>
+
+export const statusDoMotorSchema = z.object({
+  studio: z.object({
+    /** Python, torch e o modulo app.headless respondem. */
+    pronto: z.boolean(),
+    versao: z.string().nullable(),
+    /** Nome da GPU com CUDA. null = roda na CPU (bem mais lento). */
+    gpu: z.string().nullable(),
+    /** Por que nao esta pronto, em texto para a tela. null quando pronto. */
+    erro: z.string().nullable(),
+  }),
+  ancut: z.object({
+    /** O CorteCenas.exe do AnCut HUB foi achado. Liga o botao "Analisar com o AnCut". */
+    instalado: z.boolean(),
+    caminho: z.string().nullable(),
+  }),
+})
+export type StatusDoMotor = z.infer<typeof statusDoMotorSchema>
+
+export const pedidoDeAnaliseSchema = z.object({
+  path: z.string().min(1),
+  anime: z.string().min(1),
+  temporada: z.number().int().nonnegative(),
+  episodio: z.number().int().nonnegative(),
+  kind: kindDoEpisodioSchema,
+  motor: motorSchema,
+  /**
+   * true = corta E reconhece os personagens pelo rosto (busca o elenco na
+   * primeira vez de cada anime). false = so corta (`cutOnly`), bem mais rapido.
+   */
+  reconhecer: z.boolean(),
+})
+export type PedidoDeAnalise = z.infer<typeof pedidoDeAnaliseSchema>
+
+/** As etapas que a interface mostra. O estagio cru do motor vai junto em `etapaDoMotor`. */
+export const etapaDaAnaliseSchema = z.enum([
+  'preparando',
+  'detectando',
+  'cortando',
+  'elenco',
+  'personagens',
+  'organizando',
+])
+export type EtapaDaAnalise = z.infer<typeof etapaDaAnaliseSchema>
+
+/** main -> renderer, varias vezes por job. */
+export const progressoDaAnaliseSchema = z.object({
+  jobId: z.string(),
+  etapa: etapaDaAnaliseSchema,
+  /** O `stage` que o motor mandou ('detect_shots', 'embed_refs'...). Para log e depuracao. */
+  etapaDoMotor: z.string(),
+  /** 0 a 1 dentro da etapa. null = o motor nao sabe quanto falta (mostrar indeterminado). */
+  fracao: z.number().min(0).max(1).nullable(),
+  /** Frase pronta do motor, para a linha de andamento. */
+  mensagem: z.string(),
+})
+export type ProgressoDaAnalise = z.infer<typeof progressoDaAnaliseSchema>
+
+/** main -> renderer, exatamente uma vez por job. */
+export const fimDaAnaliseSchema = z.union([
+  z.object({
+    jobId: z.string(),
+    ok: z.literal(true),
+    motor: motorSchema,
+    /** A pasta que o motor gravou (`episodeRoot`). E o que vai para indexarEpisodio. */
+    pastaDoEpisodio: z.string(),
+    totalCenas: z.number().int().nonnegative(),
+    /** Nomes reconhecidos. Vazio quando `reconhecer` era false. */
+    personagens: z.array(z.string()),
+    segundos: z.number().nonnegative(),
+  }),
+  z.object({
+    jobId: z.string(),
+    ok: z.literal(false),
+    /** Cancelar nao e falha: a interface volta ao estado anterior sem mensagem vermelha. */
+    cancelado: z.boolean(),
+    erro: z.string(),
+    /**
+     * O motor parou pedindo ajuda para achar o elenco (`needs-input` do
+     * headless). A interface oferece "So cortar" (reconhecer: false). A rodada
+     * de descoberta com nomes fica para depois.
+     */
+    precisaDescoberta: z.enum(['anime-nao-encontrado', 'sem-referencias']).nullable(),
+  }),
+])
+export type FimDaAnalise = z.infer<typeof fimDaAnaliseSchema>
+
+/**
+ * O estagio cru do motor -> a etapa que a interface mostra. Estagio novo que o
+ * motor inventar cai em 'preparando' em vez de quebrar a tela.
+ */
+export function etapaDoEstagio(estagio: string): EtapaDaAnalise {
+  switch (estagio) {
+    case 'detect_shots':
+      return 'detectando'
+    case 'cut_shots':
+      return 'cortando'
+    case 'fetch_characters':
+    case 'download_refs':
+    case 'embed_refs':
+      return 'elenco'
+    case 'analyze_shots':
+    case 'second_pass':
+    case 'ai_review':
+      return 'personagens'
+    case 'organize':
+      return 'organizando'
+    default:
+      return 'preparando'
+  }
+}
+
+// ---------------------------------------------------------------------- indice
+
+/** Uma linha da legenda, com id estavel. */
+export const cueSchema = z.object({
+  /** 'c0001', 'c0002'... na ordem de inicio. Estavel enquanto a faixa nao muda. */
+  id: z.string().regex(/^c\d{4,}$/),
+  start: z.number().nonnegative(),
+  end: z.number().nonnegative(),
+  /** Texto limpo: sem tags {\...}, \N vira espaco. */
+  texto: z.string(),
+  /** Campo Name do .ass. null quando vazio ou quando a legenda nao tem o campo (.srt). */
+  falante: z.string().nullable(),
+  /** Campo Style do .ass ('Default', 'Sign', 'OP'). '' no .srt. */
+  estilo: z.string(),
+  /**
+   * fala: alguem dizendo algo. placa: texto de tela traduzido (Name 'Text',
+   * estilo de sign, posicionamento \pos). musica: letra de OP/ED/insert.
+   */
+  tipo: z.enum(['fala', 'placa', 'musica']),
+})
+export type Cue = z.infer<typeof cueSchema>
+
+export const motivoDaExclusaoSchema = z.enum(['op', 'ed', 'preview', 'creditos', 'manual'])
+export type MotivoDaExclusao = z.infer<typeof motivoDaExclusaoSchema>
+
+/**
+ * De onde veio a marcacao:
+ * - capitulo: capitulo do container chamado Opening/OP/Ending/ED/Preview;
+ * - estilo: cues de musica com estilo de OP/ED no .ass;
+ * - vao: um vao longo sem fala no comeco ou no fim;
+ * - skip_ranges: o skip_ranges.json do AnCut/Corte Cenas (so leitura);
+ * - serie: a marcacao que o usuario confirmou em outro episodio da mesma serie;
+ * - usuario: desenhada ou ajustada a mao na regua;
+ * - audio: impressao de audio da OP (F5).
+ */
+export const origemDaExclusaoSchema = z.enum([
+  'capitulo',
+  'estilo',
+  'vao',
+  'skip_ranges',
+  'serie',
+  'usuario',
+  'audio',
+])
+export type OrigemDaExclusao = z.infer<typeof origemDaExclusaoSchema>
+
+/** Um trecho do episodio que nao entra no recap (OP, ED, previa...). */
+export const exclusaoSchema = z.object({
+  start: z.number().nonnegative(),
+  end: z.number().nonnegative(),
+  motivo: motivoDaExclusaoSchema,
+  origem: origemDaExclusaoSchema,
+  /** false = sugestao do Studio, ainda nao vista. true = o usuario confirmou na regua. */
+  confirmada: z.boolean(),
+  /**
+   * Por que o Studio sugeriu, em ASCII para a tela: "Capitulo 'Opening' do
+   * arquivo", "1m29s sem fala no comeco". '' numa marcacao manual.
+   */
+  porque: z.string().default(''),
+})
+export type Exclusao = z.infer<typeof exclusaoSchema>
+
+/** Uma sugestao de OP/ED que o usuario ainda nao viu. */
+export type ExclusaoSugerida = Exclusao & { confirmada: false }
+
+export const fonteDoPersonagemSchema = z.enum(['ancut-curado', 'ancut', 'falante', 'visao', 'manual'])
+export type FonteDoPersonagem = z.infer<typeof fonteDoPersonagemSchema>
+
+/**
+ * Uma cena (shot) do episodio, ja cortada em mp4 no formato do AnCut.
+ *
+ * Sinal de personagem, nunca veto: a precisao do motor no benchmark ficou entre
+ * 0,27 e 0,45, com cobertura de ~34% das cenas.
+ */
+export const planoSchema = z.object({
+  /** O nome do mp4 sem extensao: '0025', ou '0164-0167' quando cenas foram juntadas. */
+  id: z.string().min(1),
+  start: z.number().nonnegative(),
+  end: z.number().nonnegative(),
+  /** Caminho absoluto do mp4 (shots/NNNN.mp4). Numa biblioteca externa, so leitura. */
+  arquivo: z.string().min(1),
+  /** Keyframe do meio (_1.jpg) ou o vizinho que existir. null quando nao ha nenhum. */
+  keyframe: z.string().nullable(),
+  /** Cues que cruzam o plano no tempo, em ordem. */
+  cueIds: z.array(z.string()),
+  /** Falantes dessas cues (sem repetir, na ordem em que falam). */
+  falantes: z.array(z.string()),
+  personagens: z.array(
+    z.object({
+      nome: z.string().min(1),
+      conf: z.number().min(0).max(1),
+      /**
+       * ancut: reconhecimento automatico do motor (o do Studio e o mesmo do
+       * AnCut). ancut-curado: aprovado/corrigido no index.db. falante: veio do
+       * Name do .ass. visao: juiz visual (F2). manual: o usuario disse.
+       */
+      fonte: fonteDoPersonagemSchema,
+    }),
+  ),
+})
+export type Plano = z.infer<typeof planoSchema>
+
+export const bibliotecaDoEpisodioSchema = z.object({
+  origem: origemDaBibliotecaSchema,
+  /** A pasta do episodio onde moram shots/, keyframes/ e metadata/. */
+  pasta: z.string().min(1),
+})
+export type BibliotecaDoEpisodio = z.infer<typeof bibliotecaDoEpisodioSchema>
+
+/**
+ * O INDICE do episodio, gravado em episodio.json.
+ *
+ * Onde mora: SEMPRE dentro da biblioteca do Studio, nunca numa externa.
+ * - origem 'studio': `<biblioteca.pasta>/episodio.json`, ao lado de shots/.
+ * - outras origens: `<bibliotecaStudio>/_indices/<id>/episodio.json`. A pasta
+ *   do AnCut/Corte Cenas fica intocada, o `_` faz a varredura da Biblioteca
+ *   pular a pasta, e a chave pelo id nao colide com a pasta que o motor do
+ *   Studio criaria se o mesmo episodio fosse cortado aqui depois (ver
+ *   electron/services/episodio/indice.ts).
+ */
+const episodeIndexBase = z.object({
+  versao: z.literal(EPISODIO_VERSAO),
+  /** 'ep_' + sha1(tamanho, 4 MiB iniciais, 4 MiB finais, duracao). Nao depende do caminho. */
+  id: z.string().regex(/^ep_[0-9a-f]{40}$/),
+  fonte: fonteDoEpisodioSchema,
+  anime: z.string().min(1),
+  temporada: z.number().int().nonnegative(),
+  episodio: z.number().int().nonnegative(),
+  kind: kindDoEpisodioSchema,
+  /** A faixa lida. null = sem legenda de texto, e o episodio fica sem falas. */
+  faixaLegenda: faixaDeLegendaSchema.nullable(),
+  cues: z.array(cueSchema),
+  /** Sugeridas (confirmada: false) e confirmadas. A regua mostra as duas. */
+  exclusoes: z.array(exclusaoSchema),
+  planos: z.array(planoSchema),
+  biblioteca: bibliotecaDoEpisodioSchema,
+  /**
+   * Se os personagens foram procurados. 'pulado' = analise so de corte; 'desconhecido' =
+   * biblioteca externa sem como saber (nenhuma cena com personagem).
+   */
+  reconhecimento: z.enum(['feito', 'pulado', 'desconhecido']),
+  /** Avisos para a tela, em ASCII ("Legenda sem o campo Name: falas sem falante"). */
+  avisos: z.array(z.string()).default([]),
+  /** ISO. Quando o indice foi montado. */
+  criadoEm: z.string(),
+  /** ISO. Muda a cada salvarExclusoes. */
+  atualizadoEm: z.string(),
+})
+
+/**
+ * Com as conferencias que atravessam campos: ids unicos, plano so cita cue que
+ * existe e nenhum trecho termina antes de comecar. Um indice que falha aqui
+ * nao e gravado nem lido -- melhor refazer do que casar cena com fala errada.
+ */
+export const episodeIndexSchema = episodeIndexBase.superRefine((indice, ctx) => {
+  const cues = new Set<string>()
+  for (const [i, cue] of indice.cues.entries()) {
+    if (cues.has(cue.id)) ctx.addIssue({ code: 'custom', path: ['cues', i, 'id'], message: `cue repetida: ${cue.id}` })
+    cues.add(cue.id)
+    if (cue.end < cue.start) ctx.addIssue({ code: 'custom', path: ['cues', i], message: `cue ${cue.id} termina antes de comecar` })
+  }
+  const planos = new Set<string>()
+  for (const [i, plano] of indice.planos.entries()) {
+    if (planos.has(plano.id)) ctx.addIssue({ code: 'custom', path: ['planos', i, 'id'], message: `plano repetido: ${plano.id}` })
+    planos.add(plano.id)
+    if (plano.end < plano.start) ctx.addIssue({ code: 'custom', path: ['planos', i], message: `plano ${plano.id} termina antes de comecar` })
+    for (const id of plano.cueIds) {
+      if (!cues.has(id)) ctx.addIssue({ code: 'custom', path: ['planos', i, 'cueIds'], message: `plano ${plano.id} cita cue inexistente: ${id}` })
+    }
+  }
+  for (const [i, ex] of indice.exclusoes.entries()) {
+    if (ex.end <= ex.start) ctx.addIssue({ code: 'custom', path: ['exclusoes', i], message: 'exclusao vazia ou invertida' })
+  }
+})
+export type EpisodeIndex = z.infer<typeof episodeIndexSchema>
+
+/** Le um episodio.json cru. Lanca com a mensagem do zod quando nao confere. */
+export function lerIndice(cru: unknown): EpisodeIndex {
+  return episodeIndexSchema.parse(cru)
+}
+
+/** O pedido de indexarEpisodio. */
+export const indexarEpisodioArgsSchema = z.object({
+  /** O .mkv/.mp4. */
+  path: z.string().min(1),
+  /** A pasta com shots/ (do fim da analise ou do EpisodioEncontrado escolhido). */
+  pastaDoEpisodio: z.string().min(1),
+  origem: origemDaBibliotecaSchema,
+  /** O palpite que o usuario confirmou na tela. Da nome a pasta do indice. */
+  palpite: palpiteDoEpisodioSchema,
+  /**
+   * `index` absoluto da faixa de legenda. Ausente = a sugerida pela sonda.
+   * null = ler sem legenda (sem falas).
+   */
+  faixaLegenda: z.number().int().nonnegative().nullable().optional(),
+  /**
+   * true = monta de novo mesmo havendo indice valido para esta pasta e esta
+   * faixa. As exclusoes CONFIRMADAS do indice anterior sao herdadas.
+   */
+  refazer: z.boolean().optional(),
+})
+export type IndexarEpisodioArgs = z.infer<typeof indexarEpisodioArgsSchema>
+
+export const listaDeExclusoesSchema = z.array(exclusaoSchema)
+
+// ------------------------------------------------------------------- uteis puros
+
+/**
+ * A pasta do episodio no formato do motor: 'S04E37', 'S01-OP2', 'Filme (2019)'.
+ * Espelha `EpisodeInfo.slug` de motor/app/video_ingest.py.
+ */
+export function slugDoEpisodio(temporada: number, episodio: number, kind: KindDoEpisodio): string {
+  const dois = (n: number): string => String(n).padStart(2, '0')
+  if (kind === 'MOVIE') return episodio > 1900 ? `Filme (${episodio})` : 'Filme'
+  if (kind) return `S${dois(temporada)}-${kind}${episodio}`
+  return `S${dois(temporada)}E${dois(episodio)}`
+}
+
+/** 1 -> 'c0001'. A contagem comeca em 1, na ordem de inicio das cues. */
+export function idDaCue(n: number): string {
+  return `c${String(n).padStart(4, '0')}`
+}
+
+/** Rotulos de tela (ASCII, como o resto da interface). */
+export const ROTULO_DA_ORIGEM: Record<OrigemDaBiblioteca, string> = {
+  studio: 'Studio',
+  ancut: 'AnCut HUB',
+  cortecenas: 'Corte Cenas',
+  dangai: 'Biblioteca de cenas',
+}
+
+export const ROTULO_DA_ETAPA: Record<EtapaDaAnalise, string> = {
+  preparando: 'Preparando',
+  detectando: 'Achando os cortes',
+  cortando: 'Cortando as cenas',
+  elenco: 'Buscando o elenco',
+  personagens: 'Reconhecendo personagens',
+  organizando: 'Organizando',
+}
+
+export const ROTULO_DO_MOTIVO: Record<MotivoDaExclusao, string> = {
+  op: 'Abertura',
+  ed: 'Encerramento',
+  preview: 'Previa',
+  creditos: 'Creditos',
+  manual: 'Fora do recap',
+}
+
+/** O que a tela de resumo do passo 1 mostra. */
+export interface ResumoDoIndice {
+  totalCenas: number
+  /** Cenas com pelo menos uma cue de fala. */
+  cenasComFala: number
+  totalFalas: number
+  /** Falantes do .ass e quantas falas cada um tem, do que mais fala ao que menos. */
+  falantes: { nome: string; falas: number }[]
+  /** Personagens reconhecidos e em quantas cenas, do mais frequente ao menos. */
+  personagens: { nome: string; cenas: number }[]
+  /** Segundos dentro de exclusoes (sugeridas e confirmadas). */
+  excluidoSec: number
+  /** Sugestoes que o usuario ainda nao confirmou. */
+  exclusoesPendentes: number
+}
+
+export function resumirIndice(indice: EpisodeIndex): ResumoDoIndice {
+  const falas = indice.cues.filter((c) => c.tipo === 'fala')
+  const porFalante = new Map<string, number>()
+  for (const cue of falas) {
+    if (cue.falante) porFalante.set(cue.falante, (porFalante.get(cue.falante) ?? 0) + 1)
+  }
+  const tipoDaCue = new Map(indice.cues.map((c) => [c.id, c.tipo]))
+  // Indice montado antes de o indice.ts unir as grafias ("Saionji, Ukyou" e
+  // "Ukyo Saionji") ainda as traz separadas: a contagem une do mesmo jeito, e
+  // num indice novo nao muda nada.
+  const crus = new Map<string, number>()
+  for (const plano of indice.planos) for (const p of plano.personagens) crus.set(p.nome, (crus.get(p.nome) ?? 0) + 1)
+  const unido = canonizar(crus)
+  const porPersonagem = new Map<string, number>()
+  let cenasComFala = 0
+  for (const plano of indice.planos) {
+    if (plano.cueIds.some((id) => tipoDaCue.get(id) === 'fala')) cenasComFala += 1
+    for (const nome of new Set(plano.personagens.map((p) => unido.get(p.nome) ?? p.nome))) {
+      porPersonagem.set(nome, (porPersonagem.get(nome) ?? 0) + 1)
+    }
+  }
+  const ordenar = <K extends string>(mapa: Map<string, number>, chave: K): ({ nome: string } & Record<K, number>)[] =>
+    [...mapa.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'pt-BR'))
+      .map(([nome, n]) => ({ nome, [chave]: n }) as { nome: string } & Record<K, number>)
+  return {
+    totalCenas: indice.planos.length,
+    cenasComFala,
+    totalFalas: falas.length,
+    falantes: ordenar(porFalante, 'falas'),
+    personagens: ordenar(porPersonagem, 'cenas'),
+    excluidoSec: indice.exclusoes.reduce((s, e) => s + Math.max(0, e.end - e.start), 0),
+    exclusoesPendentes: indice.exclusoes.filter((e) => !e.confirmada).length,
+  }
+}

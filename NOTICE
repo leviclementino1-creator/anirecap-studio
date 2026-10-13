@@ -18,6 +18,8 @@ AnCut HUB e ancut-hub-engine
 De faahpla. https://github.com/faahpla/ancut-hub
 O Studio le o formato de biblioteca de episodios do AnCut
 (<serie>/SxxEyy/shots|keyframes|metadata/shots.json), sempre so leitura.
+O motor de personagens (motor/) e copia do ancut-hub-engine, commit a1d732b
+(fork do Corte Cenas), com pasta de dados propria: ver motor/STUDIO.md.
 Os repositorios nao trazem arquivo de licenca.
 
 AniRecap

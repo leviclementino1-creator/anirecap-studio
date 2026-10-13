@@ -27,6 +27,8 @@ import { CaptionEditor } from '@/components/CaptionEditor'
 import { CommandPalette } from '@/components/CommandPalette'
 import { Library } from '@/components/Library'
 import { Queue } from '@/components/Queue'
+import { GerarRecap } from '@/components/gerar/GerarRecap'
+import { useGerar } from '@/store/gerar'
 import { VIDEO_FPS } from '@shared/contract'
 import { semExtensaoDeProjeto } from '@shared/project-file'
 
@@ -141,7 +143,9 @@ export function App() {
 
       // A paleta e os modais tratam o proprio teclado; enquanto abertos, os
       // atalhos globais ficam quietos para nao disparar por baixo.
-      if (store.paletteOpen || store.settingsOpen || store.scriptOpen || store.libraryOpen) {
+      // O assistente "Gerar recap" e modal tambem: os atalhos ficam quietos por baixo dele.
+      const porCima = store.paletteOpen || store.settingsOpen || store.scriptOpen || store.libraryOpen
+      if (porCima || useGerar.getState().aberto) {
         if (acao === 'paleta') {
           event.preventDefault()
           store.openPalette(false)
@@ -178,6 +182,9 @@ export function App() {
           store.openSettings(false)
           store.openScript(false)
           void store.openLibrary(false)
+          // O assistente fica EMBAIXO da Biblioteca e das Configuracoes: o Esc
+          // fecha primeiro o de cima, e so fecha o assistente quando ele esta sozinho.
+          if (!porCima) useGerar.getState().fechar()
           return
         }
 
@@ -430,6 +437,7 @@ export function App() {
       <StatusBar isDragging={isDragging} />
       <Settings />
       <Script />
+      <GerarRecap />
       <Library />
       <CommandPalette />
       <ConsoleFx />

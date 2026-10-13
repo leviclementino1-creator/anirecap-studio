@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { safeStorage } from 'electron'
+import { app, safeStorage } from 'electron'
 
 /**
  * Guarda tres campos em um JSON no userData.
@@ -54,6 +55,13 @@ export interface Settings {
   /** Raiz da biblioteca de cenas do AnCut. Vazio = a biblioteca fica desligada. */
   libraryDir: string
   /**
+   * Onde o Studio GRAVA: as cenas que o motor dele corta e o episodio.json de
+   * cada episodio. Vazio = <Documentos>/AniRecap Studio/Biblioteca (ver
+   * pastaDaBibliotecaStudio). Separada da libraryDir de proposito: aquela pode
+   * ser a do AnCut/Corte Cenas, que sao so leitura.
+   */
+  bibliotecaStudio: string
+  /**
    * Curvas de movimento que ele guardou.
    *
    * Ficam aqui e nao no projeto porque um ritmo que ele gostou vale para os
@@ -104,6 +112,7 @@ const DEFAULTS: Settings = {
   whisperModel: 'small',
   sfxDir: '',
   libraryDir: '',
+  bibliotecaStudio: '',
   curvePresets: [],
   captionPresets: [],
   bins: [],
@@ -281,8 +290,33 @@ export function decifrar(base64: string): string | null {
   }
 }
 
+/**
+ * A pasta Documentos do usuario.
+ *
+ * Pelo Electron quando ha Electron: com a pasta redirecionada (OneDrive), o
+ * homedir()/Documents nao e onde o Explorer mostra. Fora dele (os testes em
+ * scripts/teste rodam no node puro, onde `app` nao existe) cai no homedir.
+ */
+export function pastaDeDocumentos(): string {
+  try {
+    return app.getPath('documents')
+  } catch {
+    return join(homedir(), 'Documents')
+  }
+}
+
+/**
+ * A biblioteca do Studio, ja resolvida: a escolhida ou o padrao
+ * <Documentos>/AniRecap Studio/Biblioteca. Nao cria a pasta -- quem grava cria.
+ */
+export function pastaDaBibliotecaStudio(): string {
+  const escolhida = getSettings().bibliotecaStudio
+  return escolhida || join(pastaDeDocumentos(), 'AniRecap Studio', 'Biblioteca')
+}
+
 /** A interface nunca recebe a chave inteira -- so o suficiente para reconhecer. */
 export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
+  bibliotecaStudioEfetiva: string
   hasApiKey: boolean
   apiKeyHint: string
   hasGeminiKey: boolean
@@ -298,6 +332,8 @@ export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
     whisperModel: settings.whisperModel,
     sfxDir: settings.sfxDir,
     libraryDir: settings.libraryDir,
+    bibliotecaStudio: settings.bibliotecaStudio,
+    bibliotecaStudioEfetiva: pastaDaBibliotecaStudio(),
     curvePresets: settings.curvePresets,
     captionStyle: settings.captionStyle,
     captionPresets: settings.captionPresets,
@@ -334,6 +370,7 @@ function coerce(raw: unknown): Settings {
     whisperModel: model === 'base' || model === 'small' || model === 'medium' ? model : 'small',
     sfxDir: typeof value['sfxDir'] === 'string' ? value['sfxDir'] : '',
     libraryDir: typeof value['libraryDir'] === 'string' ? value['libraryDir'] : '',
+    bibliotecaStudio: typeof value['bibliotecaStudio'] === 'string' ? value['bibliotecaStudio'].trim() : '',
     curvePresets: curvasSalvas(value['curvePresets']),
     // Conferido do outro lado, pelo schema do contract: aqui so passa adiante
     // um objeto, e um campo estranho vira o padrao em vez de derrubar o app.

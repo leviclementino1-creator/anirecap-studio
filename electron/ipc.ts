@@ -90,6 +90,26 @@ import { sondarVideoPronto, tiraDoClipe } from './services/clips'
 import { mesclarClipes, type ResultadoDaMescla } from './services/mesclar'
 import { alinharAoAudio } from './services/alinhador'
 import { checkForUpdateNow, installUpdate } from './services/updater'
+import {
+  indexarEpisodioArgsSchema,
+  listaDeExclusoesSchema,
+  palpiteDoEpisodioSchema,
+  pedidoDeAnaliseSchema,
+  type EpisodeIndex,
+  type EpisodioEncontrado,
+  type Exclusao,
+  type IndexarEpisodioArgs,
+  type PalpiteDoEpisodio,
+  type PedidoDeAnalise,
+  type SondaDoEpisodio,
+  type StatusDoMotor,
+} from '@shared/episodio'
+import { analisarEpisodio, cancelarAnalise, statusDoMotor } from './services/motor'
+import { sondarEpisodio } from './services/episodio/sondar'
+import { procurarEpisodio } from './services/episodio/procurar'
+import { indexarEpisodio, salvarExclusoes } from './services/episodio/indice'
+import { escanearBibliotecaDoEditor } from './services/episodio/biblioteca-editor'
+import { garantirGravavel } from './services/episodio/protegidas'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -126,6 +146,13 @@ function broadcastAnalyze(message: string): void {
 function broadcastLibrary(message: string): void {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send(IPC.libraryProgress, message)
+  }
+}
+
+/** Evento main -> renderer de um canal qualquer, para todas as janelas. */
+function enviarATodas(canal: string, dado: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send(canal, dado)
   }
 }
 
@@ -177,15 +204,8 @@ export function registerIpc(): void {
    * sao 27 arquivos de texto, 300ms no pior caso e 100ms com cache. Jogar isso
    * num worker custaria mais em complexidade do que economiza em tempo.
    */
-  handle<[], LibraryIndex>(IPC.scanLibrary, async () => {
-    const { libraryDir } = getSettings()
-    if (!libraryDir) {
-      throw new Error(
-        'Nenhuma biblioteca escolhida. Abra as configuracoes (Ctrl+,) e aponte a pasta onde o AnCut grava as cenas.',
-      )
-    }
-    return scanLibrary(libraryDir, publish, broadcastLibrary)
-  })
+  // A raiz do Dangai e, quando houver, a biblioteca do Studio (ver biblioteca-editor).
+  handle<[], LibraryIndex>(IPC.scanLibrary, () => escanearBibliotecaDoEditor(publish, broadcastLibrary))
 
   handle<[], string | null>(IPC.pickLibraryDir, async () => {
     const result = await dialog.showOpenDialog({
@@ -733,9 +753,60 @@ export function registerIpc(): void {
   handle<[], PublicSettings>(IPC.getSettings, async () => getSettingsForRenderer())
 
   handle<[SettingsPatch], PublicSettings>(IPC.saveSettings, async (patch) => {
+    // A biblioteca do Studio e onde o motor GRAVA: nunca numa do AnCut/Corte Cenas.
+    if (typeof patch.bibliotecaStudio === 'string' && patch.bibliotecaStudio.trim()) {
+      garantirGravavel(patch.bibliotecaStudio.trim())
+    }
     saveSettings(patch)
     return getSettingsForRenderer()
   })
+
+  // ------------------------------------- Gerar recap, passo 1 (Episodio)
+  // Contrato em shared/episodio.ts. O motor e electron/services/motor.ts; o
+  // resto e electron/services/episodio/. O que vem do renderer passa pelo zod
+  // aqui: e o que entra no disco e na linha de comando do motor.
+
+  handle<[], string | null>(IPC.escolherEpisodio, async () => {
+    const r = await dialog.showOpenDialog({
+      title: 'Escolher o episodio',
+      properties: ['openFile'],
+      filters: [{ name: 'Episodio', extensions: ['mkv', 'mp4', 'm4v', 'webm', 'mov'] }],
+    })
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!
+  })
+
+  handle<[string], SondaDoEpisodio>(IPC.sondarEpisodio, async (path) => {
+    if (typeof path !== 'string' || !existsSync(path)) throw new Error('Esse arquivo nao esta mais no disco.')
+    return sondarEpisodio(path)
+  })
+
+  handle<[string, PalpiteDoEpisodio], EpisodioEncontrado[]>(IPC.procurarEpisodio, async (path, palpite) =>
+    procurarEpisodio(path, palpiteDoEpisodioSchema.parse(palpite)),
+  )
+
+  handle<[], StatusDoMotor>(IPC.statusDoMotor, () => statusDoMotor())
+
+  handle<[PedidoDeAnalise], string>(IPC.analisarEpisodio, async (pedido) =>
+    analisarEpisodio(pedidoDeAnaliseSchema.parse(pedido), {
+      progresso: (p) => enviarATodas(IPC.analiseProgresso, p),
+      fim: (f) => enviarATodas(IPC.analiseFim, f),
+    }),
+  )
+
+  handle<[string], null>(IPC.cancelarAnalise, async (jobId) => {
+    await cancelarAnalise(String(jobId))
+    return null
+  })
+
+  handle<[IndexarEpisodioArgs], EpisodeIndex>(IPC.indexarEpisodio, async (args) =>
+    indexarEpisodio(indexarEpisodioArgsSchema.parse(args), (mensagem) =>
+      enviarATodas(IPC.indexarProgresso, mensagem),
+    ),
+  )
+
+  handle<[string, Exclusao[]], EpisodeIndex>(IPC.salvarExclusoes, async (indiceId, exclusoes) =>
+    salvarExclusoes(String(indiceId), listaDeExclusoesSchema.parse(exclusoes)),
+  )
 }
 
 /**

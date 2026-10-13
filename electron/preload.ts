@@ -32,6 +32,14 @@ import type {
   RenderProgress,
 } from '@shared/contract'
 import type { OpenedProject, ProjectFile } from '@shared/project-file'
+import type {
+  EpisodeIndex,
+  EpisodioEncontrado,
+  FimDaAnalise,
+  ProgressoDaAnalise,
+  SondaDoEpisodio,
+  StatusDoMotor,
+} from '@shared/episodio'
 
 /**
  * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
@@ -252,6 +260,44 @@ const bridge: DangaiBridge = {
       ipcRenderer.off(IPC.analyzeProgress, handler)
     }
   },
+
+  // Gerar recap, passo 1 (Episodio)
+  escolherEpisodio: () =>
+    ipcRenderer.invoke(IPC.escolherEpisodio) as Promise<IpcResult<string | null>>,
+  sondarEpisodio: (path) =>
+    ipcRenderer.invoke(IPC.sondarEpisodio, path) as Promise<IpcResult<SondaDoEpisodio>>,
+  procurarEpisodio: (path, palpite) =>
+    ipcRenderer.invoke(IPC.procurarEpisodio, path, palpite) as Promise<IpcResult<EpisodioEncontrado[]>>,
+  statusDoMotor: () => ipcRenderer.invoke(IPC.statusDoMotor) as Promise<IpcResult<StatusDoMotor>>,
+  analisarEpisodio: (pedido) =>
+    ipcRenderer.invoke(IPC.analisarEpisodio, pedido) as Promise<IpcResult<string>>,
+  cancelarAnalise: (jobId) =>
+    ipcRenderer.invoke(IPC.cancelarAnalise, jobId) as Promise<IpcResult<null>>,
+  onAnaliseProgresso: (listener) => {
+    const handler = (_event: unknown, progresso: ProgressoDaAnalise): void => listener(progresso)
+    ipcRenderer.on(IPC.analiseProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.analiseProgresso, handler)
+    }
+  },
+  onAnaliseFim: (listener) => {
+    const handler = (_event: unknown, fim: FimDaAnalise): void => listener(fim)
+    ipcRenderer.on(IPC.analiseFim, handler)
+    return () => {
+      ipcRenderer.off(IPC.analiseFim, handler)
+    }
+  },
+  indexarEpisodio: (args) =>
+    ipcRenderer.invoke(IPC.indexarEpisodio, args) as Promise<IpcResult<EpisodeIndex>>,
+  onIndexarProgresso: (listener) => {
+    const handler = (_event: unknown, mensagem: string): void => listener(mensagem)
+    ipcRenderer.on(IPC.indexarProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.indexarProgresso, handler)
+    }
+  },
+  salvarExclusoes: (indiceId, exclusoes) =>
+    ipcRenderer.invoke(IPC.salvarExclusoes, indiceId, exclusoes) as Promise<IpcResult<EpisodeIndex>>,
 }
 
 contextBridge.exposeInMainWorld('dangai', bridge)

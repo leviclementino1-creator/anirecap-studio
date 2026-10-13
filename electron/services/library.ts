@@ -60,6 +60,12 @@ interface CachedEpisode {
    * Ausente nos caches antigos = nenhuma mescla, que e o que eles eram.
    */
   mesclas?: string
+  /**
+   * Prefixo do id das cenas ('studio:' na biblioteca do Studio). Ausente = sem
+   * prefixo, que e o que todo cache antigo era. Entra na conferencia: a mesma
+   * pasta lida com outro prefixo nao pode servir ids da leitura anterior.
+   */
+  prefixo?: string
   clips: StoredClip[]
 }
 
@@ -99,6 +105,16 @@ const THUMB_QUALITY = 72
 /** Quantas miniaturas em voo. Medido: 8 dá 4,8ms por imagem nesta maquina. */
 const THUMB_PARALELO = 8
 
+/** O que muda numa varredura alem da raiz. */
+export interface OpcoesDaVarredura {
+  /**
+   * Vai na frente do id de cada cena. A biblioteca do Studio usa 'studio:':
+   * favorito, etiqueta, descricao e miniatura sao guardados por id, e
+   * "Dr. Stone/S04E37/0025" pode existir nas duas raizes.
+   */
+  prefixoDoId?: string
+}
+
 let cachePath: string | null = null
 let thumbsDir: string | null = null
 
@@ -118,7 +134,9 @@ export async function scanLibrary(
   root: string,
   publishThumb: (absolutePath: string) => string,
   onProgress: (mensagem: string) => void = () => {},
+  opcoes: OpcoesDaVarredura = {},
 ): Promise<LibraryIndex> {
+  const prefixo = opcoes.prefixoDoId ?? ''
   if (!root) throw new Error('Nenhuma pasta de biblioteca escolhida.')
   if (!ehPasta(root)) {
     throw new Error(`A pasta da biblioteca nao existe mais: ${root}`)
@@ -163,6 +181,7 @@ export async function scanLibrary(
       anterior.mtimeMs === mtimeMs &&
       anterior.fileCount === naPasta.size &&
       (anterior.mesclas ?? '') === assinatura &&
+      (anterior.prefixo ?? '') === prefixo &&
       // Uma conferida so por episodio: se alguem limpou o userData, as
       // miniaturas sumiram e a grade viria com os quadros quebrados. Refazer sai
       // mais barato do que 9 mil statSync a cada sincronizacao.
@@ -174,10 +193,16 @@ export async function scanLibrary(
       )
     }
 
-    const guardados = aproveitavel ? anterior.clips : await lerEpisodio(dir, root, naPasta, mesclas)
+    const guardados = aproveitavel ? anterior.clips : await lerEpisodio(dir, root, naPasta, mesclas, prefixo)
     if (!aproveitavel) scanned += 1
 
-    proximos[dir] = { mtimeMs, fileCount: naPasta.size, mesclas: assinatura, clips: guardados }
+    proximos[dir] = {
+      mtimeMs,
+      fileCount: naPasta.size,
+      mesclas: assinatura,
+      ...(prefixo ? { prefixo } : {}),
+      clips: guardados,
+    }
 
     for (const clip of guardados) {
       const { thumb, ...resto } = clip
@@ -189,8 +214,10 @@ export async function scanLibrary(
   }
 
   // Episodios que sumiram do disco somem do cache junto: reescrevemos o mapa
-  // inteiro em vez de remendar o antigo.
-  gravarCache({ version: CACHE_VERSION, episodes: proximos })
+  // inteiro em vez de remendar o antigo. So o DESTA raiz, porem: a Biblioteca
+  // varre duas (a do usuario e a do Studio), e regravar so com uma apagaria o
+  // cache da outra a cada sincronizacao.
+  gravarCache({ version: CACHE_VERSION, episodes: { ...deOutrasRaizes(cache.episodes, root), ...proximos } })
 
   unificarNomes(clips)
   clips.sort(ordemNatural)
@@ -219,7 +246,7 @@ export async function scanLibrary(
  * com 261 e 97, e por ai). Juntar por id entre episodios juntaria gente
  * diferente; e nao juntar deixava 102 cenas dele invisiveis no filtro.
  */
-function unificarNomes(clips: LibraryClip[]): void {
+export function unificarNomes(clips: LibraryClip[]): void {
   const porSerie = new Map<string, Map<string, number>>()
   for (const clip of clips) {
     const contagem = porSerie.get(clip.anime) ?? new Map<string, number>()
@@ -242,7 +269,7 @@ function unificarNomes(clips: LibraryClip[]): void {
 // ---------------------------------------------------------------- leitura crua
 
 /** O shots.json do AnCut, so os campos que usamos. */
-interface RawShot {
+export interface RawShot {
   shot_id?: unknown
   file?: unknown
   keyframe?: unknown
@@ -277,6 +304,7 @@ async function lerEpisodio(
   root: string,
   naPasta: ReadonlySet<string>,
   mesclas: readonly Mescla[] = [],
+  prefixoDoId = '',
 ): Promise<StoredClip[]> {
   let cru: unknown
   try {
@@ -353,7 +381,7 @@ async function lerEpisodio(
     const span = numero(fim.end) - numero(inicio.start)
 
     saida.push({
-      id: `${prefixo}/${shot}`,
+      id: `${prefixoDoId}${prefixo}/${shot}`,
       path: doStudio.get(nomeMp4) ?? join(dir, 'shots', nomeMp4),
       thumb,
       // Guardado ANTES de reduzirMiniaturas trocar `thumb` pela copia de 320px:
@@ -516,7 +544,7 @@ function caminhoDaMiniatura(id: string): string {
  * inclusive somando os personagens: quem aparece so na terceira parte continua
  * encontravel pelo clipe inteiro.
  */
-function abrangidas(shot: string, porShot: ReadonlyMap<string, RawShot>): RawShot[] {
+export function abrangidas(shot: string, porShot: ReadonlyMap<string, RawShot>): RawShot[] {
   const direto = porShot.get(shot)
   if (direto) return [direto]
 
@@ -544,7 +572,7 @@ function abrangidas(shot: string, porShot: ReadonlyMap<string, RawShot>): RawSho
  *
  * Fica o nome mais longo, que e o mais especifico ("Kisuke Urahara").
  */
-function nomesCanonicos(dir: string): ReadonlyMap<string, string> {
+export function nomesCanonicos(dir: string): ReadonlyMap<string, string> {
   const mapa = new Map<string, string>()
 
   let cru: unknown
@@ -588,7 +616,7 @@ function personagens(cru: unknown, canonico: ReadonlyMap<string, string>): strin
  * la: a lixeira leva justamente esse, e um punhado de cenas nunca teve. Como
  * existem tres por cena, cair para os vizinhos salva a miniatura.
  */
-function acharKeyframe(
+export function acharKeyframe(
   dir: string,
   existentes: ReadonlySet<string>,
   citado: string,
@@ -615,7 +643,7 @@ function acharKeyframe(
  * `_quarentena_...` guardam material que o usuario ja tirou de circulacao, com
  * shots.json proprio e tudo. Sem este filtro o descartado voltaria para a busca.
  */
-function* episodiosEm(dir: string, profundidade: number): Generator<string> {
+export function* episodiosEm(dir: string, profundidade: number): Generator<string> {
   if (profundidade > MAX_DEPTH) return
 
   if (existsSync(join(dir, 'metadata', 'shots.json'))) {
@@ -643,7 +671,7 @@ function* episodiosEm(dir: string, profundidade: number): Generator<string> {
  * Uma leitura de pasta por episodio em vez de um stat por cena: sao 27 chamadas
  * em vez de 9 mil para a mesma resposta.
  */
-function arquivosEm(dir: string): Set<string> {
+export function arquivosEm(dir: string): Set<string> {
   try {
     return new Set(
       readdirSync(dir, { withFileTypes: true })
@@ -683,6 +711,18 @@ function lerCache(): CacheFile {
   return { version: CACHE_VERSION, episodes: {} }
 }
 
+/** As entradas do cache que NAO ficam dentro de `root` (de outra raiz varrida antes). */
+function deOutrasRaizes(episodios: Record<string, CachedEpisode>, root: string): Record<string, CachedEpisode> {
+  const barras = (s: string): string => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const raiz = barras(root)
+  const saida: Record<string, CachedEpisode> = {}
+  for (const [dir, ep] of Object.entries(episodios)) {
+    const pasta = barras(dir)
+    if (pasta !== raiz && !pasta.startsWith(`${raiz}/`)) saida[dir] = ep
+  }
+  return saida
+}
+
 function gravarCache(dados: CacheFile): void {
   if (!cachePath) return
   try {
@@ -703,12 +743,12 @@ function gravarCache(dados: CacheFile): void {
  * Ordem natural, entendendo o numero: sem isto "0164-0167" e "10" cairiam em
  * lugares errados na comparacao letra a letra.
  */
-function naturalmente(a: string, b: string): number {
+export function naturalmente(a: string, b: string): number {
   return a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' })
 }
 
 /** Ordem de leitura humana: anime, temporada, episodio, e a cena na sequencia. */
-function ordemNatural(a: LibraryClip, b: LibraryClip): number {
+export function ordemNatural(a: LibraryClip, b: LibraryClip): number {
   return (
     a.anime.localeCompare(b.anime, 'pt-BR') ||
     a.season - b.season ||

@@ -22,7 +22,10 @@ export function PerguntaDoReserva({ pergunta, compacto = false }: { pergunta: Pe
   const aprovando = useRoteiro((s) => s.aprovando)
 
   const texto = textoDaParada(pergunta)
-  const dica = `So o ${pergunta.reserva} esta livre agora. Ele escreve pior: a versao sai marcada "Modelo reserva".`
+  // No religar (modo Texto, Meu roteiro) o texto ja esta gravado: o reserva so liga as frases aos momentos.
+  const dica = pergunta.religar
+    ? `So o ${pergunta.reserva} esta livre agora. Ele liga as frases aos momentos com menos cuidado; o texto fica como esta.`
+    : `So o ${pergunta.reserva} esta livre agora. Ele escreve pior: a versao sai marcada "Modelo reserva".`
 
   const esperarEDevolverFoco = (): void => {
     esperar()

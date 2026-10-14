@@ -11,17 +11,22 @@ import type { OpenedProject, ProjectFile } from './project-file'
 import type {
   EpisodeIndex,
   EpisodioEncontrado,
+  EstadoDoCorte,
+  EventoDoCorte,
   Exclusao,
   FimDaAnalise,
   IndexarEpisodioArgs,
+  IndexarFalasArgs,
   PalpiteDoEpisodio,
   PedidoDeAnalise,
+  PedidoDeCorte,
   ProgressoDaAnalise,
   SondaDoEpisodio,
   StatusDoMotor,
 } from './episodio'
 import type {
   EventosGerados,
+  PedidoDeReligar,
   PedidoDeRoteiro,
   ProgressoDoRoteiro,
   RascunhoAberto,
@@ -29,7 +34,16 @@ import type {
   ResumoDoRascunho,
   Roteiro,
   RoteiroGerado,
+  RoteiroReligado,
 } from './roteiro'
+import type {
+  CandidatosDaFrase,
+  CenasGravadas,
+  EscolhaDaFrase,
+  FiltrosDeCandidatos,
+  PedidoDeMontagem,
+  ProjetoMontado,
+} from './cenas'
 import type {
   AudioDoTake,
   EstimativaDeCusto,
@@ -181,6 +195,27 @@ export const IPC = {
   escolherNarracao: 'dialog:escolher-narracao',
   /** main -> renderer, ProgressoDaVoz (andamento de gerar/regravar/ajustar/importar) */
   vozProgresso: 'recap:voz-progresso',
+
+  // Gerar recap, passo 1 sem esperar o corte (agente E). Tipos em shared/episodio.ts;
+  // o main e electron/services/episodio/corte-fundo.ts.
+  indexarFalas: 'episodio:indexar-falas',
+  iniciarCorte: 'episodio:corte-iniciar',
+  estadoDoCorte: 'episodio:corte-estado',
+  cancelarCorte: 'episodio:corte-cancelar',
+  /** main -> renderer, EventoDoCorte (andamento e fim do corte em segundo plano) */
+  corteProgresso: 'episodio:corte-progresso',
+
+  // Gerar recap, passo 2 em texto (agente D). Tipos em shared/roteiro.ts; o main
+  // e electron/services/gerar/religar.ts. Andamento pelo roteiroProgresso (etapa 'religar').
+  religarRoteiro: 'recap:religar-roteiro',
+
+  // Gerar recap, passo 4 (Cenas). Tipos em shared/cenas.ts. O casar (agente A) e
+  // electron/services/cenas/; o encaixe e a montagem (agente B), electron/services/montar/.
+  sugerirCenas: 'recap:cenas-sugerir',
+  candidatosDaFrase: 'recap:cenas-candidatos',
+  salvarCenas: 'recap:cenas-salvar',
+  encaixarNaVoz: 'recap:cenas-encaixar',
+  montarProjeto: 'recap:montar-projeto',
 } as const
 
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
@@ -379,6 +414,12 @@ export interface AutomountRequest {
   /** Roteiro escrito, quando houver. Deixa o texto exato, sem erro de Whisper. */
   script: string | null
   mode: AutomountMode
+  /**
+   * A transcricao que a tela ja tem, para NAO ouvir de novo: o projeto do
+   * Studio com a voz alinhada manda a do take (a guarda de reanalise). Ausente
+   * ou sem palavras = o Whisper de sempre, com o vocabulario da biblioteca.
+   */
+  transcript?: Transcript | null
   /**
    * De que serie sao as cenas. Vazio = deduz do proprio roteiro.
    *
@@ -996,9 +1037,10 @@ export interface DangaiBridge {
   onAnalyzeProgress(listener: (message: string) => void): () => void
 
   // ------------------------------------------- Gerar recap, passo 1 (Episodio)
-  // Tipos em shared/episodio.ts. So o botao "Gerar recap" e a area do proprio
-  // assistente chegam aqui: soltar um .mkv na tela inicial continua sendo o
-  // que o Dangai faz (o video vira clipe).
+  // Tipos em shared/episodio.ts. Chegam aqui o botao "Gerar recap", a area do
+  // proprio assistente e a tela inicial: soltar UM video longo nela pergunta
+  // "Gerar recap com este episodio" ou "Usar como clipe" (o que o Dangai faz;
+  // PerguntaDoEpisodio.tsx).
 
   /** Dialogo de abrir UM episodio (.mkv/.mp4). null = fechou sem escolher. */
   escolherEpisodio(): Promise<IpcResult<string | null>>
@@ -1135,4 +1177,72 @@ export interface DangaiBridge {
   /** Dialogo de abrir a narracao gravada (.wav/.mp3/.m4a...). null = fechou sem escolher. */
   escolherNarracao(): Promise<IpcResult<string | null>>
   onVozProgresso(listener: (progresso: ProgressoDaVoz) => void): () => void
+
+  // ------------------------------- Gerar recap, passo 1 sem esperar o corte
+  // Tipos e regras em shared/episodio.ts (estadoDoCorteSchema, anexarPlanos);
+  // o main e electron/services/episodio/corte-fundo.ts.
+
+  /**
+   * O indice SO COM AS FALAS (cues, falantes, OP/ED sugeridas), em segundos,
+   * com `corte.status: 'pendente'` e `planos: []`. Episodio que ja tem indice
+   * com planos devolve esse. Andamento pelo onIndexarProgresso.
+   */
+  indexarFalas(args: IndexarFalasArgs): Promise<IpcResult<EpisodeIndex>>
+  /**
+   * Comeca o corte (+ reconhecimento) em segundo plano e devolve o estado na
+   * hora. Andamento e fim por onCorteProgresso; no fim o indice ganha os
+   * planos (o evento traz o indice novo). Usa a mesma vaga do motor que o
+   * analisarEpisodio: com outro job rodando, devolve erro.
+   */
+  iniciarCorte(pedido: PedidoDeCorte): Promise<IpcResult<EstadoDoCorte>>
+  /** O estado do corte deste episodio. null = sem indice. Indice antigo (com planos) = 'pronto'. */
+  estadoDoCorte(episodioId: string): Promise<IpcResult<EstadoDoCorte | null>>
+  /** Para o corte. O estado volta a 'pendente' (pelo onCorteProgresso). false = nao havia corte rodando. */
+  cancelarCorte(episodioId: string): Promise<IpcResult<boolean>>
+  onCorteProgresso(listener: (evento: EventoDoCorte) => void): () => void
+
+  // ------------------------------------------ Gerar recap, passo 2 em texto
+  // Tipos e regras em shared/roteiro.ts (redividirRoteiro); o main e
+  // electron/services/gerar/religar.ts. Cancela pelo cancelarRoteiro (pedidoId).
+
+  /**
+   * Sai do modo Texto (ou "Usar meu roteiro"): re-divide pelos pontos finais,
+   * mantem id e vinculos das frases que nao mudaram, liga as novas aos eventos
+   * com UMA chamada em lote a IA (com cache) e grava como versao 'editado'.
+   * Pode parar no reserva (ParadoNoReserva), como o gerarRoteiro.
+   */
+  religarRoteiro(rascunhoId: string, pedido: PedidoDeReligar): Promise<IpcResult<RoteiroReligado>>
+
+  // ----------------------------------------------- Gerar recap, passo 4 (Cenas)
+  // Tipos e regras em shared/cenas.ts. Tudo que muda o rascunho devolve o
+  // rascunho INTEIRO (CenasGravadas.rascunho), como nos passos 2 e 3. Midia: o
+  // mp4 de um plano toca pelo libraryClipUrl(plano.arquivo) (e a tira pelo
+  // libraryClipStrip), a miniatura pelo miniaturasDasCenas, e a narracao da
+  // frase pelo urlDoAudio(rascunhoId, takeId) tocado na janelaDaNarracao.
+
+  /**
+   * De graca (sem IA): a fita de cada frase do roteiro aprovado e a cena
+   * colocada. Preenche as frases sem escolha e refaz as de texto mudado que nao
+   * estao travadas; descarta as orfas. Sem planos ainda (corte rodando), erro.
+   */
+  sugerirCenas(rascunhoId: string): Promise<IpcResult<CenasGravadas>>
+  /** A grade da tela para uma frase: a fita, as vizinhas do momento e o resto do episodio, filtrados. So le. */
+  candidatosDaFrase(
+    rascunhoId: string,
+    fraseId: string,
+    filtros: FiltrosDeCandidatos,
+  ): Promise<IpcResult<CandidatosDaFrase>>
+  /** Grava as escolhas da tela (a do mesmo fraseId e trocada; ordem do roteiro). */
+  salvarCenas(rascunhoId: string, escolhas: readonly EscolhaDaFrase[]): Promise<IpcResult<CenasGravadas>>
+  /**
+   * Encaixa cada escolha na duracao REAL da frase no take atual (span com o
+   * plano seguinte quando a frase e mais longa; janela no instante da fala
+   * citada quando e mais curta) e grava `takeId`. Refazer e de graca.
+   */
+  encaixarNaVoz(rascunhoId: string): Promise<IpcResult<CenasGravadas>>
+  /**
+   * Gera o .anirecap (formato v1) do roteiro aprovado + take aprovado + cenas
+   * encaixadas. O renderer abre pelo openProject de sempre.
+   */
+  montarProjeto(rascunhoId: string, pedido?: PedidoDeMontagem): Promise<IpcResult<ProjetoMontado>>
 }

@@ -4,11 +4,34 @@ Recap de anime com IA, do episódio ao short editável. É uma cópia do Dangai
 v1.65.0 (`faahpla/dangai@7ceaedd`; commit-base local `d9aa005`) que vai
 ganhando a geração do AniRecap por cima. O plano, as fases e as decisões do Levi
 estão em `G:/ClaudeEditor/fusao/PLANO.md`: leia "Decisões do Levi" e a fase atual
-antes de mexer. Estado: **F1** em andamento. O assistente "Gerar recap" já tem
-o passo 1 (Episódio: índice, falas, OP/ED), o passo 2 (Roteiro: eventos e
-roteiro pelo Gemini, com versões e aprovação, salvo em `<userData>/recaps`) e
-o passo 3 (Voz: ElevenLabs, Fish Audio ou áudio importado; corte de pausas,
-takes, regravar frase e aprovação, no mesmo rascunho). Cenas (parte 4) ainda não.
+antes de mexer. Estado: **F1** em andamento. O assistente "Gerar recap" faz
+o caminho inteiro, na ordem decidida pelo Levi em 14/10 (`src/store/gerar-passos.ts`):
+
+1. **Episódio**: falas e sugestão de OP/ED em segundos; o "Próximo: Roteiro"
+   libera logo e o corte das cenas (+ personagens) roda em segundo plano
+   (`falas.ts`, `corte-fundo.ts`). O índice nasce sem planos em
+   `<bibliotecaStudio>/_indices/<id>` e ganha os planos no fim do corte.
+2. **Roteiro**: eventos e roteiro pelo Gemini, versões e aprovação, salvo em
+   `<userData>/recaps`; modo "Partes | Texto" e "Meu roteiro" (re-divide pelos
+   pontos finais, mantém id e vínculos do que não mudou e religa o resto numa
+   chamada só, `religar.ts`). Aprovado, as sugestões de cena saem de graça por trás.
+3. **Voz**: ElevenLabs, Fish Audio ou áudio importado; corte de pausas, takes,
+   regravar frase e aprovação, no mesmo rascunho.
+4. **Cenas**: no tempo REAL do take aprovado (`shared/encaixe.ts`): a tela da
+   seleção do Dangai (roteiro à esquerda com a barrinha rosa, grade com
+   "Sugestoes para este trecho", player com a narração por cima). O casar
+   (`electron/services/cenas/casar.ts`) é por regras, de graça: âncora pela
+   citação/cue do momento (sem elas, pelas palavras da frase), trecho sem
+   cenas no índice com aviso, plano longo dividido entre frases sem repetir
+   trecho, troca local quando uma frase pega o plano do momento da seguinte.
+   "Abrir no editor" monta o `.anirecap` (`electron/services/montar/`) em
+   `<bibliotecaStudio>/_projetos/` e abre pelo caminho normal do Dangai.
+
+O projeto montado leva `studio.vozAlinhada`: a guarda de reanálise
+(`src/store/guarda-do-studio.ts`) impede que remover/inserir imagem, soltar
+arquivo ou trocar o roteiro troque o transcript da voz pelo do Whisper.
+Soltar UM vídeo longo (> 5 min) na tela inicial pergunta "Gerar recap" ou
+"Usar como clipe" (`PerguntaDoEpisodio.tsx`).
 
 Voz custa dinheiro do Levi: toda chamada paga passa pela pergunta de custo
 (`confirmado`), e o cache por hash (`<userData>/recaps/cache/voz/`) nunca deixa
@@ -54,10 +77,11 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio), `roteiro.ts` (eventos, roteiro e rascunho do recap) e `voz.ts` (takes da narração, palavras com tempo, custo) |
-| `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 e passo 2 (prompts, cache de IA, rascunho) |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha) e `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance) |
+| `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 (índice, `falas.ts`, `corte-fundo.ts`) e passo 2 (prompts, cache de IA, rascunho, `religar.ts` + `prompt-religar.ts`) |
+| `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`) |
 | `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e velocidade, volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
-| `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente |
+| `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente (`gerar-passos.ts` = a ordem dos passos; `gerar-cenas.ts` = o passo 4 e as sugestões em segundo plano) |
 | `scripts/` | ícone, SFX, `release.mjs` e testes manuais em `scripts/teste/` |
 
 Mudou o formato de uma mensagem IPC? O tipo mora em `shared/`: mexa lá primeiro

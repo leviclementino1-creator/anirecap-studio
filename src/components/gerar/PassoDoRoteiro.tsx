@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, History, Loader2, Settings2, TriangleAlert, WandSparkles } from 'lucide-react'
+import { ArrowLeft, Check, ClipboardPaste, History, Loader2, Settings2, TriangleAlert, WandSparkles } from 'lucide-react'
 import {
   ROTULO_DO_PAPEL,
   cuesElegiveis,
@@ -7,6 +7,7 @@ import {
   ehModeloReserva,
   eventosOrfaos,
   faixaDePalavras,
+  frasesParaReligar,
   momentoDaFrase,
   palavrasDoRoteiro,
   type AlvoSec,
@@ -15,12 +16,20 @@ import {
   type Roteiro,
 } from '@shared/roteiro'
 import { useGerar } from '@/store/gerar'
-import { resumoDaFalha, useIndiceDoRoteiro, useProblemasDoRoteiro, useRoteiro } from '@/store/gerar-roteiro'
+import {
+  resumoDaFalha,
+  useIndiceDoRoteiro,
+  useProblemasDoRoteiro,
+  useRoteiro,
+  type ModoDoRoteiro,
+} from '@/store/gerar-roteiro'
 import { useProject } from '@/store/project'
 import { Segmentos, type Segmento } from '@/components/painel'
 import { AndamentoDoRoteiro } from './AndamentoDoRoteiro'
 import { CartaoDoEpisodio } from './CartaoDoEpisodio'
+import { MeuRoteiro } from './MeuRoteiro'
 import { PerguntaDoReserva } from './PerguntaDoReserva'
+import { RoteiroEmTexto } from './RoteiroEmTexto'
 import { SecaoDoRoteiro } from './SecaoDoRoteiro'
 import { Aviso, Botao, COR_DE_AVISO, Link, Secao } from './pecas'
 
@@ -30,6 +39,11 @@ const COR_DE_OK = 'text-[#4f9a74]'
 const ALVOS: readonly Segmento<AlvoSec>[] = [
   { valor: 60, rotulo: '60 s', title: 'Short de 60 segundos' },
   { valor: 90, rotulo: '90 s', title: 'Short de 90 segundos' },
+]
+
+const MODOS: readonly Segmento<ModoDoRoteiro>[] = [
+  { valor: 'partes', rotulo: 'Partes', title: 'Uma frase por linha, com o momento do episodio de cada uma' },
+  { valor: 'texto', rotulo: 'Texto', title: 'O roteiro inteiro num bloco. Ponto final separa as frases; linha em branco, as partes.' },
 ]
 
 /** Avisos do roteiro inteiro que a barra mostra (o tamanho ja esta na contagem). */
@@ -42,6 +56,12 @@ const AVISOS_DA_BARRA = new Set<ProblemaDoRoteiro['codigo']>(['sem-gancho', 'sem
  * Ao entrar, abre o rascunho do episodio e, sem roteiro, pede a IA uma vez
  * (eventos e roteiro). Tudo o que muda vai sozinho para o disco
  * (gerar-roteiro.ts); fechar e reabrir o app volta aqui.
+ *
+ * Duas vistas ("Partes | Texto"): uma frase por campo, com o momento de cada
+ * uma, ou o roteiro inteiro num bloco (RoteiroEmTexto). "Meu roteiro"
+ * (MeuRoteiro) cola um roteiro proprio. Nos dois, as frases novas sao ligadas
+ * aos eventos numa chamada so ao sair do bloco; o "Ligar N frases" da barra
+ * completa uma ligacao que nao terminou.
  */
 export function PassoDoRoteiro() {
   const episodioId = useGerar((s) => s.indice?.id ?? null)
@@ -70,6 +90,8 @@ function Conteudo() {
   const erro = useRoteiro((s) => s.erro)
   const entrar = useRoteiro((s) => s.entrar)
   const reserva = useRoteiro((s) => s.reserva)
+  const modo = useRoteiro((s) => s.modo)
+  const colando = useRoteiro((s) => s.colando)
   const indice = useIndiceDoRoteiro()
 
   // O rascunho na store ainda e de outro episodio (a troca esta a caminho).
@@ -109,8 +131,9 @@ function Conteudo() {
       {tela && <BarraDoRoteiro />}
       {andamento && andamento.secaoId === null && <AndamentoDoRoteiro geracao={andamento} cancelado={!geracao} />}
       {pergunta && <PerguntaDoReserva pergunta={pergunta} />}
-      {!tela && !andamento && !pergunta && (semFalas ? <SemFalas /> : <SemRoteiro />)}
-      {tela && <ListaDoRoteiro tela={tela} />}
+      {colando && <MeuRoteiro />}
+      {!tela && !andamento && !pergunta && !colando && (semFalas ? <SemFalas /> : <SemRoteiro />)}
+      {tela && (modo === 'texto' ? <RoteiroEmTexto /> : <ListaDoRoteiro tela={tela} />)}
     </>
   )
 }
@@ -161,11 +184,19 @@ function BarraDoRoteiro() {
   const aprovando = useRoteiro((s) => s.aprovando)
   const trocarAlvo = useRoteiro((s) => s.trocarAlvo)
   const gerar = useRoteiro((s) => s.gerar)
+  const modo = useRoteiro((s) => s.modo)
+  const trocarModo = useRoteiro((s) => s.trocarModo)
+  const colando = useRoteiro((s) => s.colando)
+  const abrirColar = useRoteiro((s) => s.abrirColar)
+  const ligarFrases = useRoteiro((s) => s.ligarFrases)
   const problemas = useProblemasDoRoteiro()
 
   const alvo = tela?.alvoSec ?? alvoSemRoteiro
   const travado = geracao !== null
+  const noTexto = modo === 'texto'
   const doRoteiro = problemas.filter((p) => !p.secaoId && AVISOS_DA_BARRA.has(p.codigo))
+  // Frases sem momento nenhum (ligacao que nao terminou, "+ Frase"): o caminho para ligar.
+  const porLigar = tela && !noTexto ? frasesParaReligar(tela).length : 0
 
   /*
    * relative z-10: o `enter` (animacao com fill `both`) deixa cada cartao com
@@ -183,17 +214,47 @@ function BarraDoRoteiro() {
         >
           <Segmentos opcoes={ALVOS} ativo={(v) => v === alvo} onChange={trocarAlvo} />
         </fieldset>
-        {tela && <Contagem roteiro={tela} travado={travado || aprovando} onRefazer={() => void gerar()} />}
+        {tela && (
+          <fieldset
+            disabled={travado || aprovando}
+            aria-label="Ver o roteiro em partes ou em texto"
+            className={['w-[124px] shrink-0', travado || aprovando ? 'opacity-40' : ''].join(' ')}
+          >
+            <Segmentos opcoes={MODOS} ativo={(v) => v === modo} onChange={(m) => void trocarModo(m)} />
+          </fieldset>
+        )}
+        {tela && <Contagem roteiro={tela} travado={travado || aprovando || noTexto} onRefazer={() => void gerar()} />}
         {tela && <ModeloReserva modelo={tela.modelo} />}
+        {porLigar > 0 && (
+          <Link
+            onClick={() => void ligarFrases()}
+            disabled={travado || aprovando}
+            title="Liga ao momento do episodio as frases que ainda nao tem (IA, uma chamada)"
+          >
+            Ligar {porLigar} {porLigar === 1 ? 'frase' : 'frases'}
+          </Link>
+        )}
         <span className="flex-1" />
+        {tela && !colando && (
+          <Botao
+            pequeno
+            foco="meu-roteiro"
+            onClick={abrirColar}
+            disabled={travado || aprovando}
+            title="Colar um roteiro seu no lugar deste. Este fica em Versoes."
+          >
+            <ClipboardPaste size={12} strokeWidth={1.5} />
+            Meu roteiro
+          </Botao>
+        )}
         <Versoes />
         {tela && (
           <Botao
             pequeno
             foco="outra-versao"
             onClick={() => void gerar()}
-            disabled={travado || aprovando}
-            title="A IA escreve o roteiro inteiro de novo. Este fica em Versoes."
+            disabled={travado || aprovando || noTexto}
+            title={noTexto ? 'Volte para Partes para pedir outra versao' : 'A IA escreve o roteiro inteiro de novo. Este fica em Versoes.'}
           >
             <WandSparkles size={12} strokeWidth={1.5} />
             Outra versao
@@ -292,6 +353,7 @@ function Versoes() {
   const geracao = useRoteiro((s) => s.geracao)
   const aprovando = useRoteiro((s) => s.aprovando)
   const escolherVersao = useRoteiro((s) => s.escolherVersao)
+  const noTexto = useRoteiro((s) => s.modo === 'texto')
   const [aberto, setAberto] = useState(false)
   const caixa = useRef<HTMLDivElement>(null)
 
@@ -335,8 +397,8 @@ function Versoes() {
       <Botao
         pequeno
         onClick={() => setAberto((v) => !v)}
-        disabled={geracao !== null || aprovando}
-        title="Voltar a uma versao anterior"
+        disabled={geracao !== null || aprovando || noTexto}
+        title={noTexto ? 'Volte para Partes para trocar de versao' : 'Voltar a uma versao anterior'}
       >
         <History size={12} strokeWidth={1.5} />
         Versoes
@@ -414,6 +476,7 @@ function SemRoteiro() {
   const falha = useRoteiro((s) => s.falhaDaGeracao)
   const alvo = useRoteiro((s) => s.alvoSemRoteiro)
   const trocarAlvo = useRoteiro((s) => s.trocarAlvo)
+  const abrirColar = useRoteiro((s) => s.abrirColar)
   const openSettings = useProject((s) => s.openSettings)
   const resumo = falha ? resumoDaFalha(falha) : null
 
@@ -441,6 +504,10 @@ function SemRoteiro() {
             Configuracoes
           </Botao>
         )}
+        <Botao foco="meu-roteiro" onClick={abrirColar} title="Colar um roteiro seu. Cada frase ganha um momento do episodio.">
+          <ClipboardPaste size={13} strokeWidth={1.5} />
+          Meu roteiro
+        </Botao>
         <Botao
           principal={!resumo?.configuracoes}
           foco="gerar-roteiro"

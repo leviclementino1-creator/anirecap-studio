@@ -508,12 +508,22 @@ function ajustesDe(s: PublicSettings): AjustesDaVoz {
   }
 }
 
+/**
+ * O gasto de um take em palavras. O Fish cobra em DOLAR pelos caracteres e nao
+ * manda character-cost: o `cobrados` dele sao os caracteres enviados, e
+ * "1.034 creditos gastos" parecia uma conta que ele nao tem (1o take real, 14/10).
+ */
+export function textoDoGasto(fonte: TakeDaVoz['config']['fonte'], cobrados: number): string {
+  const n = Math.ceil(cobrados).toLocaleString('pt-BR')
+  return fonte === 'fish' ? `${n} caracteres cobrados (Fish)` : `${n} creditos gastos`
+}
+
 /** Recado do fim de um pedido: o gasto e os avisos do motor. */
 function recadoDoFim(tipo: TipoDoPedido, v: VozGerada): { recado: string; detalhe: string | null } {
   const partes: string[] = []
   if (tipo === 'gerar' || tipo === 'regravar') {
     // `cobrados` e o character-cost do provedor: CREDITOS do plano, nao caracteres (a conta do Levi cobra ~0,22 por caractere).
-    partes.push(v.cobrados > 0 ? `${Math.ceil(v.cobrados).toLocaleString('pt-BR')} creditos gastos.` : 'Do cache, sem custo.')
+    partes.push(v.cobrados > 0 ? `${textoDoGasto(v.take.config.fonte, v.cobrados)}.` : 'Do cache, sem custo.')
     if (alinhamentoFraco(v.take)) partes.push('Alinhamento fraco: confira.')
   } else if (tipo === 'importar') {
     partes.push(alinhamentoFraco(v.take) ? 'Importado. Alinhamento fraco: confira.' : 'Importado.')

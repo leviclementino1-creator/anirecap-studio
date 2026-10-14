@@ -194,6 +194,14 @@ function tempoEstimado(reconhecer: boolean, jaCortado: boolean): string {
   return reconhecer ? 'Cerca de 5 min (1a vez do anime: +9 min)' : 'Cerca de 1 min, sem personagens'
 }
 
+/**
+ * O episodio novo nao espera o corte (decisao do Levi, 14/10): as falas saem
+ * em segundos e o roteiro libera; as cenas vem por tras.
+ */
+function tempoSemEsperar(reconhecer: boolean): string {
+  return reconhecer ? 'Falas na hora; cenas em ~5 min, por tras' : 'Falas na hora; cenas em ~1 min, por tras'
+}
+
 /** (c) sem achado: o episodio e novo e precisa ser cortado. */
 function EpisodioNovo() {
   const analisar = useGerar((s) => s.analisar)
@@ -201,10 +209,15 @@ function EpisodioNovo() {
   const definirReconhecer = useGerar((s) => s.definirReconhecer)
   const motor = useGerar((s) => s.motor)
   const temDescoberta = useGerar((s) => s.descoberta !== null)
-  const bloqueio = useBloqueioDoStudio()
   const semAnime = useGerar((s) => !s.palpite?.anime.trim())
   const corteSemIndice = useGerar((s) => s.corteSemIndice)
   const nuvem = useNuvemDaBiblioteca()
+  /*
+   * As falas nao precisam do motor: com ele fora (ou ainda conferindo), o
+   * botao le as falas do mesmo jeito e o corte espera, com o porque na secao
+   * Cenas. So o nome do anime e obrigatorio (da nome a pasta das cenas).
+   */
+  const bloqueio = semAnime ? 'Falta o nome do anime' : null
 
   return (
     <Secao titulo={corteSemIndice ? 'Cenas cortadas' : 'Episodio novo'}>
@@ -229,7 +242,9 @@ function EpisodioNovo() {
         <Caixinha ligada={reconhecer} onChange={definirReconhecer}>
           Reconhecer personagens
         </Caixinha>
-        <span className="text-[11px] text-ink-3">{tempoEstimado(reconhecer, corteSemIndice !== null)}</span>
+        <span className="text-[11px] text-ink-3">
+          {corteSemIndice ? tempoEstimado(reconhecer, true) : tempoSemEsperar(reconhecer)}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
@@ -237,7 +252,7 @@ function EpisodioNovo() {
           principal={!temDescoberta}
           onClick={() => void analisar('studio')}
           disabled={bloqueio !== null}
-          title={bloqueio ?? 'Corta na biblioteca do Studio'}
+          title={bloqueio ?? 'Le as falas agora e corta as cenas por tras, na biblioteca do Studio'}
         >
           <Scissors size={13} strokeWidth={1.5} />
           Analisar no Studio
@@ -249,7 +264,7 @@ function EpisodioNovo() {
             title={
               semAnime
                 ? 'Falta o nome do anime'
-                : `Usa o AnCut HUB instalado${motor.ancut.caminho ? ` (${motor.ancut.caminho})` : ''}. As cenas ficam na biblioteca dele, e o Studio le de la.`
+                : `Le as falas agora e corta por tras com o AnCut HUB instalado${motor.ancut.caminho ? ` (${motor.ancut.caminho})` : ''}. As cenas ficam na biblioteca dele, e o Studio le de la.`
             }
           >
             <Scissors size={13} strokeWidth={1.5} />

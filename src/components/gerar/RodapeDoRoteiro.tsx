@@ -33,7 +33,7 @@ function irAte(problema: ProblemaDoRoteiro): void {
  * esta escrevendo agora -- clicar leva ate o problema; e, sem nada disso, so o
  * "Salvo" discreto.
  *
- * Aprovado, o "Proximo: Voz (parte 3)" leva ao passo 3.
+ * Aprovado, o "Proximo: Voz" leva ao passo 3.
  */
 export function RodapeDoRoteiro() {
   const irParaPasso = useGerar((s) => s.irParaPasso)
@@ -54,6 +54,7 @@ export function RodapeDoRoteiro() {
   const desfazerRemocao = useRoteiro((s) => s.desfazerRemocao)
   const aprovar = useRoteiro((s) => s.aprovar)
   const desaprovar = useRoteiro((s) => s.desaprovar)
+  const noTexto = useRoteiro((s) => s.modo === 'texto')
   const problemas = useProblemasDoRoteiro()
 
   const bloqueio = problemas.find((p) => p.nivel === 'erro') ?? null
@@ -73,7 +74,9 @@ export function RodapeDoRoteiro() {
       ? 'Espere a IA terminar'
       : bloqueio
         ? `Corrija antes: ${ondeEsta(bloqueio, papelDaSecao)}`
-        : 'Este e o texto que vai ser narrado'
+        : noTexto
+          ? 'Liga as frases novas ao episodio e aprova. Este e o texto que vai ser narrado'
+          : 'Este e o texto que vai ser narrado'
 
   const estado = !rascunho?.atual
     ? ''
@@ -158,7 +161,7 @@ export function RodapeDoRoteiro() {
             title="Ir a voz (passo 3). O roteiro aprovado e o que vai ser narrado."
           >
             <AudioLines size={13} strokeWidth={1.5} />
-            Proximo: Voz (parte 3)
+            Proximo: Voz
             <ArrowRight size={13} strokeWidth={1.5} />
           </Botao>
         </>

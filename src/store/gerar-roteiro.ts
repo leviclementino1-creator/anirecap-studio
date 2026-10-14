@@ -8,19 +8,24 @@ import {
   ehParadaNoReserva,
   fraseVazia,
   idsDeFrase,
+  mesmoTextoDoRoteiro,
   proximoId,
+  redividirRoteiro,
   roteiroAtual,
   textoDaParada,
+  textoDoRoteiro,
   validarRoteiro,
   type AlvoSec,
   type EtapaDoRoteiro,
   type Evento,
   type Frase,
   type ParadoNoReserva,
+  type PedidoDeReligar,
   type ProblemaDoRoteiro,
   type RascunhoAberto,
   type RascunhoDoRecap,
   type Roteiro,
+  type RoteiroReligadoPronto,
   type Secao,
 } from '@shared/roteiro'
 import { useGerar } from './gerar'
@@ -45,6 +50,15 @@ import { useGerar } from './gerar'
  * app nessa janela perdia o que foi digitado. O main aguenta a IA e as
  * gravacoes ao mesmo tempo (ele rele o rascunho antes de gravar a versao), e
  * a resposta de um pedido cancelado vai so para o historico (cancelarRoteiro).
+ *
+ * MODO TEXTO ("Partes | Texto"): o roteiro inteiro num bloco so. Cada tecla
+ * re-divide o texto contra o roteiro de quando ele entrou no modo
+ * (redividirRoteiro, sempre contra a MESMA base: contra a ultima tela, uma
+ * frase reescrita aos poucos herdaria os vinculos da original sem parecer em
+ * nada com ela) e a tela grava sozinha como no modo Partes -- o texto nunca
+ * se perde. Ao sair (ou aprovar), o religarRoteiro do main liga as frases
+ * novas aos eventos numa chamada so. Texto igual ao da entrada nao chama
+ * nada. "Usar meu roteiro" passa pelo mesmo religar, com tudo novo.
  */
 
 /** O pedido de IA em andamento. */
@@ -62,7 +76,18 @@ export interface GeracaoEmCurso {
   mensagem: string | null
   /** O main ja trabalha NESTE pedido (antes, so esperava o anterior). */
   comecou: boolean
+  /** E o religar (modo Texto, "Usar meu roteiro", "Ligar frases"): o texto ja esta gravado. */
+  religar: boolean
 }
+
+/** O pedido de religar, para refazer igual depois do "Usar modelo reserva". */
+export interface PedidoDaTela {
+  texto: string
+  modo: PedidoDeReligar['modo']
+  alvoSec?: AlvoSec
+}
+
+export type ModoDoRoteiro = 'partes' | 'texto'
 
 /**
  * O pedido parou antes do modelo RESERVA (os bons sem cota ou lotados) e a
@@ -73,6 +98,8 @@ export interface PerguntaDoReserva extends ParadoNoReserva {
   /** A parte do "Refazer". null = o roteiro inteiro. */
   secaoId: string | null
   instrucao: string | null
+  /** Parou no religar: o "Usar modelo reserva" refaz ESTE pedido, nao um roteiro novo. */
+  religar?: PedidoDaTela | null
 }
 
 /** O que a lixeira (ou o "Remover parte") tirou, para o "Desfazer" do rodape. */
@@ -121,9 +148,25 @@ interface EstadoDoRoteiro {
   fraseEmFoco: string | null
   /** O ultimo pedido parou antes do modelo reserva: a pergunta na tela. null = nenhuma. */
   reserva: PerguntaDoReserva | null
+  /** "Partes" (uma frase por campo) ou "Texto" (o roteiro inteiro num bloco). */
+  modo: ModoDoRoteiro
+  /** O bloco do modo Texto, como ele digitou. */
+  textoDoModo: string
+  /** A tela de quando entrou no modo Texto: toda tecla re-divide contra ela. */
+  baseDoTexto: Roteiro | null
+  /** O cartao "Meu roteiro" (colar um roteiro proprio) esta aberto. */
+  colando: boolean
+  /** O que foi colado, ate o roteiro novo existir (Cancelar antes do main nao perde). */
+  textoColado: string
 
   /** Abre (ou reabre) o rascunho do episodio e, sem roteiro, gera sozinho uma vez. */
   entrar: (episodioId: string) => Promise<void>
+  /**
+   * So LER o rascunho deste episodio, quando ele ja tem roteiro (o cabecalho
+   * do assistente sabe do roteiro aprovado e da voz sem entrar no passo 2).
+   * Nunca cria rascunho nem chama a IA: sem roteiro, nao faz nada.
+   */
+  espiar: (episodioId: string) => Promise<void>
   /**
    * Um rascunho NOVO deste episodio (eventos e roteiro do zero): o caminho
    * quando as falas mudaram depois do roteiro. O de agora fica no disco.
@@ -163,6 +206,21 @@ interface EstadoDoRoteiro {
   marcarFoco: (fraseId: string | null) => void
   limparErro: () => void
   limparRecado: () => void
+  /**
+   * "Partes | Texto". Para o Texto: o roteiro vira um bloco. Para Partes: as
+   * frases novas sao ligadas aos eventos (religarRoteiro); texto igual ao da
+   * entrada volta sem chamar nada.
+   */
+  trocarModo: (modo: ModoDoRoteiro) => Promise<void>
+  /** Uma tecla no bloco do modo Texto: re-divide e agenda a gravacao. */
+  digitarTexto: (texto: string) => void
+  abrirColar: () => void
+  fecharColar: () => void
+  digitarColado: (texto: string) => void
+  /** "Usar meu roteiro": o texto colado vira a versao atual, com as frases ligadas aos eventos. */
+  usarMeuRoteiro: () => Promise<void>
+  /** Liga aos eventos as frases que ainda nao tem vinculo (o "Ligar N frases" da barra). */
+  ligarFrases: () => Promise<void>
 }
 
 /** Espera depois da ultima tecla antes de gravar. */
@@ -235,7 +293,49 @@ const LIMPO = {
   remocao: null,
   fraseEmFoco: null,
   reserva: null,
+  modo: 'partes',
+  textoDoModo: '',
+  baseDoTexto: null,
+  colando: false,
+  textoColado: '',
 } satisfies Partial<EstadoDoRoteiro>
+
+/** Fora do modo Texto (a tela volta as partes). */
+const SEM_TEXTO = { modo: 'partes', textoDoModo: '', baseDoTexto: null } satisfies Partial<EstadoDoRoteiro>
+
+/** "1 frase nova" / "3 frases novas": a conta e o substantivo juntos. */
+function conta(n: number, um: string, varios: string): string {
+  return `${n} ${n === 1 ? um : varios}`
+}
+
+/**
+ * O recado curto do religar ("3 frases novas, 2 religadas, 1 sem momento"),
+ * com os consertos da resposta no tooltip. `casamento` e o do texto contra o
+ * roteiro de antes do modo Texto (o do main ja ve as frases gravadas no
+ * caminho, todas iguais). null = nada mudou e nada foi ligado.
+ */
+export function resumoDaReligacao(
+  feito: Pick<RoteiroReligadoPronto, 'frases' | 'religadas' | 'semEvento' | 'doCache' | 'avisos'>,
+  casamento: { novas: number; parecidas: number; removidas: number } | null,
+): { recado: string | null; detalhe: string | null } {
+  const novas = casamento?.novas ?? feito.frases.filter((f) => f.destino === 'nova').length
+  const parecidas = casamento?.parecidas ?? feito.frases.filter((f) => f.destino === 'parecida').length
+  const removidas = casamento?.removidas ?? 0
+  const partes = [
+    novas > 0 ? conta(novas, 'frase nova', 'frases novas') : null,
+    parecidas > 0 ? conta(parecidas, 'mudada', 'mudadas') : null,
+    removidas > 0 ? conta(removidas, 'removida', 'removidas') : null,
+    feito.religadas.length > 0 ? conta(feito.religadas.length, 'religada', 'religadas') : null,
+    feito.semEvento.length > 0 ? `${feito.semEvento.length} sem momento` : null,
+  ].filter((x): x is string => x !== null)
+  if (partes.length === 0) return { recado: null, detalhe: null }
+  const detalhe = [
+    feito.doCache ? 'Ligacao do cache, sem gastar cota.' : null,
+    feito.semEvento.length > 0 ? 'Sem momento: a frase fica sem cena do episodio ate ganhar um evento (clique no quadro dela).' : null,
+    ...feito.avisos,
+  ].filter((x): x is string => x !== null)
+  return { recado: partes.join(', '), detalhe: detalhe.length > 0 ? detalhe.join('\n') : null }
+}
 
 /** Os avisos do main que contam conserto na resposta da IA (os outros a tela ja mostra). */
 function reparos(avisos: readonly string[]): string[] {
@@ -330,14 +430,19 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
   }
 
   const aplicarAberto = (aberto: RascunhoAberto): void => {
+    const tela = roteiroAtual(aberto.rascunho)
+    // O bloco do modo Texto so continua se ainda e o texto do disco (voltou ao passo sem mudar nada).
+    const s = get()
+    const textoVelho = s.modo === 'texto' && (!tela || !mesmoTextoDoRoteiro(textoDoRoteiro(tela), s.textoDoModo))
     set({
       abrindo: false,
       rascunho: aberto.rascunho,
       indice: aberto.indice,
       avisos: aberto.avisos,
-      tela: roteiroAtual(aberto.rascunho),
+      tela,
       alvoSemRoteiro: aberto.rascunho.alvoSec,
       sujo: false,
+      ...(textoVelho ? SEM_TEXTO : {}),
     })
   }
 
@@ -387,6 +492,191 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
     }, DESFAZER_POR_MS)
   }
 
+  /**
+   * Rele o rascunho do disco sem tirar a tela de quem digita. E o caminho
+   * depois de um religar que nao trouxe o rascunho (erro, parada no reserva):
+   * o main grava o texto ANTES da IA, entao o disco ja tem a versao nova.
+   */
+  const recarregar = async (id: string): Promise<void> => {
+    const episodioId = get().episodioId
+    if (!episodioId) return
+    await naFila(async () => {
+      if (!ainda(id)) return
+      const r = await window.dangai.abrirRascunho(episodioId)
+      if (!ainda(id) || !r.ok || r.value.rascunho.id !== id) return
+      if (get().sujo) set({ rascunho: r.value.rascunho })
+      else set({ rascunho: r.value.rascunho, tela: roteiroAtual(r.value.rascunho) })
+    })
+  }
+
+  /** O texto `texto` ja esta na versao atual do disco (o main gravou antes de a IA falhar). */
+  const textoGravado = (texto: string): boolean => {
+    const atual = get().rascunho ? roteiroAtual(get().rascunho!) : null
+    return atual !== null && mesmoTextoDoRoteiro(textoDoRoteiro(atual), texto)
+  }
+
+  /**
+   * O RELIGAR (religarRoteiro no main): o texto vira roteiro e as frases sem
+   * vinculo sao ligadas aos eventos numa chamada so. Como o "gerar": o que
+   * esta digitado grava ANTES, na fila; a chamada lenta fica fora dela e
+   * espera a IA anterior deste rascunho. true = a tela ficou com o roteiro
+   * religado. Falhou ou parou no reserva: a tela rele o disco (o texto ja
+   * esta la) e sai do modo Texto se ele ficou gravado.
+   */
+  const religar = async (p: PedidoDaTela & { usarReserva?: boolean }): Promise<boolean> => {
+    const s = get()
+    const r = s.rascunho
+    if (!r || s.geracao || s.aprovando) return false
+    const id = r.id
+    const token = ++ultimoToken
+    pararRelogio()
+    if (relogioDoCancelado) clearTimeout(relogioDoCancelado)
+    // O resumo conta contra o roteiro de antes do modo Texto: as novas de toda a edicao.
+    const base = s.modo === 'texto' && p.modo === 'editar' ? s.baseDoTexto : null
+    const casamento = base ? redividirRoteiro(base, p.texto) : null
+    const comEventos = r.eventos.length === 0
+    set({
+      geracao: {
+        token,
+        etapa: comEventos ? 'eventos' : 'religar',
+        secaoId: null,
+        comEventos,
+        inicio: Date.now(),
+        mensagem: null,
+        comecou: false,
+        religar: true,
+      },
+      geracaoCancelada: null,
+      erro: null,
+      falhaDaGeracao: null,
+      recado: null,
+      recadoDetalhe: null,
+      remocao: null,
+      reserva: null,
+    })
+    const vivo = (): boolean => get().geracao?.token === token
+
+    // O que esta digitado vai para o disco antes de tudo: o texto nunca depende da IA.
+    const gravou = await naFila(async () => (ainda(id) ? gravarPendente(id) : false))
+    if (!gravou) {
+      if (vivo()) set({ geracao: null })
+      return false
+    }
+    await (iaNoAr.get(id) ?? Promise.resolve())
+    if (!vivo() || !ainda(id)) return false
+    const g = get().geracao
+    if (g) set({ geracao: { ...g, comecou: true } })
+    const tela = get().tela
+    const resposta = await noAr(
+      id,
+      window.dangai.religarRoteiro(id, {
+        texto: p.texto,
+        modo: p.modo,
+        ...(p.alvoSec !== undefined ? { alvoSec: p.alvoSec } : {}),
+        ...(p.modo === 'editar' && tela ? { versao: tela.versao, criadoEm: tela.criadoEm } : {}),
+        pedidoId: String(token),
+        aceitouReserva: p.usarReserva === true,
+      }),
+    )
+    if (!ainda(id)) return false
+
+    const parada = resposta.ok && ehParadaNoReserva(resposta.value) ? resposta.value : null
+    if (!resposta.ok || parada) {
+      await recarregar(id)
+      if (!vivo()) return false
+      const gravado = textoGravado(p.texto)
+      // Gravado, o texto ja e o roteiro da tela: o modo Texto e o cartao de colar fecham.
+      const fechar = gravado ? { ...SEM_TEXTO, colando: false, textoColado: '' } : {}
+      if (!resposta.ok || !parada) {
+        const erro = resposta.ok ? 'Resposta inesperada.' : resposta.error
+        set({ geracao: null, erro, ...fechar, ...(gravado || p.modo !== 'meu-roteiro' ? {} : { colando: true }) })
+        return false
+      }
+      const refazer: PedidoDaTela = { texto: p.texto, modo: p.modo, ...(p.alvoSec !== undefined ? { alvoSec: p.alvoSec } : {}) }
+      set({ geracao: null, ...fechar, reserva: { ...parada, secaoId: null, instrucao: null, religar: refazer } })
+      return false
+    }
+
+    const feito = resposta.value
+    if (ehParadaNoReserva(feito)) return false
+    if (!vivo()) {
+      // Cancelado: o main nao aplicou a ligacao, mas o texto ficou gravado.
+      const novo = maisNovo(get().rascunho, feito.rascunho)
+      set(get().sujo ? { rascunho: novo } : { rascunho: novo, tela: roteiroAtual(novo) })
+      return false
+    }
+    const resumo = resumoDaReligacao(
+      feito,
+      casamento
+        ? {
+            novas: casamento.religar.length,
+            parecidas: casamento.frases.filter((f) => f.destino === 'parecida').length,
+            removidas: casamento.removidas.length,
+          }
+        : null,
+    )
+    set({
+      rascunho: feito.rascunho,
+      tela: feito.roteiro,
+      sujo: false,
+      salvoEm: Date.now(),
+      geracao: null,
+      ...SEM_TEXTO,
+      colando: false,
+      textoColado: '',
+      recado: resumo.recado,
+      recadoDetalhe: resumo.detalhe,
+    })
+    return true
+  }
+
+  /** Sai do modo Texto: texto igual ao da entrada volta direto; mudado, passa pelo religar. */
+  const sairDoTexto = async (): Promise<boolean> => {
+    const s = get()
+    if (s.modo !== 'texto') return true
+    if (!s.baseDoTexto || mesmoTextoDoRoteiro(s.textoDoModo, textoDoRoteiro(s.baseDoTexto))) {
+      set(SEM_TEXTO)
+      return true
+    }
+    return religar({ texto: s.textoDoModo, modo: 'editar' })
+  }
+
+  /** O "Aprovar roteiro" de sempre: grava a tela e aprova numa chamada so. */
+  const aprovarTela = async (): Promise<void> => {
+    const s = get()
+    if (!s.rascunho || !s.tela || s.geracao || s.aprovando) return
+    const id = s.rascunho.id
+    pararRelogio()
+    set({ aprovando: true, erro: null })
+    await naFila(async () => {
+      const tela = get().tela
+      if (!ainda(id) || !tela) {
+        set({ aprovando: false })
+        return
+      }
+      const r = await window.dangai.aprovarRoteiro(id, tela)
+      if (!ainda(id)) return
+      if (!r.ok) {
+        set({ aprovando: false, erro: r.error })
+        return
+      }
+      const salvo = roteiroAtual(r.value) ?? tela
+      const igual = get().tela === tela
+      set({
+        aprovando: false,
+        rascunho: r.value,
+        salvoEm: Date.now(),
+        remocao: null,
+        // "Cancelado.", "Do cache..." eram de antes: aprovado, o rodape diz so isso.
+        recado: null,
+        recadoDetalhe: null,
+        ...(igual ? { tela: salvo, sujo: false } : { tela: comDadosDoDisco(get().tela ?? tela, salvo) }),
+      })
+      // Digitou durante a aprovacao: a gravacao seguinte desaprova, como deve.
+      if (!igual) agendar()
+    })
+  }
+
   return {
     episodioId: null,
     ...LIMPO,
@@ -422,6 +712,19 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       gerarSozinho()
     },
 
+    espiar: async (episodioId) => {
+      const s = get()
+      if (s.episodioId === episodioId || s.abrindo || s.geracao) return
+      const lista = await window.dangai.listarRascunhos()
+      // O mais recente deste episodio (a lista vem do mais novo ao mais velho, como o "voltar onde parou").
+      const deste = lista.ok ? lista.value.find((x) => x.episodioId === episodioId) : undefined
+      // Sem roteiro, entrar geraria um sozinho (gerarSozinho): isso e so do passo 2.
+      if (!deste || deste.palavras === null) return
+      const agora = get()
+      if (agora.episodioId === episodioId || agora.abrindo || agora.geracao) return
+      await get().entrar(episodioId)
+    },
+
     recomecarRascunho: async () => {
       const s = get()
       const episodioId = s.episodioId
@@ -445,7 +748,8 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
     gerar: async (pedido = {}) => {
       const s = get()
       const r = s.rascunho
-      if (!r || s.geracao || s.aprovando) return
+      // No modo Texto o bloco e a tela: uma versao nova da IA o deixaria para tras.
+      if (!r || s.geracao || s.aprovando || s.modo === 'texto') return
       const id = r.id
       const token = ++ultimoToken
       const secaoId = pedido.secaoId ?? null
@@ -464,6 +768,7 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
           inicio: Date.now(),
           mensagem: null,
           comecou: false,
+          religar: false,
         },
         geracaoCancelada: null,
         erro: null,
@@ -600,13 +905,20 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
     usarReserva: () => {
       const p = get().reserva
       if (!p) return
+      if (p.religar) {
+        set({ reserva: null })
+        void religar({ ...p.religar, usarReserva: true })
+        return
+      }
       void get().gerar({ secaoId: p.secaoId ?? undefined, instrucao: p.instrucao ?? undefined, usarReserva: true })
     },
 
     esperarReserva: () => {
       const p = get().reserva
       if (!p) return
-      set({ reserva: null, falhaDaGeracao: textoDaParada(p, true) })
+      // No religar o texto ja esta gravado: so a ligacao fica para depois ("Ligar N frases").
+      if (p.religar) set({ reserva: null, recado: 'Frases novas sem momento por enquanto.', recadoDetalhe: textoDaParada(p) })
+      else set({ reserva: null, falhaDaGeracao: textoDaParada(p, true) })
     },
 
     cancelarGeracao: () => {
@@ -616,12 +928,32 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       // O main manda a resposta deste pedido so para o historico.
       if (s.rascunho && g.comecou) void window.dangai.cancelarRoteiro(s.rascunho.id, String(g.token))
       if (relogioDoCancelado) clearTimeout(relogioDoCancelado)
-      set({
-        geracao: null,
-        geracaoCancelada: g,
-        recado: 'Cancelado.',
-        recadoDetalhe: 'Se a resposta da IA chegar depois, ela fica em Versoes.',
-      })
+      if (g.religar) {
+        /*
+         * O texto do modo Texto ja esta gravado (vai antes da IA): a tela volta
+         * as partes. O colado so esta gravado se o main ja comecou; antes
+         * disso o cartao de colar volta com o texto.
+         */
+        const colado = s.textoColado.trim() !== '' && !g.comecou
+        set({
+          geracao: null,
+          geracaoCancelada: g,
+          ...SEM_TEXTO,
+          colando: colado,
+          ...(colado ? {} : { textoColado: '' }),
+          recado: 'Cancelado.',
+          recadoDetalhe: 'O texto ficou salvo. As frases novas ficam sem momento ate o "Ligar frases".',
+        })
+        // O main grava o texto assim que recebe o pedido: a tela mostra ja o que ficou, sem esperar a IA.
+        if (g.comecou && s.rascunho) void recarregar(s.rascunho.id)
+      } else {
+        set({
+          geracao: null,
+          geracaoCancelada: g,
+          recado: 'Cancelado.',
+          recadoDetalhe: 'Se a resposta da IA chegar depois, ela fica em Versoes.',
+        })
+      }
       relogioDoCancelado = setTimeout(() => {
         relogioDoCancelado = null
         if (get().geracaoCancelada?.token === g.token) set({ geracaoCancelada: null })
@@ -803,7 +1135,7 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
     escolherVersao: async (versao) => {
       const s = get()
       const r = s.rascunho
-      if (!r || s.geracao || s.aprovando) return
+      if (!r || s.geracao || s.aprovando || s.modo === 'texto') return
       if (r.atual === versao && !s.sujo) return
       const id = r.id
       pararRelogio()
@@ -830,39 +1162,16 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
     },
 
     aprovar: async () => {
-      const s = get()
-      if (!s.rascunho || !s.tela || s.geracao || s.aprovando) return
-      const id = s.rascunho.id
-      pararRelogio()
-      set({ aprovando: true, erro: null })
-      await naFila(async () => {
-        const tela = get().tela
-        if (!ainda(id) || !tela) {
-          set({ aprovando: false })
-          return
-        }
-        // Grava a tela e aprova numa chamada so: o que esta digitado e o que e aprovado.
-        const r = await window.dangai.aprovarRoteiro(id, tela)
-        if (!ainda(id)) return
-        if (!r.ok) {
-          set({ aprovando: false, erro: r.error })
-          return
-        }
-        const salvo = roteiroAtual(r.value) ?? tela
-        const igual = get().tela === tela
-        set({
-          aprovando: false,
-          rascunho: r.value,
-          salvoEm: Date.now(),
-          remocao: null,
-          // "Cancelado.", "Do cache..." eram de antes: aprovado, o rodape diz so isso.
-          recado: null,
-          recadoDetalhe: null,
-          ...(igual ? { tela: salvo, sujo: false } : { tela: comDadosDoDisco(get().tela ?? tela, salvo) }),
-        })
-        // Digitou durante a aprovacao: a gravacao seguinte desaprova, como deve.
-        if (!igual) agendar()
-      })
+      if (get().modo !== 'texto') {
+        await aprovarTela()
+        return
+      }
+      // No modo Texto, as frases novas sao ligadas antes: aprova o que ficou nas partes.
+      if (!(await sairDoTexto())) return
+      const { recado, recadoDetalhe } = get()
+      await aprovarTela()
+      // O resumo do religar ("2 frases novas, 2 religadas") vale mais que o silencio do "Aprovado".
+      if (recado && get().rascunho?.aprovado && !get().recado) set({ recado, recadoDetalhe })
     },
 
     desaprovar: async () => {
@@ -905,6 +1214,53 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
 
     limparErro: () => set({ erro: null }),
     limparRecado: () => set({ recado: null, recadoDetalhe: null }),
+
+    trocarModo: async (modo) => {
+      const s = get()
+      if (s.modo === modo || !s.tela || s.geracao || s.aprovando) return
+      if (modo === 'partes') {
+        await sairDoTexto()
+        return
+      }
+      const texto = textoDoRoteiro(s.tela)
+      set({ modo: 'texto', textoDoModo: texto, baseDoTexto: s.tela, colando: false, remocao: null })
+    },
+
+    digitarTexto: (texto) => {
+      const s = get()
+      const base = s.baseDoTexto
+      if (s.modo !== 'texto' || !base || s.geracao) return
+      set({ textoDoModo: texto })
+      // Voltou ao texto da entrada: o roteiro de antes, inteiro (nada re-dividido a toa).
+      const secoes = mesmoTextoDoRoteiro(texto, textoDoRoteiro(base)) ? base.secoes : redividirRoteiro(base, texto).secoes
+      get().editar((r) => (JSON.stringify(r.secoes) === JSON.stringify(secoes) ? r : { ...r, secoes }))
+    },
+
+    abrirColar: () => {
+      const s = get()
+      if (!s.rascunho || s.geracao || s.aprovando) return
+      set({ colando: true })
+    },
+
+    fecharColar: () => set({ colando: false }),
+
+    digitarColado: (texto) => set({ textoColado: texto }),
+
+    usarMeuRoteiro: async () => {
+      const s = get()
+      const texto = s.textoColado
+      if (!s.rascunho || s.geracao || s.aprovando || !texto.trim()) return
+      // O roteiro colado troca o da tela: o modo Texto (ja gravado) acaba aqui.
+      set({ colando: false, ...SEM_TEXTO })
+      await religar({ texto, modo: 'meu-roteiro', alvoSec: s.tela?.alvoSec ?? s.alvoSemRoteiro })
+    },
+
+    ligarFrases: async () => {
+      const s = get()
+      if (!s.tela || s.modo !== 'partes') return
+      // O mesmo texto: o main nao re-divide nada, so liga as que estao sem vinculo.
+      await religar({ texto: textoDoRoteiro(s.tela), modo: 'editar' })
+    },
   }
 })
 
@@ -919,7 +1275,18 @@ export function useIndiceDoRoteiro(): EpisodeIndex | null {
   const episodioId = useRoteiro((s) => s.episodioId)
   const doRascunho = useRoteiro((s) => s.indice)
   const doPasso1 = useGerar((s) => s.indice)
-  return doPasso1 && doPasso1.id === episodioId ? doPasso1 : doRascunho
+  return useMemo(() => {
+    if (!doPasso1 || doPasso1.id !== episodioId) return doRascunho
+    /*
+     * O corte em segundo plano terminou e so o indice do rascunho ganhou os
+     * planos (escutarRoteiro): as falas ficam as do passo 1, as cenas vem do
+     * corte -- e as miniaturas aparecem sem sair do passo.
+     */
+    if (doPasso1.planos.length === 0 && doRascunho?.id === doPasso1.id && doRascunho.planos.length > 0) {
+      return { ...doPasso1, planos: doRascunho.planos }
+    }
+    return doPasso1
+  }, [episodioId, doRascunho, doPasso1])
 }
 
 /** A ultima conta do validarRoteiro: a lista, a barra e o rodape pedem a mesma a cada tecla. */
@@ -966,6 +1333,12 @@ export function escutarRoteiro(): () => void {
     if (!g || !g.comecou || s.rascunho?.id !== p.rascunhoId) return
     useRoteiro.setState({ geracao: { ...g, etapa: p.etapa, mensagem: p.mensagem } })
   })
+  // O corte do episodio terminou (passo 1, em segundo plano): o indice com os
+  // planos chega aqui, e o momento de cada frase ganha a miniatura da cena.
+  const tirarCorte = window.dangai.onCorteProgresso((e) => {
+    if (!e.indice || e.episodioId !== useRoteiro.getState().episodioId) return
+    useRoteiro.setState({ indice: e.indice })
+  })
   /*
    * Fechar o app com a ultima tecla ainda no relogio: grava JA, direto, fora
    * da fila. Uma gravacao que entrasse atras de outra tarefa nao sairia antes
@@ -979,6 +1352,7 @@ export function escutarRoteiro(): () => void {
   window.addEventListener('beforeunload', antesDeFechar)
   return () => {
     tirar()
+    tirarCorte()
     window.removeEventListener('beforeunload', antesDeFechar)
   }
 }

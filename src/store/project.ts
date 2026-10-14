@@ -101,6 +101,7 @@ import {
   ehProjetoDoDangai,
   PROJECT_FILE_VERSION,
   semExtensaoDeProjeto,
+  type OrigemDoStudio,
   type ProjectFile,
 } from '@shared/project-file'
 import { herdarAjustes, reaproveitar } from '@shared/remontar'
@@ -122,6 +123,7 @@ import {
   spansDoTrecho,
 } from '@shared/trecho'
 import { semSujar } from './quiet'
+import { frasesReescritas, semGuarda, tirarImagemSemReanalise, vozDoStudio } from './guarda-do-studio'
 
 /** Estados da interface. Existem tres, e nao mais que tres. */
 export type Phase = 'empty' | 'editing' | 'rendering'
@@ -216,6 +218,12 @@ export interface ProjectState {
 
   /** Ligado quando o usuario mexe no plano: a analise para de sobrescrever. */
   planEdited: boolean
+  /**
+   * Projeto nascido do Gerar recap (o `studio` do .anirecap). null = do jeito
+   * do Dangai. Com `vozAlinhada`, liga a GUARDA DE REANALISE: nada troca o
+   * transcript da voz pelo do Whisper (ver ./guarda-do-studio.ts).
+   */
+  studio: OrigemDoStudio | null
   /**
    * Texto do gancho e do fechamento, e por quantos segundos cada um fica.
    *
@@ -1151,6 +1159,7 @@ export const useProject = create<ProjectState>((set, get) => ({
   lastOutput: null,
   settingsOpen: false,
   planEdited: false,
+  studio: null,
   hookText: '',
   hookSec: HOOK_SEC_DEFAULT,
   endText: '',
@@ -1355,6 +1364,10 @@ export const useProject = create<ProjectState>((set, get) => ({
 
     set({ error: null })
 
+    // GUARDA DE REANALISE (Studio): sem narracao nova, o que chega opera sobre
+    // o plano e o transcript da voz (ver ./guarda-do-studio.ts).
+    const doStudio = vozDoStudio(get()) && audioPaths.length === 0
+
     // O roteiro entra antes da analise: ele muda o texto das legendas, entao
     // precisa estar no estado quando a analise rodar la embaixo.
     const scriptPath = scriptPaths[0]
@@ -1364,8 +1377,17 @@ export const useProject = create<ProjectState>((set, get) => ({
       // deixa de valer.
       if (result.ok) {
         set({ script: result.value, captionsEdited: false, scriptBlocks: null, blockClips: {}, blockWeights: {}, blockSplits: {}, blockCuts: {} })
+        const { transcript, captionRules } = get()
+        if (doStudio && transcript) set(frasesReescritas({ transcript, captionRules }, result.value))
       }
       else set({ error: result.error })
+    }
+
+    // Studio: a imagem solta entra na agulha, como o "inserir" da linha do
+    // tempo, em vez de redistribuir o video inteiro.
+    if (doStudio && imagePaths.length > 0) {
+      await get().insertImages(imagePaths, get().playhead)
+      imagePaths.length = 0
     }
 
     if (imagePaths.length > 0) {
@@ -1401,6 +1423,9 @@ export const useProject = create<ProjectState>((set, get) => ({
          */
         set({
           audio: result.value,
+          // Narracao nova: os tempos da voz do Studio deixam de valer, e a
+          // guarda de reanalise desliga (o analyze la embaixo refaz tudo).
+          studio: semGuarda(get().studio),
           playhead: 0,
           scriptBlocks: null,
           activeBlock: null,
@@ -1433,6 +1458,10 @@ export const useProject = create<ProjectState>((set, get) => ({
       set({ error: 'Carregue a narracao antes de montar sozinho.' })
       return
     }
+    // Projeto do Studio com a voz alinhada: a montagem usa o transcript do take
+    // e nao o troca pelo do Whisper (ver ./guarda-do-studio.ts).
+    const guarda = vozDoStudio(get())
+    const doTake = guarda ? get().transcript : null
 
     set({ busy: 'Montando...', error: null })
 
@@ -1442,6 +1471,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       script,
       mode,
       series,
+      transcript: doTake,
     })
     if (!proposta.ok) {
       set({ busy: null, error: proposta.error })
@@ -1490,9 +1520,9 @@ export const useProject = create<ProjectState>((set, get) => ({
        * sai "Ischigo" -- e a legenda contradiria o corte que aquele mesmo nome
        * decidiu.
        */
-      transcript,
-      captions: buildCaptions(transcript, get().captionRules),
-      captionsEdited: false,
+      ...(doTake
+        ? {}
+        : { transcript, captions: buildCaptions(transcript, get().captionRules), captionsEdited: false }),
       scriptNote,
       sectionNote: note,
       aiNote: null,
@@ -2168,6 +2198,10 @@ export const useProject = create<ProjectState>((set, get) => ({
   analyze: async () => {
     const { audio, images, subtitlePath, script } = get()
     if (!audio || images.length === 0) return
+    // GUARDA DE REANALISE: projeto do Gerar recap com a voz alinhada nunca
+    // troca o transcript pelo do Whisper (insertImages sem plano, o fim do
+    // ingest e qualquer outro caminho param aqui -- ver ./guarda-do-studio.ts).
+    if (vozDoStudio(get())) return
 
     set({ busy: 'Analisando...', error: null })
 
@@ -2264,6 +2298,13 @@ export const useProject = create<ProjectState>((set, get) => ({
   },
 
   removeImage: (id) => {
+    // GUARDA DE REANALISE (Studio): tira os blocos da imagem sobre o plano que
+    // existe, sem o plano provisorio que jogaria fora as cenas escolhidas.
+    if (vozDoStudio(get())) {
+      const feito = tirarImagemSemReanalise(get().plan, get().images, id)
+      set({ ...feito, selectedScene: null, selecionados: [], ...(feito.plan ? { planEdited: true } : {}) })
+      return
+    }
     set((state) => ({
       images: state.images.filter((image) => image.id !== id),
       selectedScene: null,
@@ -2596,6 +2637,8 @@ export const useProject = create<ProjectState>((set, get) => ({
     set({
       images: importado.value,
       audio: audio.value,
+      // Video novo, narracao nova: nada da voz do Studio vale aqui.
+      studio: null,
       playhead: 0,
       // Legenda ligada mesmo no Long form: e para isso que ele trouxe o video.
       captionsEnabled: true,
@@ -2824,6 +2867,13 @@ export const useProject = create<ProjectState>((set, get) => ({
     // Roteiro novo refaz as legendas do zero: manter as antigas seria misturar
     // texto de duas fontes.
     set({ script: clean, captionsEdited: false, scriptNote: null })
+    // GUARDA DE REANALISE (Studio): "reescrever frases" -- o texto novo por
+    // cima dos tempos da voz, sem Whisper.
+    const { transcript, captionRules } = get()
+    if (vozDoStudio(get()) && transcript) {
+      set(frasesReescritas({ transcript, captionRules }, clean))
+      return
+    }
     await get().analyze()
   },
 
@@ -4446,6 +4496,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       render: null,
       lastOutput: null,
       planEdited: false,
+      studio: null,
       automountBlocks: null,
       automountMode: null,
       automountSeries: null,
@@ -4582,6 +4633,9 @@ export const useProject = create<ProjectState>((set, get) => ({
         cortes: state.blockCuts,
         ativo: state.activeBlock,
       },
+      // Projeto do Gerar recap: sem isto o primeiro Ctrl+S apagaria a origem e
+      // desligaria a guarda de reanalise. Do Dangai: o campo nem aparece.
+      ...(state.studio ? { studio: state.studio } : {}),
     }
   },
 
@@ -4861,6 +4915,7 @@ async function applyProjectFile(
       plan: file.plan ? repararMetadesDeBaixo(file.plan, images.value.length).plan : file.plan,
       planOrigin: file.planOrigin,
       planEdited: file.planEdited,
+      studio: file.studio ?? null,
       transcript: file.transcript,
       captions: file.captions,
       captionsEdited: file.captionsEdited,

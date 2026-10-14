@@ -93,14 +93,14 @@ const cru = JSON.parse(readFileSync(arquivo, 'utf8')) as { versao: number; voz?:
 console.log(`  ${arquivo.split(/[\\/]/).pop()} (versao ${cru.versao} no disco)`)
 confere(cru.episodioId.startsWith(EPISODIO_37), 'e o rascunho do S4 - 37')
 const r0 = lerRascunho(cru)
-confere(r0.versao === RASCUNHO_VERSAO && RASCUNHO_VERSAO === 2, 'leu como v2')
+confere(r0.versao === RASCUNHO_VERSAO && RASCUNHO_VERSAO === 3, 'leu como v3 (passo 4)')
 confere(r0.voz === null && !('voz' in cru), 'sem voz no disco -> voz: null')
 confere(r0.aprovado, 'roteiro aprovado')
 const rot = roteiroAtual(r0)!
 confere(rot !== null, `roteiro atual v${rot.versao}`)
 const depois = statSync(arquivo)
 confere(antes.mtimeMs === depois.mtimeMs && antes.size === depois.size, 'o arquivo do Levi nao mudou')
-confere(lanca(() => lerRascunho({ ...cru, versao: 3 })), 'versao 3 (futura) e recusada')
+confere(lanca(() => lerRascunho({ ...cru, versao: 4 })), 'versao 4 (futura) e recusada')
 
 // ---------------------------------------------------- 2. texto para narrar
 secao('2. Texto que vai ao provedor')

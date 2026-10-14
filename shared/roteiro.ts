@@ -2,6 +2,8 @@ import { z } from 'zod'
 import type { Cue, EpisodeIndex, Exclusao, Plano } from './episodio'
 // So o schema do passo 3: voz.ts importa daqui apenas TIPOS, entao nao ha ciclo de valor.
 import { estadoDaVozSchema } from './voz'
+// O mesmo para o passo 4: cenas.ts importa daqui apenas TIPOS.
+import { estadoDasCenasSchema } from './cenas'
 
 /**
  * O ROTEIRO, do jeito que o Studio o entende: o contrato do passo 2 do
@@ -31,13 +33,15 @@ import { estadoDaVozSchema } from './voz'
 
 /**
  * Sobe quando a forma do <id>.json muda de um jeito que o leitor antigo nao entende.
- * 2 = ganhou `voz` (o passo 3, shared/voz.ts). O v1 ainda abre: le como v2 com
- * `voz: null` e e gravado como v2 na proxima mudanca.
+ * 2 = ganhou `voz` (o passo 3, shared/voz.ts). 3 = ganhou `cenas` (o passo 4,
+ * shared/cenas.ts). O v1 e o v2 ainda abrem: leem como v3 com `voz: null` e
+ * `cenas: null` (o que faltar), sem perder roteiro nem voz, e sao gravados
+ * como v3 na proxima mudanca.
  */
-export const RASCUNHO_VERSAO = 2 as const
+export const RASCUNHO_VERSAO = 3 as const
 
 /** As versoes que o leitor entende; todas sobem para RASCUNHO_VERSAO ao ler. */
-const versaoDoRascunhoSchema = z.literal([1, RASCUNHO_VERSAO]).transform((): typeof RASCUNHO_VERSAO => RASCUNHO_VERSAO)
+const versaoDoRascunhoSchema = z.literal([1, 2, RASCUNHO_VERSAO]).transform((): typeof RASCUNHO_VERSAO => RASCUNHO_VERSAO)
 
 /**
  * Ritmo da narracao falada em PT-BR, medido no AniRecap: ~2,7 palavras por
@@ -212,8 +216,8 @@ export type Roteiro = z.infer<typeof roteiroSchema>
 // ------------------------------------------------------------------ rascunho
 
 /**
- * O RASCUNHO DO RECAP: tudo que os passos 2 (roteiro) e 3 (voz) produzem, gravado em
- * <userData>/recaps/<id>.json (escrita atomica, como o episodio.json).
+ * O RASCUNHO DO RECAP: tudo que os passos 2 (roteiro), 3 (voz) e 4 (cenas) produzem,
+ * gravado em <userData>/recaps/<id>.json (escrita atomica, como o episodio.json).
  *
  * Um rascunho por episodio por enquanto: abrirRascunho(episodioId) reabre o
  * mais recente daquele episodio, ou cria.
@@ -261,6 +265,13 @@ const rascunhoBase = z.object({
    * situacaoDaVoz/frasesMudadas, pelo texto falado.
    */
   voz: estadoDaVozSchema.nullable().default(null),
+  /**
+   * O passo 4 (Cenas): a escolha de cada frase, a fita e o take do encaixe.
+   * null = nunca sugeridas (e como um rascunho v1/v2 le). Como a voz, as
+   * transicoes do roteiro e da voz NAO mexem aqui: quem diz o que ficou velho
+   * e escolhasDesatualizadas (shared/cenas.ts), pelo texto e pelo take.
+   */
+  cenas: estadoDasCenasSchema.nullable().default(null),
 })
 
 export const rascunhoDoRecapSchema = rascunhoBase.superRefine((r, ctx) => {
@@ -455,6 +466,8 @@ export const ROTULO_DA_ETAPA_DO_ROTEIRO = {
   eventos: 'Lendo o episodio',
   roteiro: 'Escrevendo o roteiro',
   secao: 'Refazendo a parte',
+  /** O modo Texto / "Usar meu roteiro": as frases novas ligadas aos eventos (religarRoteiro). */
+  religar: 'Ligando as frases',
 } as const
 export type EtapaDoRoteiro = keyof typeof ROTULO_DA_ETAPA_DO_ROTEIRO
 
@@ -1421,6 +1434,378 @@ export function textoDoRoteiro(roteiro: Pick<Roteiro, 'secoes'>): string {
     .map((s) => s.frases.map((f) => f.texto.trim()).filter(Boolean).join(' '))
     .filter(Boolean)
     .join('\n\n')
+}
+
+// ------------------------------------------ modo Texto: re-dividir o roteiro
+
+/*
+ * O MODO TEXTO do passo 2 (e o "Usar meu roteiro"): o roteiro inteiro num
+ * bloco so, o mesmo de textoDoRoteiro (frases por espaco, partes por linha em
+ * branco). Ao sair dele, o texto e dividido de novo pela regra do Dangai
+ * (cada ponto final = uma frase = uma cena) e casado com as frases de antes:
+ * - 'igual': as mesmas palavras (so espaco, caixa ou acento mudou). Mantem id
+ *   e todos os vinculos;
+ * - 'parecida': mudou pouco (similaridade >= LIMIAR_FRASE_PARECIDA). Mantem id
+ *   e vinculos -- o evento e o mesmo; a voz e as cenas veem o texto novo pelo
+ *   hash e refazem so ela;
+ * - 'nova': frase nova ou mudada demais. Id livre (nunca o de uma frase antiga:
+ *   o mesmo 'f03' com outro texto confundiria voz e cenas), sem vinculo. A
+ *   religarRoteiro (main) liga todas as 'nova' aos eventos numa chamada so.
+ * O casamento respeita a ordem (as frases nao trocam de lugar no casamento):
+ * uma frase partida em duas casa com a metade mais parecida, e a outra vira
+ * 'nova'.
+ */
+
+/** Daqui para cima a frase so "mudou um pouco" e mantem id e vinculos. */
+export const LIMIAR_FRASE_PARECIDA = 0.6
+
+export type DestinoDaFrase = 'igual' | 'parecida' | 'nova'
+
+export interface FraseRedividida {
+  /** O id no roteiro novo: o da antiga casada ('igual'/'parecida') ou um livre ('nova'). */
+  id: string
+  destino: DestinoDaFrase
+  /** O id da frase antiga casada. null na 'nova'. */
+  deId: string | null
+  /** 0..1 contra a antiga casada. 0 na 'nova'. */
+  similaridade: number
+}
+
+export interface Redivisao {
+  /** O roteiro novo, pronto para virar versao (aplicarEdicao). */
+  secoes: Secao[]
+  /** Uma por frase do roteiro novo, na ordem da narracao. */
+  frases: FraseRedividida[]
+  /** Ids das 'nova': o que a chamada em lote ao Gemini liga aos eventos. */
+  religar: string[]
+  /** Ids das frases antigas que nao casaram com nada (sairam do roteiro). */
+  removidas: string[]
+}
+
+export interface OpcoesDaRedivisao {
+  /**
+   * false = "Usar meu roteiro": nao casa com as frases de antes (tudo 'nova'),
+   * mas os ids antigos continuam reservados e as partes recomecam em s1.
+   * Padrao true (sair do modo Texto).
+   */
+  casar?: boolean
+}
+
+/** 0..1: Dice das palavras (sem acento, sem pontuacao, contando repeticao). Iguais = 1. */
+export function similaridadeDeTexto(a: string, b: string): number {
+  const pa = palavrasDe(a)
+  const pb = palavrasDe(b)
+  if (pa.length === 0 && pb.length === 0) return 1
+  if (pa.length === 0 || pb.length === 0) return 0
+  if (pa.join(' ') === pb.join(' ')) return 1
+  const conta = new Map<string, number>()
+  for (const p of pa) conta.set(p, (conta.get(p) ?? 0) + 1)
+  let comuns = 0
+  for (const p of pb) {
+    const n = conta.get(p) ?? 0
+    if (n > 0) {
+      comuns += 1
+      conta.set(p, n - 1)
+    }
+  }
+  return (2 * comuns) / (pa.length + pb.length)
+}
+
+/** O texto do modo Texto -> partes (linha em branco) -> frases (ponto final). Parte vazia sai. */
+export function partesDoTexto(texto: string): string[][] {
+  return texto
+    .replace(/\r\n?/g, '\n')
+    .split(/\n[ \t]*\n/)
+    .map((parte) => dividirEmFrases(parte))
+    .filter((frases) => frases.length > 0)
+}
+
+/** O papel de uma parte sem par no roteiro antigo, pela posicao. */
+function papelPelaPosicao(k: number, total: number): PapelDaSecao {
+  if (k === 0) return 'gancho'
+  if (k === total - 1 && total > 1) return 'fechamento'
+  return 'desenvolvimento'
+}
+
+/**
+ * Re-divide o texto do modo Texto e casa com o roteiro `base` (ver o comentario
+ * do topo desta secao). Pura: nao chama IA nem grava. A parte nova herda id e
+ * papel da parte antiga de onde veio a maioria das frases casadas dela; sem
+ * nenhuma, ganha id livre e papel pela posicao.
+ */
+export function redividirRoteiro(
+  base: Pick<Roteiro, 'secoes'>,
+  texto: string,
+  opcoes: OpcoesDaRedivisao = {},
+): Redivisao {
+  const casar = opcoes.casar !== false
+  const partes = partesDoTexto(texto)
+  const novas = partes.flatMap((frases, parte) => frases.map((t) => ({ texto: t, parte })))
+  const antigas = base.secoes.flatMap((s) => s.frases.map((f) => ({ frase: f, secao: s })))
+
+  // Casamento em ordem: a maior soma de similaridades (so pares acima do limiar).
+  const n = casar ? antigas.length : 0
+  const m = novas.length
+  const sim: number[][] = Array.from({ length: n }, (_, i) =>
+    novas.map((nv) => similaridadeDeTexto(antigas[i]!.frase.texto, nv.texto)),
+  )
+  const melhor: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      const s = sim[i - 1]![j - 1]!
+      const diagonal = s >= LIMIAR_FRASE_PARECIDA ? melhor[i - 1]![j - 1]! + s : -Infinity
+      melhor[i]![j] = Math.max(melhor[i - 1]![j]!, melhor[i]![j - 1]!, diagonal)
+    }
+  }
+  const par = new Array<number | null>(m).fill(null)
+  for (let i = n, j = m; i > 0 && j > 0; ) {
+    const s = sim[i - 1]![j - 1]!
+    if (s >= LIMIAR_FRASE_PARECIDA && melhor[i]![j] === melhor[i - 1]![j - 1]! + s) {
+      par[j - 1] = i - 1
+      i -= 1
+      j -= 1
+    } else if (melhor[i]![j] === melhor[i - 1]![j]) i -= 1
+    else j -= 1
+  }
+
+  // Ids: as frases antigas ficam reservadas (nunca reaproveitadas com outro texto).
+  const usadosF = new Set(antigas.map((a) => a.frase.id))
+  const usadosS = new Set(casar ? base.secoes.map((s) => s.id) : [])
+  const frases: FraseRedividida[] = []
+  const porParte: Frase[][] = partes.map(() => [])
+  for (const [j, nv] of novas.entries()) {
+    const i = par[j]
+    const antiga = i === null || i === undefined ? null : antigas[i]!.frase
+    const s = i === null || i === undefined ? 0 : sim[i]![j]!
+    if (antiga) {
+      // Igual = as mesmas palavras NA MESMA ORDEM (o Dice da 1 tambem para a frase embaralhada).
+      const igual = palavrasDe(antiga.texto).join(' ') === palavrasDe(nv.texto).join(' ')
+      // Todos os vinculos ficam como estavam (inclusive a citacao): quem confere e o validarRoteiro.
+      // So espaco mudou: o texto antigo fica, para "nada mudou" nao virar versao nova.
+      const soEspaco = antiga.texto.replace(/\s+/g, ' ').trim() === nv.texto
+      porParte[nv.parte]!.push({ ...antiga, texto: soEspaco ? antiga.texto : nv.texto })
+      frases.push({ id: antiga.id, destino: igual ? 'igual' : 'parecida', deId: antiga.id, similaridade: s })
+    } else {
+      const id = proximoId('f', usadosF)
+      usadosF.add(id)
+      porParte[nv.parte]!.push({
+        id,
+        texto: nv.texto,
+        eventoIds: [],
+        cueDoMomento: null,
+        intencaoVisual: '',
+        textoDeTela: null,
+        citacaoCueId: null,
+      })
+      frases.push({ id, destino: 'nova', deId: null, similaridade: 0 })
+    }
+  }
+
+  // Cada parte nova herda a parte antiga que mais deu frases a ela (sem repetir).
+  // Parte reescrita inteira (nenhuma frase casada) herda a antiga da MESMA
+  // posicao, se sobrou: reescrever o gancho todo continua sendo o gancho.
+  const secaoDaAntiga = new Map(antigas.map((a) => [a.frase.id, a.secao]))
+  const casadasAgora = new Set(frases.flatMap((f) => (f.deId ? [f.id] : [])))
+  const tomadas = new Set<string>()
+  const herdadas: (Secao | null)[] = porParte.map((lista) => {
+    const votos = new Map<string, { secao: Secao; n: number }>()
+    for (const f of lista) {
+      const s = casadasAgora.has(f.id) ? secaoDaAntiga.get(f.id) : undefined
+      if (!s || tomadas.has(s.id)) continue
+      votos.set(s.id, { secao: s, n: (votos.get(s.id)?.n ?? 0) + 1 })
+    }
+    const eleita = [...votos.values()].sort((a, b) => b.n - a.n)[0]?.secao ?? null
+    if (eleita) tomadas.add(eleita.id)
+    return eleita
+  })
+  const secoes: Secao[] = porParte.map((lista, k) => {
+    const mesmaPosicao = casar ? base.secoes[k] : undefined
+    const eleita = herdadas[k] ?? (mesmaPosicao && !tomadas.has(mesmaPosicao.id) ? mesmaPosicao : null)
+    if (eleita) {
+      tomadas.add(eleita.id)
+      return { id: eleita.id, papel: eleita.papel, frases: lista }
+    }
+    const id = proximoId('s', usadosS)
+    usadosS.add(id)
+    return { id, papel: casar && base.secoes.length > 0 ? 'desenvolvimento' : papelPelaPosicao(k, porParte.length), frases: lista }
+  })
+
+  const casadas = new Set(frases.flatMap((f) => (f.deId ? [f.deId] : [])))
+  return {
+    secoes,
+    frases,
+    religar: frases.filter((f) => f.destino === 'nova').map((f) => f.id),
+    removidas: antigas.map((a) => a.frase.id).filter((id) => !casadas.has(id)),
+  }
+}
+
+/**
+ * O pedido de religarRoteiro (sair do modo Texto, ou "Usar meu roteiro"). O
+ * main re-divide (redividirRoteiro), liga as frases 'nova' aos eventos com UMA
+ * chamada em lote (gerarJson, permitirReserva: false, com cache), grava como
+ * versao 'editado' (aplicarEdicao) e devolve o rascunho.
+ */
+export const pedidoDeReligarSchema = z.object({
+  texto: z.string().max(40_000),
+  /** editar = sair do modo Texto (casa com o roteiro atual); meu-roteiro = colado, tudo 'nova'. */
+  modo: z.enum(['editar', 'meu-roteiro']),
+  /** O alvo do roteiro colado. Ausente = o do rascunho. */
+  alvoSec: alvoSecSchema.optional(),
+  /** Versao e criadoEm de onde a tela partiu (a regra do aplicarEdicao). */
+  versao: z.number().int().positive().optional(),
+  criadoEm: z.string().optional(),
+  /** Para o Cancelar (o mesmo cancelarRoteiro do passo 2). */
+  pedidoId: z.string().max(64).nullable().optional(),
+  /** O "Usar modelo reserva" da tela (a mesma regra do gerarRoteiro). */
+  aceitouReserva: z.boolean().optional(),
+})
+export type PedidoDeReligar = z.infer<typeof pedidoDeReligarSchema>
+
+export type RoteiroReligado = RoteiroReligadoPronto | ParadoNoReserva
+
+export interface RoteiroReligadoPronto {
+  /** O rascunho INTEIRO como ficou no disco. */
+  rascunho: RascunhoDoRecap
+  /** A versao nova (ja e a `atual`). */
+  roteiro: Roteiro
+  /** O casamento com as frases de antes (a tela pode mostrar o que mudou). */
+  frases: FraseRedividida[]
+  /** As 'nova' que a IA ligou a algum evento. */
+  religadas: string[]
+  /** As que ficaram sem evento (a tela marca; validarRoteiro avisa 'frase-sem-evento'). */
+  semEvento: string[]
+  doCache: boolean
+  avisos: string[]
+}
+
+/** O que o LLM devolve no religar: FECHADO, sem default e frouxo, como os outros. */
+export const religacaoDaIaSchema = z.object({
+  frases: z.array(
+    z.object({
+      fraseId: z.string(),
+      eventoIds: z.array(z.string()),
+      cueDoMomento: z.string().nullable(),
+      intencaoVisual: z.string(),
+      textoDeTela: z.string().nullable(),
+    }),
+  ),
+})
+export type ReligacaoDaIa = z.infer<typeof religacaoDaIaSchema>
+
+/**
+ * O texto do modo Texto na forma de comparar: partes por linha em branco e o
+ * espaco de dentro de cada parte colapsado -- a mesma forma de textoDoRoteiro.
+ * Texto que volta igual (so espaco ou quebra de linha mudou) NAO e re-dividido:
+ * re-dividir um roteiro com frase sem ponto final juntaria duas frases sem
+ * ninguem ter mexido nelas.
+ */
+export function normalizarTextoDoRoteiro(texto: string): string {
+  return texto
+    .replace(/\r\n?/g, '\n')
+    .split(/\n[ \t]*\n/)
+    .map((parte) => parte.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+/** Os dois textos dao o mesmo roteiro sem re-dividir nada (normalizarTextoDoRoteiro). */
+export function mesmoTextoDoRoteiro(a: string, b: string): boolean {
+  return normalizarTextoDoRoteiro(a) === normalizarTextoDoRoteiro(b)
+}
+
+/**
+ * A frase ainda nao foi ligada a nada: sem evento E sem intencao visual. E
+ * como toda frase nova nasce (redividirRoteiro, o "+ Frase" da tela); a frase
+ * de ligacao que a IA deixou sem evento de proposito traz a intencao e fica
+ * como esta. Por isso uma religacao que nao terminou (cancelada, sem cota)
+ * se completa na proxima: as que faltam continuam assim no rascunho. Frase
+ * em branco (o "+ Frase" antes da primeira tecla) nao tem o que ligar.
+ */
+export function precisaReligar(frase: Pick<Frase, 'texto' | 'eventoIds' | 'intencaoVisual'>): boolean {
+  return frase.eventoIds.length === 0 && !frase.intencaoVisual.trim() && contarPalavras(frase.texto) > 0
+}
+
+/** Os ids das frases que precisaReligar, na ordem da narracao. */
+export function frasesParaReligar(roteiro: Pick<Roteiro, 'secoes'>): string[] {
+  return roteiro.secoes.flatMap((s) => s.frases.filter(precisaReligar).map((f) => f.id))
+}
+
+/** Textos de tela no roteiro inteiro, no maximo (o prompt do roteirista pede ate 4). */
+export const TEXTOS_DE_TELA_MAX = 4
+
+export interface Religacao {
+  /** O roteiro com as frases-alvo ligadas (as outras, e o texto de todas, iguais). */
+  secoes: Secao[]
+  /** As frases-alvo que ganharam pelo menos um evento. */
+  religadas: string[]
+  /** As frases-alvo que ficaram sem evento (a IA nao ligou, ou nem respondeu por elas). */
+  semEvento: string[]
+  /** O que foi consertado na resposta, em ASCII. */
+  avisos: string[]
+  /** Quantas frases-alvo vieram na resposta. 0 = resposta inutil (nao vai para o cache). */
+  respondidas: number
+}
+
+/**
+ * A resposta do religar -> o roteiro com as frases `alvo` ligadas. Mesmo
+ * conserto do roteiro da IA (repararFrase): evento que nao existe sai, a cue
+ * do momento so de fala dos eventos citados, texto de tela com mais de 2
+ * palavras de conteudo (ou alem de TEXTOS_DE_TELA_MAX no roteiro) vira null. O
+ * TEXTO da frase nunca muda (e o do editor), nem a citacao. Frase fora do
+ * `alvo` fica como esta, mesmo que a resposta fale dela.
+ */
+export function aplicarReligacao(
+  roteiro: Pick<Roteiro, 'secoes'>,
+  bruto: ReligacaoDaIa,
+  alvo: readonly string[],
+  ctx: { eventos: readonly Evento[]; indice: Pick<EpisodeIndex, 'cues' | 'exclusoes'> },
+): Religacao {
+  const mapa = mapaDosEventos(ctx.eventos, ctx.indice)
+  const contar = reparosVazios()
+  const querer = new Set(alvo)
+  const resposta = new Map<string, ReligacaoDaIa['frases'][number]>()
+  for (const item of bruto.frases) {
+    // O modelo copia como o prompt mostra ("[f20]", "f20 ·"): fica so o id.
+    const id = /f\d{2,}/.exec(item.fraseId)?.[0]
+    if (id && querer.has(id) && !resposta.has(id)) resposta.set(id, item)
+  }
+  let telas = roteiro.secoes.reduce((n, s) => n + s.frases.filter((f) => !querer.has(f.id) && f.textoDeTela).length, 0)
+  let telasDemais = 0
+  const religadas: string[] = []
+  const semEvento: string[] = []
+  const secoes = roteiro.secoes.map((s) => ({
+    ...s,
+    frases: s.frases.map((f): Frase => {
+      if (!querer.has(f.id)) return f
+      const item = resposta.get(f.id)
+      const reparada = item
+        ? repararFrase({ ...item, texto: f.texto, citacaoCueId: null }, f.id, mapa, contar)
+        : null
+      if (!reparada) {
+        semEvento.push(f.id)
+        return f
+      }
+      let textoDeTela = reparada.textoDeTela
+      if (textoDeTela && telas >= TEXTOS_DE_TELA_MAX) {
+        telasDemais += 1
+        textoDeTela = null
+      }
+      if (textoDeTela) telas += 1
+      ;(reparada.eventoIds.length > 0 ? religadas : semEvento).push(f.id)
+      return {
+        ...f,
+        eventoIds: reparada.eventoIds,
+        cueDoMomento: reparada.cueDoMomento,
+        intencaoVisual: reparada.intencaoVisual,
+        textoDeTela,
+      }
+    }),
+  }))
+  const avisos = avisosDosReparos(contar)
+  const faltaram = alvo.filter((id) => !resposta.has(id)).length
+  if (faltaram > 0) avisos.push(`${faltaram} frase(s) sem resposta da IA: ficaram sem evento.`)
+  if (telasDemais > 0) avisos.push(`${telasDemais} texto(s) de tela alem de ${TEXTOS_DE_TELA_MAX} no roteiro: removido(s).`)
+  return { secoes, religadas, semEvento, avisos, respondidas: resposta.size }
 }
 
 // ------------------------------------------------- transicoes do rascunho

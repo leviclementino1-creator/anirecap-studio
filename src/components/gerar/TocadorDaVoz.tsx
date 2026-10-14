@@ -16,6 +16,7 @@ import {
   nomeCurto,
   segundosCurtos,
   textoDaVelocidade,
+  textoDoGasto,
   tocador,
   useTocador,
   useVoz,
@@ -385,7 +386,7 @@ function detalheDoTake(take: TakeDaVoz, vozes: Record<'elevenlabs' | 'fish', Voz
   return [
     `${ROTULO_DA_FONTE[c.fonte]} · ${nomeDaVoz(c, vozes)}${c.fonte === 'elevenlabs' ? ` · ${modeloEleven(c.modelId).nome}` : c.fonte === 'fish' ? ` · ${c.modelId}` : ''}`,
     `${textoDaVelocidade(c.velocidade)} · ${c.cortarPausas ? 'pausas cortadas' : 'pausas inteiras'} · ${segundosCurtos(take.duracao)}`,
-    take.cobrados > 0 ? `${Math.ceil(take.cobrados).toLocaleString('pt-BR')} creditos gastos` : 'sem custo',
+    take.cobrados > 0 ? textoDoGasto(c.fonte, take.cobrados) : 'sem custo',
     take.volume ? `volume ${take.volume.lufs.toFixed(1).replace('.', ',')} LUFS ${take.volume.ganho >= 0 ? '+' : ''}${take.volume.ganho.toFixed(1).replace('.', ',')} dB` : null,
     origem[take.origemDoAlinhamento],
     take.regravadas.length > 0 ? `regravou ${take.regravadas.join(', ')}${take.derivadoDe ? ` do ${take.derivadoDe}` : ''}` : null,

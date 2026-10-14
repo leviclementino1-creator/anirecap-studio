@@ -17,8 +17,9 @@ import { pastaDosRascunhos } from '../gerar/rascunho'
  *
  * <h> = sha256 do CONTEUDO do WAV (16 a 64 hex): o mesmo audio da o mesmo
  * nome, e um arquivo nunca e sobrescrito com outro conteudo -- o take antigo
- * continua tocando enquanto existir na lista. Na parte 4 o take aprovado e
- * COPIADO para <projeto>/narracao/ (o projeto nao aponta para o userData).
+ * continua tocando enquanto existir na lista. No "Abrir no editor" o take
+ * aprovado e COPIADO para <projeto>/<anime> SxxEyy.wav (montar/index.ts): o
+ * projeto nao aponta para o userData.
  *
  * A subpasta <rascunhoId>/ nao confunde a lista de rascunhos: ela so le
  * <id>.json da raiz.

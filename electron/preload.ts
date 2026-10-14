@@ -37,6 +37,8 @@ import type { OpenedProject, ProjectFile } from '@shared/project-file'
 import type {
   EpisodeIndex,
   EpisodioEncontrado,
+  EstadoDoCorte,
+  EventoDoCorte,
   FimDaAnalise,
   ProgressoDaAnalise,
   SondaDoEpisodio,
@@ -49,8 +51,10 @@ import type {
   RascunhoDoRecap,
   ResumoDoRascunho,
   RoteiroGerado,
+  RoteiroReligado,
 } from '@shared/roteiro'
 import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
+import type { CandidatosDaFrase, CenasGravadas, ProjetoMontado } from '@shared/cenas'
 
 /**
  * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
@@ -375,6 +379,35 @@ const bridge: DangaiBridge = {
       ipcRenderer.off(IPC.vozProgresso, handler)
     }
   },
+
+  // Gerar recap, passo 1 sem esperar o corte
+  indexarFalas: (args) => ipcRenderer.invoke(IPC.indexarFalas, args) as Promise<IpcResult<EpisodeIndex>>,
+  iniciarCorte: (pedido) => ipcRenderer.invoke(IPC.iniciarCorte, pedido) as Promise<IpcResult<EstadoDoCorte>>,
+  estadoDoCorte: (episodioId) =>
+    ipcRenderer.invoke(IPC.estadoDoCorte, episodioId) as Promise<IpcResult<EstadoDoCorte | null>>,
+  cancelarCorte: (episodioId) => ipcRenderer.invoke(IPC.cancelarCorte, episodioId) as Promise<IpcResult<boolean>>,
+  onCorteProgresso: (listener) => {
+    const handler = (_event: unknown, evento: EventoDoCorte): void => listener(evento)
+    ipcRenderer.on(IPC.corteProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.corteProgresso, handler)
+    }
+  },
+
+  // Gerar recap, passo 2 em texto
+  religarRoteiro: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.religarRoteiro, rascunhoId, pedido) as Promise<IpcResult<RoteiroReligado>>,
+
+  // Gerar recap, passo 4 (Cenas)
+  sugerirCenas: (rascunhoId) => ipcRenderer.invoke(IPC.sugerirCenas, rascunhoId) as Promise<IpcResult<CenasGravadas>>,
+  candidatosDaFrase: (rascunhoId, fraseId, filtros) =>
+    ipcRenderer.invoke(IPC.candidatosDaFrase, rascunhoId, fraseId, filtros) as Promise<IpcResult<CandidatosDaFrase>>,
+  salvarCenas: (rascunhoId, escolhas) =>
+    ipcRenderer.invoke(IPC.salvarCenas, rascunhoId, escolhas) as Promise<IpcResult<CenasGravadas>>,
+  encaixarNaVoz: (rascunhoId) =>
+    ipcRenderer.invoke(IPC.encaixarNaVoz, rascunhoId) as Promise<IpcResult<CenasGravadas>>,
+  montarProjeto: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.montarProjeto, rascunhoId, pedido ?? {}) as Promise<IpcResult<ProjetoMontado>>,
 }
 
 contextBridge.exposeInMainWorld('dangai', bridge)

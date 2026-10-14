@@ -95,15 +95,20 @@ import { alinharAoAudio } from './services/alinhador'
 import { checkForUpdateNow, installUpdate } from './services/updater'
 import {
   indexarEpisodioArgsSchema,
+  indexarFalasArgsSchema,
   listaDeExclusoesSchema,
   palpiteDoEpisodioSchema,
   pedidoDeAnaliseSchema,
+  pedidoDeCorteSchema,
   type EpisodeIndex,
   type EpisodioEncontrado,
+  type EstadoDoCorte,
   type Exclusao,
   type IndexarEpisodioArgs,
+  type IndexarFalasArgs,
   type PalpiteDoEpisodio,
   type PedidoDeAnalise,
+  type PedidoDeCorte,
   type SondaDoEpisodio,
   type StatusDoMotor,
 } from '@shared/episodio'
@@ -114,9 +119,12 @@ import { indexarEpisodio, salvarExclusoes } from './services/episodio/indice'
 import { escanearBibliotecaDoEditor } from './services/episodio/biblioteca-editor'
 import { garantirGravavel } from './services/episodio/protegidas'
 import {
+  pedidoDeReligarSchema,
   pedidoDeRoteiroSchema,
   roteiroSchema,
   type EventosGerados,
+  type PedidoDeReligar,
+  type RoteiroReligado,
   type PedidoDeRoteiro,
   type ProgressoDoRoteiro,
   type RascunhoAberto,
@@ -155,6 +163,21 @@ import {
 import { estimarVoz } from './services/voz/estimar'
 import { ajustarVoz, cancelarVoz, gerarVoz, importarAudio, regravarFrases } from './services/voz/gerar'
 import { aprovarVoz, audioDoTake, desaprovarVoz, escolherTakeDoRascunho } from './services/voz/takes'
+import { cancelarCorte, estadoDoCorte, indexarFalas, iniciarCorte } from './services/episodio/corte-fundo'
+import { religarRoteiro } from './services/gerar/religar'
+import {
+  filtrosDeCandidatosSchema,
+  listaDeEscolhasSchema,
+  pedidoDeMontagemSchema,
+  type CandidatosDaFrase,
+  type CenasGravadas,
+  type EscolhaDaFrase,
+  type FiltrosDeCandidatos,
+  type PedidoDeMontagem,
+  type ProjetoMontado,
+} from '@shared/cenas'
+import { candidatosDaFrase, salvarCenas, sugerirCenas } from './services/cenas'
+import { encaixarNaVoz, montarProjeto } from './services/montar'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -981,6 +1004,60 @@ export function registerIpc(): void {
     })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!
   })
+
+  // ------------------------------- Gerar recap, passo 1 sem esperar o corte
+  // Contrato em shared/episodio.ts (estadoDoCorteSchema, anexarPlanos); o main e
+  // electron/services/episodio/corte-fundo.ts (agente E).
+
+  handle<[IndexarFalasArgs], EpisodeIndex>(IPC.indexarFalas, async (args) =>
+    indexarFalas(indexarFalasArgsSchema.parse(args), (mensagem) => enviarATodas(IPC.indexarProgresso, mensagem)),
+  )
+
+  handle<[PedidoDeCorte], EstadoDoCorte>(IPC.iniciarCorte, async (pedido) =>
+    iniciarCorte(pedidoDeCorteSchema.parse(pedido), (evento) => enviarATodas(IPC.corteProgresso, evento)),
+  )
+
+  handle<[string], EstadoDoCorte | null>(IPC.estadoDoCorte, async (episodioId) =>
+    estadoDoCorte(idDoEpisodio(episodioId)),
+  )
+
+  handle<[string], boolean>(IPC.cancelarCorte, async (episodioId) => cancelarCorte(idDoEpisodio(episodioId)))
+
+  // ------------------------------------------ Gerar recap, passo 2 em texto
+  // Contrato em shared/roteiro.ts (redividirRoteiro); o main e
+  // electron/services/gerar/religar.ts (agente D).
+
+  handle<[string, PedidoDeReligar], RoteiroReligado>(IPC.religarRoteiro, async (rascunhoId, pedido) =>
+    religarRoteiro(idDoRascunho(rascunhoId), pedidoDeReligarSchema.parse(pedido), progressoDoRoteiro),
+  )
+
+  // ----------------------------------------------- Gerar recap, passo 4 (Cenas)
+  // Contrato em shared/cenas.ts. Casar = electron/services/cenas/ (agente A);
+  // encaixe e montagem = electron/services/montar/ (agente B).
+
+  handle<[string], CenasGravadas>(IPC.sugerirCenas, async (rascunhoId) => sugerirCenas(idDoRascunho(rascunhoId)))
+
+  handle<[string, string, FiltrosDeCandidatos], CandidatosDaFrase>(
+    IPC.candidatosDaFrase,
+    async (rascunhoId, fraseId, filtros) =>
+      candidatosDaFrase(idDoRascunho(rascunhoId), idDaFrase(fraseId), filtrosDeCandidatosSchema.parse(filtros ?? {})),
+  )
+
+  handle<[string, EscolhaDaFrase[]], CenasGravadas>(IPC.salvarCenas, async (rascunhoId, escolhas) =>
+    salvarCenas(idDoRascunho(rascunhoId), listaDeEscolhasSchema.parse(escolhas)),
+  )
+
+  handle<[string], CenasGravadas>(IPC.encaixarNaVoz, async (rascunhoId) => encaixarNaVoz(idDoRascunho(rascunhoId)))
+
+  handle<[string, PedidoDeMontagem], ProjetoMontado>(IPC.montarProjeto, async (rascunhoId, pedido) =>
+    montarProjeto(idDoRascunho(rascunhoId), pedidoDeMontagemSchema.parse(pedido ?? {})),
+  )
+}
+
+/** 'f' + numero, como Frase.id. */
+function idDaFrase(valor: unknown): string {
+  if (typeof valor !== 'string' || !/^f\d{2,6}$/.test(valor)) throw new Error('Frase invalida.')
+  return valor
 }
 
 /** 't' + numero, como TakeDaVoz.id. */

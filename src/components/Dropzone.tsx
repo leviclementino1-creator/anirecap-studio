@@ -14,6 +14,7 @@ import { classifyFile } from "@shared/channels";
 import { useRecentes } from "@/store/recentes";
 import { FORMATOS, medidasDo, type Formato } from "@shared/contract";
 import { BotaoGerarRecap } from "@/components/gerar/BotaoGerarRecap";
+import { PerguntaDoEpisodio, perguntarSeEpisodio } from "@/components/gerar/PerguntaDoEpisodio";
 
 interface DropzoneProps {
   isDragging: boolean;
@@ -33,11 +34,26 @@ export function Dropzone({ isDragging }: DropzoneProps) {
 
   const pick = async () => {
     const result = await window.dangai.pickFiles();
-    if (result.ok && result.value.length > 0) await ingest(result.value);
+    if (!result.ok || result.value.length === 0) return;
+    // UM video longo (episodio) pergunta antes; o resto segue como no Dangai.
+    if (!(await perguntarSeEpisodio(result.value))) await ingest(result.value);
   };
 
   return (
-    <div className="flex h-full w-full flex-col gap-4">
+    <div
+      className="flex h-full w-full flex-col gap-4"
+      onDrop={(event) => {
+        // UM video so: o Studio decide (episodio pergunta, clipe curto vai
+        // para o ingest). Qualquer outra coisa sobe para o drop da janela.
+        const caminhos = Array.from(event.dataTransfer.files).map((f) => window.dangai.pathForFile(f)).filter(Boolean);
+        if (caminhos.length !== 1 || classifyFile(caminhos[0]!) !== "video") return;
+        event.preventDefault();
+        event.stopPropagation();
+        void perguntarSeEpisodio(caminhos).then((pergunta) => {
+          if (!pergunta) void ingest(caminhos);
+        });
+      }}
+    >
       <div className="relative min-h-0 w-full flex-1">
         {/*
           A LINHA DE CIMA, numa linha so: Gerar recap (a funcao principal) na
@@ -96,7 +112,7 @@ export function Dropzone({ isDragging }: DropzoneProps) {
                 aceso ? "text-accent" : "text-ink",
               ].join(" ")}
             >
-              {busy ?? "Soltar audio e imagens aqui"}
+              {busy ?? "Soltar episodio, audio ou imagens"}
             </span>
             <span className="text-[13px] text-ink-3">
               A ordem em que voce solta as imagens e a ordem no video
@@ -108,6 +124,7 @@ export function Dropzone({ isDragging }: DropzoneProps) {
         </button>
 
         <Recuperar />
+        <PerguntaDoEpisodio />
       </div>
       <Recentes />
     </div>

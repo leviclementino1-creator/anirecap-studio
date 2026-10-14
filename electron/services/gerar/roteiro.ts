@@ -86,6 +86,28 @@ export function cancelarRoteiro(rascunhoId: string, pedidoId: string): boolean {
   return true
 }
 
+/**
+ * A vez do pedido de IA do rascunho, para quem nao e o gerarRoteiro: o
+ * religar do modo Texto (religar.ts) divide com ele a regra de um pedido por
+ * rascunho e o Cancelar (cancelarRoteiro vale para os dois). `cancelado()`
+ * diz se a tela ja desistiu DESTE pedido.
+ */
+export async function naVezDoRoteiro<T>(
+  rascunhoId: string,
+  pedidoId: string | null | undefined,
+  fazer: (cancelado: () => boolean) => Promise<T>,
+): Promise<T> {
+  if (emAndamento.has(rascunhoId)) throw new Error('Ja estou escrevendo este roteiro. Espere terminar.')
+  emAndamento.set(rascunhoId, pedidoId?.trim() || '')
+  cancelados.delete(rascunhoId)
+  try {
+    return await fazer(() => cancelados.has(rascunhoId))
+  } finally {
+    emAndamento.delete(rascunhoId)
+    cancelados.delete(rascunhoId)
+  }
+}
+
 export async function gerarRoteiro(
   rascunhoId: string,
   pedido: PedidoDeRoteiro,

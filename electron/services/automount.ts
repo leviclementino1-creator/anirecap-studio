@@ -44,14 +44,16 @@ export async function automount(
   onProgress('Lendo a biblioteca...')
   const library = await scanLibrary(libraryDir, publishThumb, onProgress)
 
-  onProgress('Ouvindo a narracao...')
-  const { transcript, scriptNote } = await transcriptOnly(
-    request.audioPath,
-    request.subtitlePath,
-    request.script,
-    vocabulario(library, request.series),
-    onProgress,
-  )
+  /*
+   * O projeto do Studio manda o transcript do take (palavras do roteiro com o
+   * tempo do provedor): ele vale inteiro, como no scriptBlocks. Ouvir de novo
+   * daria um texto pior e outros tempos, e a tela nao o aceitaria.
+   */
+  const doTake = request.transcript && request.transcript.words.length > 0 ? request.transcript : null
+  if (!doTake) onProgress('Ouvindo a narracao...')
+  const { transcript, scriptNote } = doTake
+    ? { transcript: doTake, scriptNote: null }
+    : await transcriptOnly(request.audioPath, request.subtitlePath, request.script, vocabulario(library, request.series), onProgress)
   if (!transcript || transcript.segments.length === 0) {
     throw new Error(
       'Nao deu para ouvir a narracao. Sem o texto nao ha como saber quem esta em cada frase.',

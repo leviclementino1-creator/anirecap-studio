@@ -1,19 +1,35 @@
 import { create } from 'zustand'
 import { classifyFile } from '@shared/channels'
-import type {
-  EpisodeIndex,
-  EpisodioEncontrado,
-  Exclusao,
-  FimDaAnalise,
-  IndexarEpisodioArgs,
-  Motor,
-  PalpiteDoEpisodio,
-  ProgressoDaAnalise,
-  SondaDoEpisodio,
-  StatusDoMotor,
+import {
+  statusDoCorte,
+  temPlanos,
+  type EpisodeIndex,
+  type EpisodioEncontrado,
+  type EstadoDoCorte,
+  type EventoDoCorte,
+  type Exclusao,
+  type FimDaAnalise,
+  type IndexarEpisodioArgs,
+  type Motor,
+  type PalpiteDoEpisodio,
+  type ProgressoDaAnalise,
+  type SondaDoEpisodio,
+  type StatusDoMotor,
 } from '@shared/episodio'
 import type { RascunhoAberto } from '@shared/roteiro'
 import { useProject } from './project'
+import { passoAoRestaurar, type PassoDoAssistente } from './gerar-passos'
+
+/*
+ * DONOS DESTA STORE (contrato de 14/10, cinco agentes em paralelo):
+ * - agente C (navegacao): `passo`, `irParaPasso`, `tomarRascunhoRestaurado` e a
+ *   regra em gerar-passos.ts (PassoDoAssistente, PASSOS, passoAoRestaurar);
+ * - agente E (fluxo do passo 1): todo o resto -- fases, sonda, busca, motor,
+ *   analisar/indexar, regua, podeIrAoRoteiro e o corte em segundo plano
+ *   (estado novo do corte entra aqui).
+ * Mexer na parte do outro so com Edit pequeno e relendo antes.
+ */
+export type { PassoDoAssistente } from './gerar-passos'
 
 /**
  * O ASSISTENTE "GERAR RECAP", passo 1 (Episodio).
@@ -121,6 +137,22 @@ interface EstadoDoGerar {
   /** Recado neutro, sem vermelho ("Analise cancelada."). */
   recado: string | null
   /**
+   * O CORTE EM SEGUNDO PLANO do episodio na tela (shared/episodio.ts, corte):
+   * o indice nasce so com as falas e as cenas chegam depois. null = sem indice,
+   * ou indice que ja nasceu com as cenas (nada a mostrar). Vem do indice, do
+   * iniciarCorte e do evento corteProgresso.
+   */
+  corte: EstadoDoCorte | null
+  /** Um iniciarCorte no ar: segura o segundo clique. */
+  pedindoCorte: boolean
+  /** Date.now() de quando as cenas chegaram (o cabecalho mostra "Cenas prontas" por uns segundos). */
+  fimDoCorteEm: number | null
+  /**
+   * O corte de OUTRO episodio que segue rodando por tras (trocou de episodio
+   * no meio). So para a barra de status; a tela mostra o do episodio dela.
+   */
+  corteDeOutro: { episodioId: string; estado: EstadoDoCorte } | null
+  /**
    * O "Trocar pasta" pediu as Configuracoes ja na Biblioteca do Studio, que
    * fica no fim delas. AjustesDoStudio rola ate la e apaga o pedido.
    */
@@ -163,8 +195,20 @@ interface EstadoDoGerar {
   escolherFaixa: (index: number | null) => void
   definirReconhecer: (ligado: boolean) => void
   usarAnalise: (achado: EpisodioEncontrado) => Promise<void>
+  /**
+   * Episodio novo: le as falas JA (indexarFalas) e corta por tras. Episodio
+   * achado ("Analisar de novo") ou "Reconhecer agora": a analise em primeiro
+   * plano de sempre.
+   */
   analisar: (motor: Motor, reconhecer?: boolean) => Promise<void>
   cancelar: () => Promise<void>
+  /**
+   * (Re)comeca o corte em segundo plano do episodio na tela. Sem opcoes, o
+   * motor e o "reconhecer" do ultimo corte. O nome corrigido na tela vai junto.
+   */
+  cortarNoFundo: (opcoes?: { motor?: Motor; reconhecer?: boolean }) => Promise<void>
+  /** Para o corte em segundo plano. As falas continuam valendo. */
+  cancelarCorte: () => Promise<void>
   /** Le a legenda de novo (outra faixa) sobre a mesma pasta de cenas. */
   reindexar: () => Promise<void>
   esquecerDescoberta: () => void
@@ -187,16 +231,12 @@ interface EstadoDoGerar {
 }
 
 /**
- * Os passos que existem por enquanto (4 Cenas ainda e "em breve"). O 3 (Voz)
- * tem a store dele em gerar-voz.ts; quem leva ate ele (cabecalho, rodape do
- * roteiro) confere antes que o roteiro esta aprovado -- esta store nao conhece
- * a do roteiro (ela importa daqui).
- */
-export type PassoDoAssistente = 1 | 2 | 3
-
-/**
  * O passo 2 abre com o episodio PRONTO e com a regua salva: os eventos saem
  * do indice gravado, e marcacao de OP/ED so na tela ficaria fora deles.
+ *
+ * NAO espera o corte em segundo plano (`corte`): o roteiro so precisa das
+ * falas. Quem espera as cenas e o passo 4. O `job` e so a analise em primeiro
+ * plano ("Analisar de novo", "Reconhecer agora"), que troca o indice no fim.
  */
 export function podeIrAoRoteiro(
   s: Pick<EstadoDoGerar, 'fase' | 'indice' | 'exclusoesMudaram' | 'job'>,
@@ -274,7 +314,24 @@ let restaurando = false
 let receptores: {
   receberProgresso: (p: ProgressoDaAnalise) => void
   receberFim: (f: FimDaAnalise) => void
-} = { receberProgresso: () => {}, receberFim: () => {} }
+  receberCorte: (e: EventoDoCorte) => void
+} = { receberProgresso: () => {}, receberFim: () => {}, receberCorte: () => {} }
+
+/**
+ * Dos dois estados do mesmo corte, o mais novo. A resposta do iniciarCorte e
+ * o evento do motor correm em paralelo; o que chegou depois nao pode desfazer
+ * o andamento que ja esta na tela.
+ */
+function maisNovo(a: EstadoDoCorte | null, b: EstadoDoCorte): EstadoDoCorte {
+  if (!a || a.status !== 'cortando' || b.status !== 'cortando' || a.jobId !== b.jobId) return b
+  return a.atualizadoEm > b.atualizadoEm ? a : b
+}
+
+/** O corte do indice que interessa a tela: null quando ele ja nasceu com as cenas. */
+function corteDoIndice(indice: EpisodeIndex): EstadoDoCorte | null {
+  if (temPlanos(indice) && statusDoCorte(indice) === 'pronto') return null
+  return indice.corte ?? null
+}
 
 export const useGerar = create<EstadoDoGerar>((set, get) => {
   const limpo = {
@@ -301,9 +358,122 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     salvoEm: null,
     erro: null,
     recado: null,
+    corte: null as EstadoDoCorte | null,
+    pedindoCorte: false,
+    fimDoCorteEm: null as number | null,
     // Outro episodio comeca no passo 1 (o roteiro guardado e de outro).
     passo: 1 as PassoDoAssistente,
     rascunhoRestaurado: null,
+  }
+
+  /**
+   * Trocando de episodio com o corte do atual rodando: ele continua no main
+   * (e anexa as cenas sozinho no fim), e a barra de status segue mostrando.
+   */
+  const guardarCorteQueSegue = (): void => {
+    const { indice, corte } = get()
+    if (indice && corte && (corte.status === 'cortando' || corte.mensagem === 'Na fila')) {
+      set({ corteDeOutro: { episodioId: indice.id, estado: corte } })
+    }
+  }
+
+  /**
+   * Depois de ter o indice so com as falas: o que o main sabe do corte agora
+   * (um job vivo, se a tela recarregou no meio) e, se ninguem esta cortando,
+   * comeca. `iniciar: false` so olha.
+   */
+  const acompanharCorte = async (
+    indice: EpisodeIndex,
+    opcoes: { iniciar: boolean; motor?: Motor; reconhecer?: boolean },
+  ): Promise<void> => {
+    const r = await window.dangai.estadoDoCorte(indice.id)
+    if (get().indice?.id !== indice.id) return
+    const estado = r.ok ? r.value : null
+    if (estado) set({ corte: maisNovo(get().corte, estado) })
+    if (estado?.status === 'cortando' || estado?.status === 'pronto') return
+    // Na fila (vivo no main): ja vai subir sozinho.
+    if (estado?.status === 'pendente' && (estado.mensagem === 'Na fila' || estado.mensagem === 'Esperando o motor')) return
+    if (opcoes.iniciar) await get().cortarNoFundo({ motor: opcoes.motor, reconhecer: opcoes.reconhecer })
+  }
+
+  /**
+   * EPISODIO NOVO, sem esperar o corte: as falas e a sugestao de OP/ED em
+   * segundos (indexarFalas), a tela vai para o resumo e o "Proximo: Roteiro"
+   * libera; o corte sobe por tras.
+   */
+  const comecarSemEsperar = async (motor: Motor, reconhecer: boolean): Promise<void> => {
+    const { arquivo, palpite, faixaLegenda } = get()
+    if (!arquivo || !palpite) return
+    const minhaGeracao = geracao
+    set({ fase: 'indexando', indexando: 'Lendo a legenda...', erro: null, recado: null, descoberta: null, reconhecer })
+    const r = await window.dangai.indexarFalas({ path: arquivo, palpite, faixaLegenda })
+    if (minhaGeracao !== geracao) return
+    if (!r.ok) {
+      set({ fase: 'escolha', indexando: null, erro: r.error })
+      return
+    }
+    const indice = r.value
+    set({
+      fase: 'pronto',
+      indexando: null,
+      indice,
+      exclusoes: emOrdem(indice.exclusoes),
+      exclusoesMudaram: false,
+      salvoEm: null,
+      faixaLegenda: indice.faixaLegenda?.index ?? null,
+      corte: corteDoIndice(indice),
+    })
+    // Ja tinha cenas (cortado antes, e a busca nao viu): nada a esperar.
+    if (corteDoIndice(indice) === null) return
+    await acompanharCorte(indice, { iniciar: true, motor, reconhecer })
+  }
+
+  /** As cenas chegaram (ou o corte mudou de estado). */
+  const receberCorte = (e: EventoDoCorte): void => {
+    const { indice, corteDeOutro } = get()
+    if (!indice || e.episodioId !== indice.id) {
+      // Outro episodio cortando por tras: so a barra de status quer saber.
+      const segue = e.estado.status === 'cortando' || e.estado.mensagem === 'Na fila'
+      if (segue) set({ corteDeOutro: { episodioId: e.episodioId, estado: e.estado } })
+      else if (corteDeOutro?.episodioId === e.episodioId) set({ corteDeOutro: null })
+      return
+    }
+    // O tempo de motor desta rodada, quando ela acaba (pronta, parada ou cancelada):
+    // como na analise em primeiro plano, o resumo soma as rodadas do episodio.
+    const anterior = get().corte
+    const acabouRodada = anterior?.status === 'cortando' && e.estado.status !== 'cortando'
+    const inicio = e.estado.inicio ? Date.parse(e.estado.inicio) : Number.NaN
+    const segundos = Number.isFinite(inicio) ? Math.max(0, (Date.parse(e.estado.atualizadoEm) - inicio) / 1000) : 0
+    const gasto = get().tempoDoMotor
+    const tempoDoMotor = acabouRodada ? { segundos: gasto.segundos + segundos, rodadas: gasto.rodadas + 1 } : gasto
+    if (!e.indice) {
+      set({ corte: maisNovo(anterior, e.estado), tempoDoMotor })
+      return
+    }
+    const novo = e.indice
+    // O recado "ainda sendo cortadas" falava de antes das cenas chegarem.
+    const recado = get().recado
+    set({
+      corte: e.estado,
+      indice: novo,
+      ...(recado?.startsWith('As cenas ainda') ? { recado: null } : {}),
+      // Marcacao mexida e nao salva fica como esta na tela; o resto segue o disco.
+      ...(get().exclusoesMudaram ? {} : { exclusoes: emOrdem(novo.exclusoes) }),
+      fimDoCorteEm: Date.now(),
+      tempoDoMotor,
+      ultimaAnalise: { motor: e.estado.motor, ...tempoDoMotor },
+      ...(e.fotosDoElenco ? { fotosDoElenco: e.fotosDoElenco } : {}),
+    })
+    // Cenas novas na biblioteca do Studio: a Biblioteca do editor so as ve
+    // depois de reler (a mesma regra do indexar).
+    if (novo.biblioteca.origem === 'studio' && useProject.getState().library) {
+      sincronizando = useProject
+        .getState()
+        .syncLibrary()
+        .finally(() => {
+          sincronizando = null
+        })
+    }
   }
 
   /**
@@ -334,11 +504,28 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       faixaLegenda: indice.faixaLegenda?.index ?? null,
       indice,
       exclusoes: emOrdem(indice.exclusoes),
-      // Ja tinha voz sobre o roteiro aprovado: volta no passo 3, onde parou.
-      passo: aberto.value.rascunho.aprovado && (aberto.value.rascunho.voz?.takes.length ?? 0) > 0 ? 3 : 2,
+      // Volta no passo onde parou (a regra mora em gerar-passos.ts).
+      passo: passoAoRestaurar(aberto.value.rascunho),
       rascunhoRestaurado: aberto.value,
+      corte: corteDoIndice(indice),
     })
     if (!get().motor?.studio.pronto) void conferirMotor()
+    /*
+     * Indice que ainda espera as cenas: o app fechou com o corte no meio (o
+     * disco diz 'cortando', o main diz 'pendente'). Ele recomeca sozinho com o
+     * motor e o "reconhecer" de antes -- o passo 4 precisa das cenas. Corte que
+     * falhou ou que ele cancelou nao: o porque (ou o "Cortar no Studio") fica
+     * na tela do passo 1.
+     */
+    if (corteDoIndice(indice) !== null) {
+      const antes = indice.corte
+      void acompanharCorte(indice, {
+        // Cancelado pelo Levi tambem nao volta sozinho (subiria o motor sem ele pedir).
+        iniciar: antes?.status !== 'falhou' && antes?.mensagem !== 'Cancelado',
+        motor: antes?.motor,
+        reconhecer: antes?.reconhecer,
+      })
+    }
     void window.dangai.sondarEpisodio(indice.fonte.path).then((r) => {
       if (r.ok && minhaGeracao === geracao) set({ sonda: r.value })
     })
@@ -399,6 +586,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       exclusoesMudaram: false,
       salvoEm: null,
       faixaLegenda: r.value.faixaLegenda?.index ?? null,
+      corte: corteDoIndice(r.value),
     })
     /*
      * Cenas novas na biblioteca do Studio: a Biblioteca do editor so as ve
@@ -509,8 +697,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     }
   }
 
-  // Os dois receptores ficam acessiveis a escuta, que mora fora do create.
-  receptores = { receberProgresso, receberFim }
+  // Os receptores ficam acessiveis a escuta, que mora fora do create.
+  receptores = { receberProgresso, receberFim, receberCorte }
 
   return {
     aberto: false,
@@ -520,6 +708,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     conferindoMotor: false,
     reconhecer: true,
     job: null,
+    corteDeOutro: null,
     ajustesPedidos: false,
 
     abrir: (path) => {
@@ -593,6 +782,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       const minhaGeracao = ++geracao
       // Escolheu um episodio: o "voltar onde parou" nao tem mais o que fazer nesta sessao.
       jaRestaurou = true
+      // O corte em segundo plano do episodio anterior NAO para: segue no main.
+      guardarCorteQueSegue()
       set({ ...limpo, fase: 'sondando', arquivo: path })
       // O motor e conferido junto: a resposta chega enquanto a sonda roda.
       // Enquanto ele nao estiver pronto, cada arquivo novo pergunta de novo.
@@ -615,6 +806,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     recomecar: () => {
       if (get().job) return
       geracao++
+      guardarCorteQueSegue()
       set({ ...limpo })
     },
 
@@ -667,6 +859,16 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       }
       const comPersonagens = reconhecer ?? get().reconhecer
       /*
+       * EPISODIO NOVO (a busca nao achou nada, e ainda nao ha indice): as falas
+       * saem ja e o corte vai por tras (decisao do Levi, 14/10). "Analisar de
+       * novo" sobre um achado e "Reconhecer agora" continuam em primeiro plano:
+       * ali as cenas ja existem e o indice ja esta pronto.
+       */
+      if (get().indice === null && get().busca?.length === 0) {
+        await comecarSemEsperar(motor, comPersonagens)
+        return
+      }
+      /*
        * "Reconhecer agora" sobre cenas que o Studio ja cortou: a pasta do anime
        * vai junto e fica onde esta. O nome digitado passa a servir so para
        * achar o elenco -- corrigi-lo nao corta o episodio de novo noutra pasta.
@@ -700,9 +902,16 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       })
       if (!r.ok) {
         eventosSemDono = []
+        // O motor e um so: com um corte em segundo plano rodando, o "ja existe
+        // uma analise" do main nao diz qual.
+        const cortando = get().corte?.status === 'cortando' || get().corteDeOutro !== null
+        const erro =
+          cortando && /ja existe uma analise/i.test(r.error)
+            ? 'O motor esta cortando as cenas de um episodio. Espere ou cancele o corte.'
+            : r.error
         // A mesma regra do receberFim: um "reconhecer agora" sobre um
         // episodio pronto volta para o resumo, que continua valendo.
-        set({ fase: get().indice ? 'pronto' : 'escolha', job: null, erro: r.error })
+        set({ fase: get().indice ? 'pronto' : 'escolha', job: null, erro })
         return
       }
       const atual = get().job
@@ -738,11 +947,104 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       }
     },
 
+    cortarNoFundo: async (opcoes) => {
+      const { indice, palpite, pedindoCorte } = get()
+      if (!indice || pedindoCorte || corteDoIndice(indice) === null) return
+      const anterior = get().corte
+      const motor = opcoes?.motor ?? anterior?.motor ?? 'studio'
+      const reconhecer = opcoes?.reconhecer ?? anterior?.reconhecer ?? get().reconhecer
+      // O nome corrigido na tela (o anime que o AniList nao achou) vai junto.
+      const corrigido =
+        palpite &&
+        palpite.anime.trim() !== '' &&
+        (palpite.anime.trim() !== indice.anime ||
+          palpite.temporada !== indice.temporada ||
+          palpite.episodio !== indice.episodio ||
+          palpite.kind !== indice.kind)
+          ? { ...palpite, anime: palpite.anime.trim() }
+          : undefined
+      set({ pedindoCorte: true, recado: null })
+      const r = await window.dangai.iniciarCorte({
+        episodioId: indice.id,
+        motor,
+        reconhecer,
+        ...(corrigido ? { palpite: corrigido } : {}),
+      })
+      if (get().indice?.id !== indice.id) {
+        set({ pedindoCorte: false })
+        return
+      }
+      if (r.ok) {
+        set({ pedindoCorte: false, corte: maisNovo(get().corte, r.value) })
+        return
+      }
+      // O main nao subiu o motor (motor fora, video sumido, motor ocupado): a
+      // tela do corte mostra o porque e o "Tentar de novo".
+      const base = get().corte ?? anterior
+      set({
+        pedindoCorte: false,
+        corte: {
+          status: 'falhou',
+          jobId: null,
+          progresso: null,
+          etapa: null,
+          mensagem: '',
+          motor,
+          reconhecer,
+          erro: r.error,
+          inicio: base?.inicio ?? null,
+          atualizadoEm: new Date().toISOString(),
+          descoberta: null,
+        },
+      })
+    },
+
+    cancelarCorte: async () => {
+      const { indice, corte } = get()
+      if (!indice || !corte) return
+      // A tela troca na hora; o estado de verdade chega pelo evento.
+      set({ corte: { ...corte, mensagem: 'Cancelando...' } })
+      const r = await window.dangai.cancelarCorte(indice.id)
+      if (!r.ok) set({ erro: r.error })
+      else if (!r.value) {
+        // Nao havia corte vivo no main (ja tinha acabado): pergunta como ficou.
+        const e = await window.dangai.estadoDoCorte(indice.id)
+        if (e.ok && e.value && get().indice?.id === indice.id) set({ corte: e.value })
+      }
+    },
+
     reindexar: async () => {
       const { arquivo, palpite, indice, faixaLegenda } = get()
       if (!arquivo || !palpite || !indice) return
       if (get().exclusoesMudaram) {
         set({ erro: 'Salve ou desfaca as marcacoes de OP/ED antes de ler a legenda de novo.' })
+        return
+      }
+      /*
+       * Indice que ainda espera as cenas: nao ha pasta de cenas para o
+       * indexarEpisodio. A legenda nova sai pelo indexarFalas, e o corte que
+       * esta rodando segue (no fim ele cruza as cenas com as cues novas).
+       */
+      if (corteDoIndice(indice) !== null) {
+        const minhaGeracao = geracao
+        set({ fase: 'indexando', indexando: 'Lendo a legenda...', erro: null, recado: null })
+        const r = await window.dangai.indexarFalas({ path: arquivo, palpite, faixaLegenda })
+        if (minhaGeracao !== geracao) return
+        if (!r.ok) {
+          set({ fase: 'pronto', indexando: null, erro: r.error })
+          return
+        }
+        set({
+          fase: 'pronto',
+          indexando: null,
+          indice: r.value,
+          exclusoes: emOrdem(r.value.exclusoes),
+          exclusoesMudaram: false,
+          salvoEm: null,
+          faixaLegenda: r.value.faixaLegenda?.index ?? null,
+          // O andamento ao vivo e o da tela; o do disco so vale se nao havia nenhum.
+          corte: corteDoIndice(r.value) === null ? null : (get().corte ?? corteDoIndice(r.value)),
+        })
         return
       }
       await indexar({
@@ -838,6 +1140,13 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     },
 
     verNaBiblioteca: async () => {
+      // As cenas ainda estao sendo cortadas (indice so com as falas): nao ha o que mostrar.
+      const semCenas = get().indice
+      if (semCenas && !temPlanos(semCenas)) {
+        const cortando = get().corte?.status === 'cortando'
+        set({ recado: cortando ? 'As cenas ainda estao sendo cortadas.' : 'As cenas ainda nao foram cortadas.' })
+        return
+      }
       // Episodio recem-cortado: espera a releitura, ou o "ir ate o clipe" nao o acharia.
       if (sincronizando) await sincronizando
       const primeiro = get().indice?.planos[0]?.arquivo
@@ -877,6 +1186,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
 export function escutarGerar(): () => void {
   const tirarProgresso = window.dangai.onAnaliseProgresso((p) => receptores.receberProgresso(p))
   const tirarFim = window.dangai.onAnaliseFim((f) => receptores.receberFim(f))
+  // O corte em segundo plano: andamento, fila e as cenas chegando (com a tela fechada tambem).
+  const tirarCorte = window.dangai.onCorteProgresso((e) => receptores.receberCorte(e))
   const tirarIndexar = window.dangai.onIndexarProgresso((mensagem) => {
     // So substitui um andamento que existe: a ultima mensagem pode chegar
     // depois de a indexacao ter acabado e ressuscitaria o "lendo".
@@ -885,6 +1196,7 @@ export function escutarGerar(): () => void {
   return () => {
     tirarProgresso()
     tirarFim()
+    tirarCorte()
     tirarIndexar()
   }
 }

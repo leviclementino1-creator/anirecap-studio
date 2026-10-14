@@ -9,9 +9,10 @@ import { Botao, focarBotao, formatarTempo, Secao } from './pecas'
  * do passo "2 Roteiro" do cabecalho, que ja diz onde se esta. O nome inteiro
  * vai no tooltip.
  */
-const ROTULO_CURTO: Record<'eventos' | 'roteiro', string> = {
+const ROTULO_CURTO: Record<'eventos' | 'roteiro' | 'religar', string> = {
   eventos: 'Ler',
   roteiro: 'Escrever',
+  religar: 'Ligar',
 }
 
 /**
@@ -53,7 +54,7 @@ export function AndamentoDoRoteiro({
     cancelar()
     // O botao some com o andamento: o foco vai para o que da para fazer agora.
     if (geracao.secaoId) focarBotao(`refazer-${geracao.secaoId}`)
-    else focarBotao('outra-versao', 'gerar-roteiro')
+    else focarBotao('outra-versao', 'gerar-roteiro', 'meu-roteiro')
   }
 
   const tempo = (
@@ -63,7 +64,15 @@ export function AndamentoDoRoteiro({
   )
   // Cancelado, o "Cancelado." da linha de baixo ja diz: o canto fica so com o tempo parado.
   const botao = cancelado ? null : (
-    <Botao pequeno onClick={cancelarEDevolverFoco} title="Para de esperar. Se a resposta chegar depois, ela fica em Versoes.">
+    <Botao
+      pequeno
+      onClick={cancelarEDevolverFoco}
+      title={
+        geracao.religar
+          ? 'Para de esperar. O texto fica salvo; as frases novas ficam sem momento por enquanto.'
+          : 'Para de esperar. Se a resposta chegar depois, ela fica em Versoes.'
+      }
+    >
       Cancelar
     </Botao>
   )
@@ -99,7 +108,9 @@ export function AndamentoDoRoteiro({
         </div>
       }
     >
-      {geracao.comEventos && geracao.etapa !== 'secao' && <Etapas atual={geracao.etapa} parado={cancelado} />}
+      {geracao.comEventos && geracao.etapa !== 'secao' && (
+        <Etapas atual={geracao.etapa} parado={cancelado} depois={geracao.religar ? 'religar' : 'roteiro'} />
+      )}
       {cancelado ? <div className="h-[3px] w-full rounded-full bg-line-strong" /> : <Barra fracao={null} />}
       <p className="min-w-0 select-text truncate text-[11px] text-ink-2" title={frase} aria-live="polite">
         {frase}
@@ -108,9 +119,12 @@ export function AndamentoDoRoteiro({
   )
 }
 
-/** Primeira vez: ler o episodio (eventos) e depois escrever. Os mesmos chips da analise. */
-function Etapas({ atual, parado }: { atual: EtapaDoRoteiro; parado: boolean }) {
-  const etapas = ['eventos', 'roteiro'] as const
+/**
+ * Primeira vez: ler o episodio (eventos) e depois escrever -- ou, no roteiro
+ * colado, ligar as frases. Os mesmos chips da analise.
+ */
+function Etapas({ atual, parado, depois }: { atual: EtapaDoRoteiro; parado: boolean; depois: 'roteiro' | 'religar' }) {
+  const etapas = ['eventos', depois] as const
   return (
     <ol className="grid grid-cols-2 gap-1.5">
       {etapas.map((etapa) => {

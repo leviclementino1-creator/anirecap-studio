@@ -317,6 +317,73 @@ export function etapaDoEstagio(estagio: string): EtapaDaAnalise {
   }
 }
 
+// ------------------------------------------------- corte em segundo plano
+
+/*
+ * O CORTE EM SEGUNDO PLANO (decisao do Levi, 14/10): o passo 1 nao espera o
+ * motor. A legenda (falas, quem fala) e a sugestao de OP/ED saem em segundos e
+ * o indice NASCE SO COM ELAS (`planos: []`, `corte.status: 'pendente'`); o
+ * "Proximo: Roteiro" ja libera. O corte + reconhecimento roda por tras
+ * (electron/services/episodio/corte-fundo.ts, que usa o motor.ts de sempre) e,
+ * quando termina, os planos sao ANEXADOS ao mesmo indice (anexarPlanos): id,
+ * cues e exclusoes ficam como estavam -- os eventos e o roteiro citam essas
+ * cues, e a regua que o usuario ja mexeu nao volta a sugestao.
+ *
+ * COMPATIBILIDADE: `corte` e opcional. Ausente = 'pronto' (todo indice que ja
+ * existe tem planos e nasceu depois do corte). Um indice com corte diferente
+ * de 'pronto' tem `planos: []` enquanto espera.
+ *
+ * ONDE MORA o indice que espera o corte: <bibliotecaStudio>/_indices/<id>/
+ * episodio.json, com `biblioteca: { origem: 'studio', pasta: <essa pasta> }`
+ * (caminhoDoIndice('studio', pasta, id) da o mesmo arquivo, entao salvarExclusoes
+ * e acharIndice funcionam sem mudar). Quando o corte termina, o indice com
+ * planos vai para <pasta do episodio>/episodio.json, como todo episodio
+ * cortado pelo Studio, e o de _indices e renomeado para episodio.<carimbo>.json
+ * (nunca apagado); lembrarIndice aponta para o novo.
+ *
+ * O PROGRESSO nao e gravado a cada passo: o indice so e regravado nas trocas de
+ * status. O andamento ao vivo vem pelo evento corteProgresso (EventoDoCorte). Um
+ * 'cortando' lido do disco sem job vivo no main (o app fechou no meio) vale como
+ * 'pendente'.
+ */
+
+export const statusDoCorteSchema = z.enum(['pendente', 'cortando', 'pronto', 'falhou'])
+export type StatusDoCorte = z.infer<typeof statusDoCorteSchema>
+
+export const estadoDoCorteSchema = z.object({
+  status: statusDoCorteSchema,
+  /** O job do motor (motor.ts) enquanto corta. null fora disso. */
+  jobId: z.string().nullable(),
+  /** 0..1 do corte inteiro. null = indeterminado (mostrar a barra andando). */
+  progresso: z.number().min(0).max(1).nullable(),
+  /** A etapa da tela (ROTULO_DA_ETAPA). null fora do corte. */
+  etapa: etapaDaAnaliseSchema.nullable(),
+  /** Frase pronta, ASCII, para a linha discreta ("Cortando as cenas 42%"). '' = nada. */
+  mensagem: z.string().default(''),
+  motor: motorSchema,
+  /** Corta E reconhece os personagens (o padrao do passo 1). */
+  reconhecer: z.boolean(),
+  /** Por que falhou, ASCII. null fora do 'falhou'. */
+  erro: z.string().nullable().default(null),
+  /** ISO de quando comecou a cortar. null = ainda nao comecou. */
+  inicio: z.string().nullable().default(null),
+  atualizadoEm: z.string(),
+  /**
+   * O motor parou pedindo o elenco (needs-input), como o `precisaDescoberta`
+   * do fim da analise: a tela oferece "Cortar sem personagens" e, quando o
+   * anime nao foi achado, o nome para corrigir. null fora disso.
+   */
+  descoberta: z.enum(['anime-nao-encontrado', 'sem-referencias']).nullable().default(null),
+})
+export type EstadoDoCorte = z.infer<typeof estadoDoCorteSchema>
+
+export const ROTULO_DO_STATUS_DO_CORTE: Record<StatusDoCorte, string> = {
+  pendente: 'Cenas na fila',
+  cortando: 'Cortando as cenas',
+  pronto: 'Cenas prontas',
+  falhou: 'Corte parou',
+}
+
 // ---------------------------------------------------------------------- indice
 
 /** Uma linha da legenda, com id estavel. */
@@ -464,6 +531,12 @@ const episodeIndexBase = z.object({
   criadoEm: z.string(),
   /** ISO. Muda a cada salvarExclusoes. */
   atualizadoEm: z.string(),
+  /**
+   * O corte em segundo plano. Ausente = 'pronto' (todo indice de antes disto).
+   * Diferente de 'pronto' = indice que nasceu so com as falas e espera os
+   * planos (ver o comentario de estadoDoCorteSchema).
+   */
+  corte: estadoDoCorteSchema.optional(),
 })
 
 /**
@@ -522,6 +595,46 @@ export type IndexarEpisodioArgs = z.infer<typeof indexarEpisodioArgsSchema>
 
 export const listaDeExclusoesSchema = z.array(exclusaoSchema)
 
+/**
+ * O pedido de indexarFalas: o indice SO COM AS FALAS (cues, falantes, OP/ED
+ * sugeridas), sem esperar o corte. Se o episodio ja tem indice com planos,
+ * devolve esse (nada a esperar).
+ */
+export const indexarFalasArgsSchema = z.object({
+  path: z.string().min(1),
+  palpite: palpiteDoEpisodioSchema,
+  /** `index` absoluto da faixa. Ausente = a sugerida pela sonda; null = sem legenda. */
+  faixaLegenda: z.number().int().nonnegative().nullable().optional(),
+})
+export type IndexarFalasArgs = z.infer<typeof indexarFalasArgsSchema>
+
+/**
+ * O pedido de iniciarCorte: corta (e reconhece) o episodio do indice
+ * `episodioId` em segundo plano. O arquivo e o nome saem do indice; `palpite`
+ * so quando o usuario corrigiu o nome depois de indexar as falas.
+ */
+export const pedidoDeCorteSchema = z.object({
+  episodioId: z.string().regex(/^ep_[0-9a-f]{40}$/),
+  motor: motorSchema,
+  reconhecer: z.boolean(),
+  palpite: palpiteDoEpisodioSchema.optional(),
+})
+export type PedidoDeCorte = z.infer<typeof pedidoDeCorteSchema>
+
+/** main -> renderer (canal corteProgresso), a cada mudanca do corte em segundo plano. */
+export interface EventoDoCorte {
+  episodioId: string
+  estado: EstadoDoCorte
+  /** O indice COM os planos, so quando o status vira 'pronto'. null nas outras vezes. */
+  indice: EpisodeIndex | null
+  /**
+   * So no 'pronto' com reconhecimento: de onde vieram as fotos do elenco quando
+   * nao foi a busca online ('Corte Cenas', da reserva). Igual ao do fim da
+   * analise; a tela diz "Fotos do elenco: Corte Cenas".
+   */
+  fotosDoElenco?: string | null
+}
+
 // ------------------------------------------------------------------- uteis puros
 
 /**
@@ -533,6 +646,62 @@ export function slugDoEpisodio(temporada: number, episodio: number, kind: KindDo
   if (kind === 'MOVIE') return episodio > 1900 ? `Filme (${episodio})` : 'Filme'
   if (kind) return `S${dois(temporada)}-${kind}${episodio}`
   return `S${dois(temporada)}E${dois(episodio)}`
+}
+
+/** O status do corte do indice. Ausente = 'pronto' (indice de antes do corte em segundo plano). */
+export function statusDoCorte(indice: Pick<EpisodeIndex, 'corte'>): StatusDoCorte {
+  return indice.corte?.status ?? 'pronto'
+}
+
+/** O indice ja tem as cenas (o passo 2 mostra miniaturas, o passo 4 abre). */
+export function temPlanos(indice: Pick<EpisodeIndex, 'planos'>): boolean {
+  return indice.planos.length > 0
+}
+
+/** O que o corte traz para anexar ao indice que nasceu so com as falas. */
+export interface PlanosDoCorte {
+  /** Ja cruzados com as cues DESTE indice (montarPlanos do main, com as mesmas cues). */
+  planos: Plano[]
+  /** A pasta que o motor gravou (a que tem shots/). */
+  biblioteca: BibliotecaDoEpisodio
+  reconhecimento: EpisodeIndex['reconhecimento']
+  /** Avisos do corte (tempo, outro arquivo), somados aos do indice. */
+  avisos?: string[]
+}
+
+/**
+ * ANEXA os planos ao indice que esperava o corte. Fica tudo que o usuario e o
+ * roteiro ja usam -- id, fonte, nome, faixa, cues e exclusoes (inclusive as
+ * mexidas na regua) e criadoEm --; mudam so os planos, a biblioteca, o
+ * reconhecimento, os avisos e o corte ('pronto'). Lanca (zod) se um plano cita
+ * cue que o indice nao tem: sinal de que os planos foram cruzados com outra
+ * legenda.
+ */
+export function anexarPlanos(indice: EpisodeIndex, corte: PlanosDoCorte, agoraIso: string): EpisodeIndex {
+  const avisos = [...indice.avisos]
+  for (const a of corte.avisos ?? []) if (!avisos.includes(a)) avisos.push(a)
+  const anterior = indice.corte
+  return episodeIndexSchema.parse({
+    ...indice,
+    planos: corte.planos,
+    biblioteca: corte.biblioteca,
+    reconhecimento: corte.reconhecimento,
+    avisos,
+    atualizadoEm: agoraIso,
+    corte: {
+      status: 'pronto',
+      jobId: null,
+      progresso: 1,
+      etapa: null,
+      mensagem: '',
+      motor: anterior?.motor ?? 'studio',
+      reconhecer: anterior?.reconhecer ?? corte.reconhecimento === 'feito',
+      erro: null,
+      inicio: anterior?.inicio ?? null,
+      atualizadoEm: agoraIso,
+      descoberta: null,
+    },
+  } satisfies EpisodeIndex)
 }
 
 /** 1 -> 'c0001'. A contagem comeca em 1, na ordem de inicio das cues. */

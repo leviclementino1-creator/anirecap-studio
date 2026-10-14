@@ -4,12 +4,14 @@ import {
   ROTULO_DA_ORIGEM,
   ROTULO_DO_MOTIVO,
   resumirIndice,
+  temPlanos,
   type Exclusao,
   type MotivoDaExclusao,
   type ResumoDoIndice,
 } from '@shared/episodio'
 import { nomeNatural } from '@shared/nomes'
 import { TRECHO_MINIMO, useGerar } from '@/store/gerar'
+import { SecaoDoCorte } from './AndamentoDoCorte'
 import { SeletorDeLegenda } from './CartaoDoEpisodio'
 import { LISTRADO, ReguaDoEpisodio } from './ReguaDoEpisodio'
 import {
@@ -73,11 +75,13 @@ export function ResumoDoEpisodio() {
   const avisos = indice.avisos.filter((a) => !avisoDaLegenda(a))
   const personagensSobram = personagens.length - PERSONAGENS_VISIVEIS
   const podeReconhecer = indice.reconhecimento === 'pulado' && indice.biblioteca.origem === 'studio'
+  // Indice so com as falas: as cenas estao sendo cortadas por tras (SecaoDoCorte).
+  const comCenas = temPlanos(indice)
 
   return (
     <>
       <Secao
-        titulo="Episodio pronto"
+        titulo={comCenas ? 'Episodio pronto' : 'Falas prontas'}
         acao={
           <div className="flex items-center gap-3">
             <span className="text-[11px] text-ink-3">
@@ -96,14 +100,17 @@ export function ResumoDoEpisodio() {
                 </span>
               )}
             </span>
-            <AbrirPasta
-              caminho={indice.biblioteca.pasta}
-              title={
-                indice.biblioteca.origem === 'studio'
-                  ? 'Mostrar as cenas no Explorer'
-                  : 'Mostrar as cenas no Explorer (so leitura: o Studio nao mexe nela)'
-              }
-            />
+            {/* Sem cenas ainda, a pasta do indice so tem o episodio.json: nada a ver no Explorer. */}
+            {comCenas && (
+              <AbrirPasta
+                caminho={indice.biblioteca.pasta}
+                title={
+                  indice.biblioteca.origem === 'studio'
+                    ? 'Mostrar as cenas no Explorer'
+                    : 'Mostrar as cenas no Explorer (so leitura: o Studio nao mexe nela)'
+                }
+              />
+            )}
           </div>
         }
       >
@@ -163,6 +170,8 @@ export function ResumoDoEpisodio() {
           </div>
         )}
       </Secao>
+
+      <SecaoDoCorte />
 
       <AberturaEEncerramento />
     </>
@@ -234,16 +243,30 @@ function ReconhecerAgora() {
 function Numeros({ resumo }: { resumo: ResumoDoIndice }) {
   const indice = useGerar((s) => s.indice)
   const exclusoes = useGerar((s) => s.exclusoes)
+  const corte = useGerar((s) => s.corte)
   if (!indice) return null
 
   const fora = exclusoes.reduce((s, e) => s + Math.max(0, e.end - e.start), 0)
   const pendentes = exclusoes.filter((e) => !e.confirmada).length
   const faixa = indice.faixaLegenda
   const srt = faixa !== null && /^(subrip|srt)$/i.test(faixa.codec)
+  // Sem cenas ainda: o cartao diz em que pe esta o corte, e nao "0 cenas".
+  const esperando = !temPlanos(indice)
+  const cortando = esperando && corte?.status === 'cortando'
 
   return (
     <div className="grid grid-cols-4 gap-2">
-      <Numero titulo="Cenas" valor={resumo.totalCenas.toLocaleString('pt-BR')} detalhe={`${resumo.cenasComFala} com fala`} />
+      {esperando ? (
+        <Numero
+          titulo="Cenas"
+          valor={cortando && corte.progresso !== null ? `${Math.round(corte.progresso * 100)}%` : '-'}
+          detalhe={
+            cortando ? 'cortando' : corte?.status === 'falhou' ? 'corte parou' : corte?.mensagem === 'Na fila' ? 'na fila' : 'por cortar'
+          }
+        />
+      ) : (
+        <Numero titulo="Cenas" valor={resumo.totalCenas.toLocaleString('pt-BR')} detalhe={`${resumo.cenasComFala} com fala`} />
+      )}
       <Numero
         titulo="Falas"
         valor={resumo.totalFalas.toLocaleString('pt-BR')}
@@ -259,15 +282,19 @@ function Numeros({ resumo }: { resumo: ResumoDoIndice }) {
       />
       <Numero
         titulo="Personagens"
-        valor={String(resumo.personagens.length)}
+        valor={esperando ? '-' : String(resumo.personagens.length)}
         detalhe={
-          indice.reconhecimento === 'pulado'
-            ? 'so corte'
-            : indice.reconhecimento === 'desconhecido'
-              ? 'sem informacao'
-              : resumo.personagens.length > 0
-                ? 'pelo rosto'
-                : 'ninguem reconhecido'
+          esperando
+            ? corte && !corte.reconhecer
+              ? 'sem reconhecer'
+              : 'com as cenas'
+            : indice.reconhecimento === 'pulado'
+              ? 'so corte'
+              : indice.reconhecimento === 'desconhecido'
+                ? 'sem informacao'
+                : resumo.personagens.length > 0
+                  ? 'pelo rosto'
+                  : 'ninguem reconhecido'
         }
       />
       <Numero

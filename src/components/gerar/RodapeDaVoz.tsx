@@ -21,8 +21,8 @@ import { Botao, COR_DE_AVISO, focarBotao, formatarTempo, Link } from './pecas'
  * Alinhamento fraco (o audio pode nao ser o roteiro, ou o som desmente o tempo
  * de alguma palavra): o "Aprovar voz" pede confirmacao antes.
  *
- * Aprovada, o "Proximo: Cenas (parte 4)" aparece DESLIGADO de verdade: a
- * parte 4 ainda nao existe.
+ * Aprovada, o "Proximo: Cenas" leva ao passo 4 (as cenas ja estao sugeridas
+ * em segundo plano desde a aprovacao do roteiro).
  */
 export function RodapeDaVoz() {
   const irParaPasso = useGerar((s) => s.irParaPasso)
@@ -58,7 +58,7 @@ export function RodapeDaVoz() {
             : fraco
               ? 'Alinhamento fraco: pede confirmacao antes de aprovar'
               : 'Esta e a narracao do recap'
-  // O mesmo que a parte 4 vai exigir: roteiro e voz aprovados, e a voz em dia com o roteiro.
+  // O mesmo que o passo 4 exige (passoLiberado): roteiro e voz aprovados, e a voz em dia com o roteiro.
   const cenas = rascunho !== null && podeIrParaCenas(rascunho, roteiroAtual(rascunho))
 
   // A confirmacao era deste take e deste momento: trocar de take, comecar um pedido ou travar a aprovacao fecha.
@@ -84,8 +84,8 @@ export function RodapeDaVoz() {
   const aprovarEFocar = async (): Promise<void> => {
     setConfirmando(false)
     await aprovar()
-    // O botao virou "Aprovada": o foco vai para o "Desfazer" ao lado.
-    focarBotao('desaprovar-voz')
+    // O botao virou "Aprovada": o foco vai para o "Proximo: Cenas" (Enter segue), ou o "Desfazer".
+    focarBotao('proximo-cenas', 'desaprovar-voz')
   }
 
   const pedirAprovacao = (): void => {
@@ -154,11 +154,11 @@ export function RodapeDaVoz() {
           >
             Desfazer
           </Link>
-          {/* Desligado de verdade: o clique nem chega (disabled). A parte 4 liga aqui. */}
+          {/* A acao que leva adiante: o rosa da tela, como o "Proximo: Voz" do passo 2. */}
           {cenas && (
-            <Botao onClick={() => undefined} disabled title="Em breve">
+            <Botao principal foco="proximo-cenas" onClick={() => irParaPasso(4)} title="Ir as cenas (passo 4)">
               <Clapperboard size={13} strokeWidth={1.5} />
-              Proximo: Cenas (parte 4)
+              Proximo: Cenas
               <ArrowRight size={13} strokeWidth={1.5} />
             </Botao>
           )}

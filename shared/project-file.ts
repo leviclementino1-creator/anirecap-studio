@@ -186,6 +186,33 @@ const bibliotecaSchema = z
 export type BibliotecaSalva = z.infer<typeof bibliotecaSchema>
 
 /**
+ * De onde o projeto veio quando nasceu do "Abrir no editor" do Gerar recap
+ * (electron/services/montar/*). Ausente = projeto do jeito do Dangai.
+ *
+ * GUARDA DE REANALISE: com `vozAlinhada`, o transcript do projeto e o do take
+ * do Studio (palavras do roteiro com o tempo do provedor/alinhador, alinhado:
+ * true). Nada no editor pode troca-lo pelo do Whisper: o analyze() do store
+ * (chamado por removeImage, insertImages sem plano, ingest e setScript) passa
+ * a operar sobre o plano e o transcript que existem (ver src/store/project.ts).
+ *
+ * Opcional SEM default de proposito: o projeto do Dangai abre e grava igual,
+ * byte a byte, e quem monta o ProjectFile sem saber do Studio continua valido.
+ */
+export const origemDoStudioSchema = z.object({
+  rascunhoId: z.string().regex(/^rc_[0-9a-z_]+$/),
+  episodioId: z.string().regex(/^ep_[0-9a-f]{40}$/),
+  /** O take da narracao (TakeDaVoz.id). */
+  takeId: z.string().regex(/^t\d+$/),
+  /** O roteiro aprovado que virou o `script` (Roteiro.versao). */
+  roteiroVersao: z.number().int().positive(),
+  /** A narracao ja veio com as palavras alinhadas: liga a guarda de reanalise. */
+  vozAlinhada: z.boolean(),
+  /** ISO de quando o projeto foi montado. */
+  geradoEm: z.string(),
+})
+export type OrigemDoStudio = z.infer<typeof origemDoStudioSchema>
+
+/**
  * Campo novo entra sempre como opcional com padrao.
  *
  * Um projeto salvo hoje precisa continuar abrindo depois de qualquer versao
@@ -289,6 +316,8 @@ export const projectFileSchema = z.object({
    * disto reabre sem selecao, que e exatamente como ele foi salvo.
    */
   biblioteca: bibliotecaSchema,
+  /** Projeto nascido do Gerar recap (ver origemDoStudioSchema). Ausente = do jeito do Dangai. */
+  studio: origemDoStudioSchema.optional(),
 })
 export type ProjectFile = z.infer<typeof projectFileSchema>
 

@@ -60,7 +60,7 @@ export { configurarEpisodios, pastaDoPerfil } from './perfil'
 /** Abaixo disso de sobreposicao, a fala so encosta no corte e nao e da cena. */
 const SOBREPOSICAO_MINIMA_SEC = 0.2
 
-function mesmoCaminho(a: string, b: string): boolean {
+export function mesmoCaminho(a: string, b: string): boolean {
   const n = (s: string): string => resolve(s).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
   return n(a) === n(b)
 }
@@ -71,12 +71,24 @@ export function caminhoDoIndice(origem: IndexarEpisodioArgs['origem'], pastaDoEp
   return join(pastaDaBibliotecaStudio(), '_indices', id, 'episodio.json')
 }
 
-function lerIndiceDoDisco(caminho: string): EpisodeIndex | null {
+export function lerIndiceDoDisco(caminho: string): EpisodeIndex | null {
   try {
     return lerIndice(JSON.parse(readFileSync(caminho, 'utf8')))
   } catch {
     return null
   }
+}
+
+/**
+ * Desde quando o indice conhece as cenas da pasta, em ms. Num indice que nasceu
+ * so com as falas e ganhou os planos depois (corte em segundo plano, ver
+ * corte-fundo.ts), e o momento em que eles foram anexados -- o `criadoEm` e de
+ * ANTES do corte, e o shots.json gravado no fim do corte pareceria mais novo
+ * que o indice (o reaproveitar refaria tudo a toa).
+ */
+export function planosDesde(indice: Pick<EpisodeIndex, 'criadoEm' | 'corte'>): number {
+  const anexados = indice.corte?.status === 'pronto' ? Date.parse(indice.corte.atualizadoEm) : Number.NaN
+  return Number.isFinite(anexados) ? anexados : Date.parse(indice.criadoEm)
 }
 
 /** "2026-10-13T13:55:01.123Z" -> "20261013-135501". */
@@ -87,7 +99,7 @@ function carimbo(iso: string): string {
 }
 
 /** Guarda o indice anterior ao lado, com o carimbo dele no nome. Nunca apaga. */
-function guardarAnterior(caminho: string, anterior: EpisodeIndex | null): void {
+export function guardarAnterior(caminho: string, anterior: EpisodeIndex | null): void {
   if (!existsSync(caminho)) return
   let quando = anterior?.atualizadoEm ?? ''
   if (!quando) {
@@ -113,7 +125,7 @@ function cueNoPlano(cue: Cue, start: number, end: number): boolean {
   return dentro >= Math.min(SOBREPOSICAO_MINIMA_SEC, duracao * 0.5)
 }
 
-function montarPlanos(dados: PastaDoEpisodio, cues: readonly Cue[]): Plano[] {
+export function montarPlanos(dados: PastaDoEpisodio, cues: readonly Cue[]): Plano[] {
   // Com as grafias do mesmo personagem ja unidas: o roteiro tem que ver UM
   // "Saionji, Ukyou", e nao ele e um "Ukyo Saionji" em cenas diferentes.
   const personagens = personagensPorCena(dados)
@@ -146,7 +158,7 @@ function montarPlanos(dados: PastaDoEpisodio, cues: readonly Cue[]): Plano[] {
  * sem ela, foi so corte. Sem timings.json (pasta antiga), so da para afirmar
  * quando alguma cena tem personagem.
  */
-function reconhecimentoDaPasta(dados: PastaDoEpisodio, planos: readonly Plano[]): EpisodeIndex['reconhecimento'] {
+export function reconhecimentoDaPasta(dados: PastaDoEpisodio, planos: readonly Plano[]): EpisodeIndex['reconhecimento'] {
   if (planos.some((p) => p.personagens.length > 0)) return 'feito'
   try {
     const t = JSON.parse(readFileSync(join(dados.pasta, 'metadata', 'timings.json'), 'utf8')) as {
@@ -168,8 +180,8 @@ function reconhecimentoDaPasta(dados: PastaDoEpisodio, planos: readonly Plano[])
  * do aviso (AVISO_DE_OUTRO_ARQUIVO) e o que a busca le para nao chamar esta
  * pasta de "mesmo arquivo" depois.
  */
-function avisosDeTempo(
-  sonda: SondaDoArquivo,
+export function avisosDeTempo(
+  sonda: Pick<SondaDoArquivo, 'duracaoSec'>,
   dados: PastaDoEpisodio,
   caminho: string,
   conferidoAntes: boolean,
@@ -192,7 +204,7 @@ function avisosDeTempo(
   return avisos
 }
 
-function avisosDaLegenda(faixa: FaixaDeLegenda | null, cues: readonly Cue[], formato: string | null): string[] {
+export function avisosDaLegenda(faixa: FaixaDeLegenda | null, cues: readonly Cue[], formato: string | null): string[] {
   if (!faixa) return ['Sem legenda de texto: o episodio fica sem falas.']
   const falas = cues.filter((c) => c.tipo === 'fala')
   if (falas.length === 0) return ['A legenda escolhida nao tem falas (so placas ou musica).']
@@ -239,7 +251,7 @@ export async function indexarEpisodio(
     const mesmasCenas =
       anterior.planos.length === dados.cenas.length &&
       dados.cenas.every((c, i) => anterior.planos[i]?.id === c.id) &&
-      dados.mtimeShotsJson <= Date.parse(anterior.criadoEm)
+      dados.mtimeShotsJson <= planosDesde(anterior)
     if (
       anterior.id === sonda.id &&
       mesmoCaminho(anterior.biblioteca.pasta, args.pastaDoEpisodio) &&
@@ -306,7 +318,7 @@ export async function indexarEpisodio(
     anteriorDoMesmo !== null &&
     mesmoCaminho(anteriorDoMesmo.biblioteca.pasta, args.pastaDoEpisodio) &&
     !anteriorDoMesmo.avisos.some((a) => a.startsWith(AVISO_DE_OUTRO_ARQUIVO)) &&
-    dados.mtimeShotsJson <= Date.parse(anteriorDoMesmo.criadoEm)
+    dados.mtimeShotsJson <= planosDesde(anteriorDoMesmo)
   const serieDaPasta = basename(dirname(args.pastaDoEpisodio))
   const sugeridas = sugerirOpEd({
     duracaoSec: sonda.duracaoSec,

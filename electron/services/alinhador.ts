@@ -211,6 +211,7 @@ async function emissaoCompleta(
   sessao: Sessao,
   audio: Float32Array,
   onProgress: AlinhadorProgresso,
+  signal?: AbortSignal,
 ): Promise<{ dados: Float32Array; quadros: number; classes: number }> {
   if (audio.length <= JANELA_SEC * TAXA) return emitir(ort, sessao, audio)
 
@@ -222,6 +223,8 @@ async function emissaoCompleta(
   // Cada janela fica dona dos quadros do seu miolo: [inicio + sobra, fim - sobra).
   const util = janela - 2 * sobra
   for (let dono = 0; dono < audio.length; dono += util) {
+    // AniRecap Studio: o Cancelar da voz para entre uma janela e outra.
+    desistirSeCancelou(signal)
     const ini = Math.max(0, dono - sobra)
     // Inicio alinhado ao passo: o quadro local i vira o global ini/PASSO + i.
     const iniAlinhado = ini - (ini % PASSO)
@@ -251,21 +254,35 @@ export interface Alinhamento {
  * Onde cada palavra soa. `null` quando nao da para alinhar (texto sem letra
  * nenhuma, audio mais curto que o texto).
  */
+/**
+ * AniRecap Studio: o Cancelar da voz importada. A passada do modelo nao para no
+ * meio, mas nada novo comeca depois dele (proxima janela, alinhamento), e a
+ * sessao e liberada no finally.
+ */
+function desistirSeCancelou(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error('Alinhamento cancelado')
+}
+
 export async function alinharAoAudio(
   audioPath: string,
   palavras: readonly string[],
   onProgress: AlinhadorProgresso,
+  signal?: AbortSignal,
 ): Promise<Alinhamento | null> {
   if (palavras.length === 0) return null
   await garantirModelo(onProgress)
+  desistirSeCancelou(signal)
 
   onProgress('Sincronizando as legendas com a narracao...')
   const audio = await lerAudio(audioPath)
+  desistirSeCancelou(signal)
   const vocab = JSON.parse(readFileSync(caminhoVocab(), 'utf8')) as Vocabulario
   const ort = await import('onnxruntime-node')
   const sessao = await abrirSessao(ort)
   try {
-    const e = await emissaoCompleta(ort, sessao, audio, onProgress)
+    desistirSeCancelou(signal)
+    const e = await emissaoCompleta(ort, sessao, audio, onProgress, signal)
+    desistirSeCancelou(signal)
     // Segundos por quadro como o WhisperX calcula: duracao / quadros.
     const tempos = alinharPalavras(palavras, e.dados, e.quadros, e.classes, vocab, audio.length / TAXA / e.quadros)
     if (!tempos) return null

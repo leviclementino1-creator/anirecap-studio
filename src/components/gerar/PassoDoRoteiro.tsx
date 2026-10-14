@@ -270,8 +270,8 @@ function origemDaVersao(v: Roteiro): string {
   return 'IA'
 }
 
-/** "14:32" hoje; "12/10 14:32" em outro dia. */
-function quando(iso: string): string {
+/** "14:32" hoje; "12/10 14:32" em outro dia. (O passo 3 usa o mesmo nos Takes.) */
+export function quando(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })

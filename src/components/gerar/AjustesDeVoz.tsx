@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Import } from 'lucide-react'
 import type {
   AchadoDoAniRecap,
@@ -8,6 +8,8 @@ import type {
   VozDoProvedor,
   VozPadrao,
 } from '@shared/channels'
+import { modeloEleven } from '@shared/voz'
+import { MODELOS_FISH, useVoz } from '@/store/gerar-voz'
 
 /**
  * A secao "Voz" das Configuracoes: a voz padrao, as chaves do ElevenLabs e do
@@ -49,13 +51,44 @@ export function AjustesDeVoz({
   onSettings: (s: PublicSettings) => void
 }) {
   const [entrada, setEntrada] = useState<Record<ProvedorDeVoz, string>>({ elevenlabs: '', fish: '' })
-  const [vozes, setVozes] = useState<Record<ProvedorDeVoz, VozDoProvedor[]>>(() => ({ ...lembradas }))
+  /*
+   * As do ultimo "Testar" daqui; sem elas, as que o passo 3 ja leu (o mesmo
+   * Testar, com a mesma chave salva). Sem isto o "Configurar" do passo 3 abria
+   * com o id cru da voz padrao ("Crm8... (salva)") no lugar do nome.
+   */
+  const [vozes, setVozes] = useState<Record<ProvedorDeVoz, VozDoProvedor[]>>(() => {
+    const doPasso3 = useVoz.getState().vozes
+    return {
+      elevenlabs: lembradas.elevenlabs.length > 0 ? lembradas.elevenlabs : (doPasso3.elevenlabs ?? []),
+      fish: lembradas.fish.length > 0 ? lembradas.fish : (doPasso3.fish ?? []),
+    }
+  })
   const [testando, setTestando] = useState<ProvedorDeVoz | null>(null)
   const [resultado, setResultado] = useState<Partial<Record<ProvedorDeVoz, Resultado>>>({})
   const [salvando, setSalvando] = useState(false)
   const [achado, setAchado] = useState<AchadoDoAniRecap | null>(null)
   // O botao do AniRecap tem dois tempos: o primeiro clique so arma, o segundo grava.
   const [armado, setArmado] = useState(false)
+  const ancora = useRef<HTMLDivElement>(null)
+  // Veio do "Configurar" do passo 3: rola ate esta secao. Guarda ATE QUANDO rolar; 0 = nao rolar.
+  const rolarAte = useRef(useVoz.getState().ajustesDeVozPedidos ? Date.now() + 1500 : 0)
+
+  useEffect(() => {
+    if (rolarAte.current) useVoz.getState().ajustesDeVozVistos()
+  }, [])
+
+  /*
+   * Rola na abertura e de novo quando os ajustes chegam (a altura de cima muda
+   * com eles), so no primeiro instante -- como o AjustesDoStudio. O scrollTop
+   * da caixa, e nao scrollIntoView, que rolaria tambem o app por baixo.
+   */
+  useEffect(() => {
+    if (!settings || Date.now() > rolarAte.current) return
+    const alvo = ancora.current
+    const caixa = alvo?.closest<HTMLElement>('.overflow-y-auto')
+    if (!alvo || !caixa) return
+    caixa.scrollTop += alvo.getBoundingClientRect().top - caixa.getBoundingClientRect().top - 8
+  }, [settings])
 
   // So le o config do AniRecap antigo, e a resposta traz a dica, nunca a chave.
   const procurar = async (): Promise<void> => {
@@ -261,7 +294,7 @@ export function AjustesDeVoz({
 
   return (
     <>
-      <div className="my-5 h-px bg-line" />
+      <div ref={ancora} className="my-5 h-px bg-line" />
 
       <label className="mb-1.5 block text-[11px] font-medium text-ink-2">Voz</label>
       {/* pr-7 + reticencias: as vozes da biblioteca do ElevenLabs tem nome longo
@@ -289,7 +322,7 @@ export function AjustesDeVoz({
       {(semLista || (voz?.provedor && voz.modelId)) && (
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
           {semLista ? 'Teste uma chave para ver as vozes da conta. ' : ''}
-          {voz?.provedor && voz.modelId ? `Modelo ${voz.modelId}.` : ''}
+          {voz?.provedor && voz.modelId ? `Modelo ${nomeDoModelo(voz.provedor, voz.modelId)}.` : ''}
         </p>
       )}
 
@@ -302,6 +335,12 @@ export function AjustesDeVoz({
       </p>
     </>
   )
+}
+
+/** O nome do modelo como o passo 3 mostra ("Multilingual v2"), nao o id cru ("eleven_multilingual_v2"). */
+function nomeDoModelo(provedor: 'elevenlabs' | 'fish', modelId: string): string {
+  if (provedor === 'elevenlabs') return modeloEleven(modelId).nome
+  return MODELOS_FISH.find((m) => m.id === modelId)?.nome ?? modelId
 }
 
 /** "Funcionando · 1.234 de 10.000 caracteres (creator)" ou "Funcionando · saldo US$ 4,20". */

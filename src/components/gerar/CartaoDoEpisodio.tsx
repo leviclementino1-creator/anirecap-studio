@@ -10,6 +10,7 @@ import {
 } from '@shared/episodio'
 import { useGerar } from '@/store/gerar'
 import { useRoteiro } from '@/store/gerar-roteiro'
+import { useVoz } from '@/store/gerar-voz'
 import { Field } from '@/components/painel'
 import { AbrirPasta, Botao, CAMPO_NORMAL, CLASSE_DO_CAMPO, formatarTempo, Secao } from './pecas'
 
@@ -133,17 +134,21 @@ function TrocarEpisodio() {
   const recomecar = useGerar((s) => s.recomecar)
   // Com a IA escrevendo, a resposta seguiria gravando no rascunho deste episodio, fora da vista.
   const temIa = useRoteiro((s) => s.geracao !== null)
+  // A voz sendo gerada tambem (passo 3).
+  const temVoz = useVoz((s) => s.pedido !== null)
   return (
     <Botao
       pequeno
       onClick={recomecar}
-      disabled={temJob || mudasMarcacoes || temIa}
+      disabled={temJob || mudasMarcacoes || temIa || temVoz}
       title={
         temJob
           ? 'Cancele a analise antes de trocar de episodio'
           : temIa
             ? 'Cancele a IA antes de trocar de episodio'
-            : mudasMarcacoes
+            : temVoz
+              ? 'Cancele a voz antes de trocar de episodio'
+              : mudasMarcacoes
               ? 'Salve ou desfaca as marcacoes de OP/ED antes'
               : 'Escolher outro episodio'
       }

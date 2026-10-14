@@ -137,7 +137,7 @@ interface EstadoDoGerar {
    */
   rascunhoRestaurado: RascunhoAberto | null
 
-  /** Vai ao passo. O 2 so com o episodio pronto (podeIrAoRoteiro). */
+  /** Vai ao passo. O 2 e o 3 so com o episodio pronto (podeIrAoRoteiro). */
   irParaPasso: (passo: PassoDoAssistente) => void
   /** Entrega (e esquece) o rascunho restaurado, se for deste episodio. */
   tomarRascunhoRestaurado: (episodioId: string) => RascunhoAberto | null
@@ -186,8 +186,13 @@ interface EstadoDoGerar {
   conferirMotor: () => Promise<void>
 }
 
-/** Os passos que existem por enquanto (3 Voz e 4 Cenas ainda sao "em breve"). */
-export type PassoDoAssistente = 1 | 2
+/**
+ * Os passos que existem por enquanto (4 Cenas ainda e "em breve"). O 3 (Voz)
+ * tem a store dele em gerar-voz.ts; quem leva ate ele (cabecalho, rodape do
+ * roteiro) confere antes que o roteiro esta aprovado -- esta store nao conhece
+ * a do roteiro (ela importa daqui).
+ */
+export type PassoDoAssistente = 1 | 2 | 3
 
 /**
  * O passo 2 abre com o episodio PRONTO e com a regua salva: os eventos saem
@@ -329,7 +334,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       faixaLegenda: indice.faixaLegenda?.index ?? null,
       indice,
       exclusoes: emOrdem(indice.exclusoes),
-      passo: 2,
+      // Ja tinha voz sobre o roteiro aprovado: volta no passo 3, onde parou.
+      passo: aberto.value.rascunho.aprovado && (aberto.value.rascunho.voz?.takes.length ?? 0) > 0 ? 3 : 2,
       rascunhoRestaurado: aberto.value,
     })
     if (!get().motor?.studio.pronto) void conferirMotor()
@@ -549,7 +555,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     fechar: () => set({ aberto: false }),
 
     irParaPasso: (passo) => {
-      if (passo === 2 && !podeIrAoRoteiro(get())) return
+      if (passo !== 1 && !podeIrAoRoteiro(get())) return
       set({ passo })
     },
 

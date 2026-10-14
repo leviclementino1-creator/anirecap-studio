@@ -136,6 +136,25 @@ import {
 import { gerarEventos } from './services/gerar/eventos'
 import { cancelarRoteiro, gerarRoteiro } from './services/gerar/roteiro'
 import { miniaturasDasCenas } from './services/gerar/miniaturas'
+import {
+  pedidoDeAjusteSchema,
+  pedidoDeEstimativaSchema,
+  pedidoDeGeracaoSchema,
+  pedidoDeImportacaoSchema,
+  pedidoDeRegravarSchema,
+  type AudioDoTake,
+  type EstimativaDeCusto,
+  type PedidoDeAjuste,
+  type PedidoDeEstimativa,
+  type PedidoDeGeracao,
+  type PedidoDeImportacao,
+  type PedidoDeRegravar,
+  type ProgressoDaVoz,
+  type VozGerada,
+} from '@shared/voz'
+import { estimarVoz } from './services/voz/estimar'
+import { ajustarVoz, cancelarVoz, gerarVoz, importarAudio, regravarFrases } from './services/voz/gerar'
+import { aprovarVoz, audioDoTake, desaprovarVoz, escolherTakeDoRascunho } from './services/voz/takes'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -903,6 +922,71 @@ export function registerIpc(): void {
     }
     return miniaturasDasCenas(idDoEpisodio(episodioId), planoIds)
   })
+
+  // ------------------------------------- Gerar recap, passo 3 (Voz)
+  // Contrato e regras em shared/voz.ts; o motor e electron/services/voz/. Todo
+  // pedido passa pelo zod aqui: vira chamada paga, nome de arquivo e linha de
+  // comando do ffmpeg. A chave do provedor fica no main (getSettings).
+
+  const progressoDaVoz = (p: ProgressoDaVoz): void => enviarATodas(IPC.vozProgresso, p)
+
+  handle<[string, PedidoDeEstimativa], EstimativaDeCusto>(IPC.estimarVoz, async (rascunhoId, pedido) =>
+    estimarVoz(idDoRascunho(rascunhoId), pedidoDeEstimativaSchema.parse(pedido)),
+  )
+
+  handle<[string, PedidoDeGeracao], VozGerada>(IPC.gerarVoz, async (rascunhoId, pedido) =>
+    gerarVoz(idDoRascunho(rascunhoId), pedidoDeGeracaoSchema.parse(pedido), progressoDaVoz),
+  )
+
+  handle<[string, PedidoDeRegravar], VozGerada>(IPC.regravarFrases, async (rascunhoId, pedido) =>
+    regravarFrases(idDoRascunho(rascunhoId), pedidoDeRegravarSchema.parse(pedido), progressoDaVoz),
+  )
+
+  handle<[string, PedidoDeAjuste], VozGerada>(IPC.ajustarVoz, async (rascunhoId, pedido) =>
+    ajustarVoz(idDoRascunho(rascunhoId), pedidoDeAjusteSchema.parse(pedido), progressoDaVoz),
+  )
+
+  handle<[string, PedidoDeImportacao], VozGerada>(IPC.importarAudio, async (rascunhoId, pedido) => {
+    const conferido = pedidoDeImportacaoSchema.parse(pedido)
+    if (classifyFile(conferido.caminho) !== 'audio') {
+      throw new Error(`Esse arquivo nao e audio. Use ${AUDIO_EXTENSIONS.join(', ')}.`)
+    }
+    if (!existsSync(conferido.caminho)) throw new Error('Esse audio nao esta mais no disco.')
+    return importarAudio(idDoRascunho(rascunhoId), conferido, progressoDaVoz)
+  })
+
+  handle<[string, string], boolean>(IPC.cancelarVoz, async (rascunhoId, pedidoId) =>
+    cancelarVoz(idDoRascunho(rascunhoId), String(pedidoId).slice(0, 64)),
+  )
+
+  handle<[string, string], RascunhoDoRecap>(IPC.escolherTake, async (rascunhoId, takeId) =>
+    escolherTakeDoRascunho(idDoRascunho(rascunhoId), idDoTake(takeId)),
+  )
+
+  handle<[string], RascunhoDoRecap>(IPC.aprovarVoz, async (rascunhoId) => aprovarVoz(idDoRascunho(rascunhoId)))
+
+  handle<[string], RascunhoDoRecap>(IPC.desaprovarVoz, async (rascunhoId) =>
+    desaprovarVoz(idDoRascunho(rascunhoId)),
+  )
+
+  handle<[string, string], AudioDoTake>(IPC.urlDoAudio, async (rascunhoId, takeId) =>
+    audioDoTake(idDoRascunho(rascunhoId), idDoTake(takeId)),
+  )
+
+  handle<[], string | null>(IPC.escolherNarracao, async () => {
+    const r = await dialog.showOpenDialog({
+      title: 'Escolher a narracao gravada',
+      properties: ['openFile'],
+      filters: [{ name: 'Audio', extensions: [...AUDIO_EXTENSIONS] }],
+    })
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!
+  })
+}
+
+/** 't' + numero, como TakeDaVoz.id. */
+function idDoTake(valor: unknown): string {
+  if (typeof valor !== 'string' || !/^t\d{1,6}$/.test(valor)) throw new Error('Take invalido.')
+  return valor
 }
 
 /** 'ep_' + 40 hex, como o EpisodeIndex.id. Qualquer outra coisa e recusada. */

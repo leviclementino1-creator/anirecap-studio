@@ -162,7 +162,10 @@ export function transcribe(
   model: Settings['whisperModel'],
   onProgress: WhisperProgress,
   vocabulary: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<Transcript | null> {
+  // AniRecap Studio: o Cancelar da voz importada mata so ESTA transcricao.
+  if (signal) return transcribeCancelavel(audioPath, model, onProgress, vocabulary, signal)
   const chave = JSON.stringify([model, audioPath, [...vocabulary].sort()])
 
   const jaPedido = emAndamento.get(chave)
@@ -196,6 +199,53 @@ export function transcribe(
 
   emAndamento.set(chave, { promessa, ouvintes })
   return promessa
+}
+
+/**
+ * Uma transcricao que um Cancelar proprio derruba (AniRecap Studio, audio
+ * importado na voz). Sem carona de proposito: cancelar esta nao pode tirar a
+ * resposta de outra tela que esperasse o mesmo audio.
+ *
+ * Cancelou antes da vez dela: nem comeca, e a fila anda. Cancelou rodando: a
+ * fila e serial, entao o processo vivo agora e o DESTA tarefa -- ele morre, e
+ * a proxima transcricao nao fica esperando atras de um whisper-cli abandonado.
+ */
+function transcribeCancelavel(
+  audioPath: string,
+  model: Settings['whisperModel'],
+  onProgress: WhisperProgress,
+  vocabulary: readonly string[],
+  signal: AbortSignal,
+): Promise<Transcript | null> {
+  if (signal.aborted) return Promise.reject(new Error('Transcricao cancelada'))
+  return enfileirar(
+    () =>
+      new Promise<Transcript | null>((resolve, reject) => {
+        if (signal.aborted) {
+          reject(new Error('Transcricao cancelada'))
+          return
+        }
+        const desistir = (motivo: Error): void => reject(motivo)
+        const matar = (): void => {
+          for (const child of vivos) {
+            try {
+              child.kill()
+            } catch {
+              /* ja morreu sozinho */
+            }
+          }
+          reject(new Error('Transcricao cancelada'))
+        }
+        pendentes.add(desistir)
+        signal.addEventListener('abort', matar, { once: true })
+        transcrever(audioPath, model, onProgress, vocabulary)
+          .then(resolve, reject)
+          .finally(() => {
+            pendentes.delete(desistir)
+            signal.removeEventListener('abort', matar)
+          })
+      }),
+  )
 }
 
 async function transcrever(

@@ -50,6 +50,7 @@ import type {
   ResumoDoRascunho,
   RoteiroGerado,
 } from '@shared/roteiro'
+import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
 
 /**
  * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
@@ -343,6 +344,35 @@ const bridge: DangaiBridge = {
     ipcRenderer.on(IPC.roteiroProgresso, handler)
     return () => {
       ipcRenderer.off(IPC.roteiroProgresso, handler)
+    }
+  },
+
+  // Gerar recap, passo 3 (Voz)
+  estimarVoz: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.estimarVoz, rascunhoId, pedido) as Promise<IpcResult<EstimativaDeCusto>>,
+  gerarVoz: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.gerarVoz, rascunhoId, pedido) as Promise<IpcResult<VozGerada>>,
+  regravarFrases: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.regravarFrases, rascunhoId, pedido) as Promise<IpcResult<VozGerada>>,
+  ajustarVoz: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.ajustarVoz, rascunhoId, pedido) as Promise<IpcResult<VozGerada>>,
+  importarAudio: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.importarAudio, rascunhoId, pedido) as Promise<IpcResult<VozGerada>>,
+  cancelarVoz: (rascunhoId, pedidoId) =>
+    ipcRenderer.invoke(IPC.cancelarVoz, rascunhoId, pedidoId) as Promise<IpcResult<boolean>>,
+  escolherTake: (rascunhoId, takeId) =>
+    ipcRenderer.invoke(IPC.escolherTake, rascunhoId, takeId) as Promise<IpcResult<RascunhoDoRecap>>,
+  aprovarVoz: (rascunhoId) => ipcRenderer.invoke(IPC.aprovarVoz, rascunhoId) as Promise<IpcResult<RascunhoDoRecap>>,
+  desaprovarVoz: (rascunhoId) =>
+    ipcRenderer.invoke(IPC.desaprovarVoz, rascunhoId) as Promise<IpcResult<RascunhoDoRecap>>,
+  urlDoAudio: (rascunhoId, takeId) =>
+    ipcRenderer.invoke(IPC.urlDoAudio, rascunhoId, takeId) as Promise<IpcResult<AudioDoTake>>,
+  escolherNarracao: () => ipcRenderer.invoke(IPC.escolherNarracao) as Promise<IpcResult<string | null>>,
+  onVozProgresso: (listener) => {
+    const handler = (_event: unknown, progresso: ProgressoDaVoz): void => listener(progresso)
+    ipcRenderer.on(IPC.vozProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.vozProgresso, handler)
     }
   },
 }

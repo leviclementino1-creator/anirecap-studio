@@ -30,6 +30,17 @@ import type {
   Roteiro,
   RoteiroGerado,
 } from './roteiro'
+import type {
+  AudioDoTake,
+  EstimativaDeCusto,
+  PedidoDeAjuste,
+  PedidoDeEstimativa,
+  PedidoDeGeracao,
+  PedidoDeImportacao,
+  PedidoDeRegravar,
+  ProgressoDaVoz,
+  VozGerada,
+} from './voz'
 
 /**
  * Valores de runtime que o preload precisa, sem dependencias.
@@ -155,6 +166,21 @@ export const IPC = {
   miniaturasDasCenas: 'recap:miniaturas',
   /** main -> renderer, ProgressoDoRoteiro (texto de andamento das chamadas a IA) */
   roteiroProgresso: 'recap:roteiro-progresso',
+
+  // Gerar recap, passo 3 (Voz). Tipos em shared/voz.ts; o motor e electron/services/voz/.
+  estimarVoz: 'recap:voz-estimar',
+  gerarVoz: 'recap:voz-gerar',
+  regravarFrases: 'recap:voz-regravar',
+  ajustarVoz: 'recap:voz-ajustar',
+  importarAudio: 'recap:voz-importar',
+  cancelarVoz: 'recap:voz-cancelar',
+  escolherTake: 'recap:voz-escolher-take',
+  aprovarVoz: 'recap:voz-aprovar',
+  desaprovarVoz: 'recap:voz-desaprovar',
+  urlDoAudio: 'recap:voz-url-do-audio',
+  escolherNarracao: 'dialog:escolher-narracao',
+  /** main -> renderer, ProgressoDaVoz (andamento de gerar/regravar/ajustar/importar) */
+  vozProgresso: 'recap:voz-progresso',
 } as const
 
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
@@ -1065,4 +1091,48 @@ export interface DangaiBridge {
    */
   miniaturasDasCenas(episodioId: string, planoIds: readonly string[]): Promise<IpcResult<Record<string, string | null>>>
   onRoteiroProgresso(listener: (progresso: ProgressoDoRoteiro) => void): () => void
+
+  // ------------------------------------------------ Gerar recap, passo 3 (Voz)
+  // Tipos e regras em shared/voz.ts; o motor e electron/services/voz/. Como no
+  // passo 2, tudo que muda o rascunho devolve o rascunho INTEIRO do disco.
+  // Gastar SEMPRE passa por estimarVoz antes: gerarVoz/regravarFrases levam o
+  // `confirmado` que a tela mostrou, e o main recusa se o custo real passar.
+
+  /**
+   * Quanto custaria, sem gastar nada: caracteres, o que ja esta no cache e o
+   * saldo (GET /v1/user/subscription do ElevenLabs, gratis).
+   */
+  estimarVoz(rascunhoId: string, pedido: PedidoDeEstimativa): Promise<IpcResult<EstimativaDeCusto>>
+  /**
+   * Um take NOVO com o roteiro aprovado inteiro (UM pedido ao provedor, prosodia
+   * continua) e o pos. Serve para a primeira voz, "Gerar tudo de novo" e trocar
+   * de voz/modelo. Andamento por onVozProgresso; cancela por cancelarVoz.
+   */
+  gerarVoz(rascunhoId: string, pedido: PedidoDeGeracao): Promise<IpcResult<VozGerada>>
+  /**
+   * Take novo a partir do atual, gerando so as frases pedidas (+ as que
+   * mudaram no roteiro), com o contexto das vizinhas. Lista vazia = "Atualizar
+   * a voz" depois de editar o roteiro.
+   */
+  regravarFrases(rascunhoId: string, pedido: PedidoDeRegravar): Promise<IpcResult<VozGerada>>
+  /** Take novo a partir do BRUTO do atual so com outra velocidade/corte. Nao gasta. */
+  ajustarVoz(rascunhoId: string, pedido: PedidoDeAjuste): Promise<IpcResult<VozGerada>>
+  /** Take novo do audio que ele gravou: Whisper + alinhador com o texto do roteiro. Nao gasta. */
+  importarAudio(rascunhoId: string, pedido: PedidoDeImportacao): Promise<IpcResult<VozGerada>>
+  /** Para o pedido `pedidoId`. Resposta paga que ja chegou vira take so no historico. false = ja tinha terminado. */
+  cancelarVoz(rascunhoId: string, pedidoId: string): Promise<IpcResult<boolean>>
+  /** "Voltar para este take". Desaprova a voz. */
+  escolherTake(rascunhoId: string, takeId: string): Promise<IpcResult<RascunhoDoRecap>>
+  /** "Aprovar voz". Recusa sem roteiro aprovado ou com a voz desatualizada. */
+  aprovarVoz(rascunhoId: string): Promise<IpcResult<RascunhoDoRecap>>
+  desaprovarVoz(rascunhoId: string): Promise<IpcResult<RascunhoDoRecap>>
+  /**
+   * O WAV do take publicado no servidor de midia local (o mesmo do Dangai:
+   * media-src da CSP ja libera 127.0.0.1), com a onda para a Waveform. Pede
+   * por id, e nao por caminho, para a tela nunca publicar arquivo qualquer.
+   */
+  urlDoAudio(rascunhoId: string, takeId: string): Promise<IpcResult<AudioDoTake>>
+  /** Dialogo de abrir a narracao gravada (.wav/.mp3/.m4a...). null = fechou sem escolher. */
+  escolherNarracao(): Promise<IpcResult<string | null>>
+  onVozProgresso(listener: (progresso: ProgressoDaVoz) => void): () => void
 }

@@ -5,9 +5,17 @@ v1.65.0 (`faahpla/dangai@7ceaedd`; commit-base local `d9aa005`) que vai
 ganhando a geração do AniRecap por cima. O plano, as fases e as decisões do Levi
 estão em `G:/ClaudeEditor/fusao/PLANO.md`: leia "Decisões do Levi" e a fase atual
 antes de mexer. Estado: **F1** em andamento. O assistente "Gerar recap" já tem
-o passo 1 (Episódio: índice, falas, OP/ED) e o passo 2 (Roteiro: eventos e
-roteiro pelo Gemini, com versões e aprovação, salvo em `<userData>/recaps`).
-Voz (parte 3) e Cenas (parte 4) ainda não.
+o passo 1 (Episódio: índice, falas, OP/ED), o passo 2 (Roteiro: eventos e
+roteiro pelo Gemini, com versões e aprovação, salvo em `<userData>/recaps`) e
+o passo 3 (Voz: ElevenLabs, Fish Audio ou áudio importado; corte de pausas,
+takes, regravar frase e aprovação, no mesmo rascunho). Cenas (parte 4) ainda não.
+
+Voz custa dinheiro do Levi: toda chamada paga passa pela pergunta de custo
+(`confirmado`), e o cache por hash (`<userData>/recaps/cache/voz/`) nunca deixa
+pagar duas vezes a mesma leitura. Para testar, use o provedor falso
+(`scripts/teste/v-voz-motor.ts`) e o áudio sintético de `v-voz-sinal.ts`;
+`v-voz-real.ts` gasta crédito de verdade (semeia o cache pago, confere o teto
+total e, com `SO_CACHE=1`, recusa qualquer passo que cobraria).
 
 ## Regra central (do Dangai, mantida)
 
@@ -46,8 +54,9 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio) e `roteiro.ts` (eventos, roteiro e rascunho do recap) |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio), `roteiro.ts` (eventos, roteiro e rascunho do recap) e `voz.ts` (takes da narração, palavras com tempo, custo) |
 | `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 e passo 2 (prompts, cache de IA, rascunho) |
+| `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e velocidade, volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
 | `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente |
 | `scripts/` | ícone, SFX, `release.mjs` e testes manuais em `scripts/teste/` |
 

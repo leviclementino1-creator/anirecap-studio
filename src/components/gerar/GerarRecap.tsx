@@ -9,12 +9,16 @@ import {
   type PassoDoAssistente,
 } from '@/store/gerar'
 import { escutarRoteiro, roteiroAprovado, useRoteiro } from '@/store/gerar-roteiro'
+import { escutarVoz, useSituacaoDaVoz, useVoz } from '@/store/gerar-voz'
 import { useProject } from '@/store/project'
+import { classifyFile } from '@shared/channels'
 import { AndamentoDaAnalise, Indexando } from './AndamentoDaAnalise'
 import { AreaDeSoltar, CartaoDoEpisodio } from './CartaoDoEpisodio'
+import { PassoDaVoz } from './PassoDaVoz'
 import { PassoDoRoteiro } from './PassoDoRoteiro'
 import { PedidoDeDescoberta, ResultadoDaBusca } from './ResultadoDaBusca'
 import { ResumoDoEpisodio } from './ResumoDoEpisodio'
+import { RodapeDaVoz } from './RodapeDaVoz'
 import { RodapeDoRoteiro } from './RodapeDoRoteiro'
 import { Botao } from './pecas'
 
@@ -27,8 +31,8 @@ const PASSOS = [
 
 /**
  * O ASSISTENTE "GERAR RECAP": do episodio ao projeto, em quatro paradas
- * (Episodio -> Roteiro -> Voz -> Cenas). Os passos 1 e 2 existem; o 3 e o 4
- * aparecem apagados, para o caminho inteiro estar a vista desde ja.
+ * (Episodio -> Roteiro -> Voz -> Cenas). Os passos 1, 2 e 3 existem; o 4
+ * aparece apagado, para o caminho inteiro estar a vista desde ja.
  *
  * Tela cheia por cima do app, como a Biblioteca -- e um lugar, nao um aviso.
  * Fica ABAIXO da Biblioteca, das Configuracoes e da paleta (z-35 contra 40 e
@@ -46,6 +50,7 @@ export function GerarRecap() {
   // continua ouvindo o motor com a tela fechada.
   useEffect(() => escutarGerar(), [])
   useEffect(() => escutarRoteiro(), [])
+  useEffect(() => escutarVoz(), [])
 
   if (!aberto) return null
   return <Assistente />
@@ -59,11 +64,16 @@ function Assistente() {
   const openSettings = useProject((s) => s.openSettings)
   // A IA escrevendo o roteiro: trocar de episodio agora deixaria a resposta gravando no rascunho de outro, fora da vista.
   const temIa = useRoteiro((s) => s.geracao !== null)
+  // O mesmo para a voz sendo gerada (passo 3).
+  const temVoz = useVoz((s) => s.pedido !== null)
 
   const [arrastando, setArrastando] = useState(false)
+  /** No passo 3 um audio solto vira a narracao: o aviso do arraste diz isso (pelo tipo, quando o sistema da). */
+  const [arrastandoAudio, setArrastandoAudio] = useState(false)
   const profundidade = useRef(0)
 
   const temArquivos = (e: React.DragEvent): boolean => e.dataTransfer.types.includes('Files')
+  const noPassoDaVoz = passo === 3 && fase !== 'vazio'
 
   return (
     <div
@@ -76,6 +86,7 @@ function Assistente() {
         e.preventDefault()
         profundidade.current += 1
         setArrastando(true)
+        setArrastandoAudio(Array.from(e.dataTransfer.items).some((i) => i.kind === 'file' && i.type.startsWith('audio/')))
       }}
       onDragOver={(e) => {
         if (!temArquivos(e)) return
@@ -103,10 +114,35 @@ function Assistente() {
         if (caminhos.length === 0) return
         // O store confere a extensao e diz o que fazer com o que nao for episodio.
         const gerar = useGerar.getState()
+        /*
+         * No passo 3 o audio solto e a narracao gravada por ele (o texto vem do
+         * roteiro, o audio so da os tempos). Episodio continua trocando de
+         * episodio; o resto ganha o recado no rodape DESTE passo (o do passo 1
+         * nao aparece aqui).
+         */
+        if (noPassoDaVoz) {
+          const audio = caminhos.find((c) => classifyFile(c) === 'audio')
+          if (audio) {
+            void useVoz.getState().importar(audio)
+            return
+          }
+          if (!caminhos.some(ehEpisodio)) {
+            useVoz.setState({ erro: 'Solte um audio (.wav, .mp3, .m4a) ou um episodio.' })
+            return
+          }
+        }
         const escolhido = caminhos.find(ehEpisodio) ?? caminhos[0]!
         if (escolhido === gerar.arquivo) return
         if (useRoteiro.getState().geracao) {
           useRoteiro.setState({ erro: 'Cancele a IA antes de trocar de episodio.' })
+          return
+        }
+        if (useVoz.getState().pedido) {
+          // O recado vai para o rodape do passo na tela (cada passo mostra o erro da store dele).
+          const erro = 'Cancele a voz antes de trocar de episodio.'
+          if (noPassoDaVoz) useVoz.setState({ erro })
+          else if (passo === 2) useRoteiro.setState({ erro })
+          else useGerar.setState({ erro })
           return
         }
         void gerar.carregarArquivo(escolhido)
@@ -130,7 +166,15 @@ function Assistente() {
           type="button"
           onClick={fechar}
           aria-label="Fechar"
-          title={temJob ? 'Fechar (Esc). A analise continua rodando.' : temIa ? 'Fechar (Esc). A IA continua.' : 'Fechar (Esc)'}
+          title={
+            temJob
+              ? 'Fechar (Esc). A analise continua rodando.'
+              : temIa
+                ? 'Fechar (Esc). A IA continua.'
+                : temVoz
+                  ? 'Fechar (Esc). A voz continua.'
+                  : 'Fechar (Esc)'
+          }
           className="grid size-6 place-items-center rounded-sm text-ink-3 transition-colors duration-150 hover:text-ink"
         >
           <X size={13} strokeWidth={1.5} />
@@ -148,6 +192,8 @@ function Assistente() {
           <div className="flex h-full p-6">
             <AreaDeSoltar arrastando={arrastando} />
           </div>
+        ) : passo === 3 ? (
+          <PassoDaVoz />
         ) : passo === 2 ? (
           <PassoDoRoteiro />
         ) : (
@@ -165,14 +211,26 @@ function Assistente() {
           <div className="pointer-events-none fixed inset-x-0 bottom-[52px] top-[46px] z-20 grid place-items-center bg-bg/90 p-6">
             <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-accent bg-accent-dim">
               <span className="text-[32px] font-semibold tracking-tight text-accent">
-                {temJob ? 'Cancele a analise antes de trocar' : temIa ? 'Cancele a IA antes de trocar' : 'Solte para trocar de episodio'}
+                {noPassoDaVoz && arrastandoAudio
+                  ? temVoz
+                    ? 'Espere a voz terminar'
+                    : 'Solte para importar a narracao'
+                  : temJob
+                    ? 'Cancele a analise antes de trocar'
+                    : temIa
+                      ? 'Cancele a IA antes de trocar'
+                      : temVoz
+                        ? 'Cancele a voz antes de trocar'
+                        : noPassoDaVoz
+                          ? 'Solte a narracao ou um episodio'
+                          : 'Solte para trocar de episodio'}
               </span>
             </div>
           </div>
         )}
       </div>
 
-      {passo === 2 && fase !== 'vazio' ? <RodapeDoRoteiro /> : <Rodape />}
+      {noPassoDaVoz ? <RodapeDaVoz /> : passo === 2 && fase !== 'vazio' ? <RodapeDoRoteiro /> : <Rodape />}
     </div>
   )
 }
@@ -180,9 +238,9 @@ function Assistente() {
 /**
  * Os quatro passos no cabecalho, numa barra so -- o mesmo seletor das
  * Configuracoes (Geral / Atalhos) e dos Segmentos do painel. O passo onde se
- * esta fica marcado; o 1 e o 2 viram botao quando da para ir (o 2 so com o
- * episodio pronto e a regua salva); o 3 e o 4 sao "em breve" (no tooltip, para
- * nao repetir a mesma frase na tela).
+ * esta fica marcado; o 1, o 2 e o 3 viram botao quando da para ir (o 2 so com
+ * o episodio pronto e a regua salva, o 3 so com o roteiro aprovado); o 4 e
+ * "em breve" (no tooltip, para nao repetir a mesma frase na tela).
  */
 function Passos() {
   const passo = useGerar((s) => s.passo)
@@ -192,14 +250,16 @@ function Passos() {
   const episodioId = useGerar((s) => s.indice?.id ?? null)
   const irParaPasso = useGerar((s) => s.irParaPasso)
   const aprovado = useRoteiro((s) => episodioId !== null && s.episodioId === episodioId && roteiroAprovado(s))
+  const vozAprovada = useSituacaoDaVoz() === 'aprovada' && aprovado
 
   return (
     <ol aria-label="Passos do assistente" className="ml-3 flex items-center gap-0.5 rounded-sm border border-line bg-elevated p-0.5">
       {PASSOS.map((p) => {
         const atual = p.n === passo
-        const feito = (p.n === 1 && fase === 'pronto') || (p.n === 2 && aprovado)
-        const destino: PassoDoAssistente | null = p.n === 1 ? 1 : p.n === 2 ? 2 : null
-        const clicavel = !atual && destino !== null && (destino === 1 || pode2)
+        const feito = (p.n === 1 && fase === 'pronto') || (p.n === 2 && aprovado) || (p.n === 3 && vozAprovada)
+        const destino: PassoDoAssistente | null = p.n === 4 ? null : p.n
+        const clicavel =
+          !atual && destino !== null && (destino === 1 || (destino === 2 && pode2) || (destino === 3 && pode2 && aprovado))
         const dica = atual
           ? undefined
           : p.n === 1
@@ -210,7 +270,13 @@ function Passos() {
                 : mudaram
                   ? 'Salve as marcacoes de OP/ED antes'
                   : 'Primeiro o episodio'
-              : 'Em breve'
+              : p.n === 3
+                ? !pode2
+                  ? 'Primeiro o episodio'
+                  : aprovado
+                    ? 'Ir a voz'
+                    : 'Aprove o roteiro antes'
+                : 'Em breve'
         const classe = [
           'flex h-6 items-center gap-1.5 rounded-[3px] px-2.5 text-[11px]',
           atual

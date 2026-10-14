@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import type { Cue, EpisodeIndex, Exclusao, Plano } from './episodio'
+// So o schema do passo 3: voz.ts importa daqui apenas TIPOS, entao nao ha ciclo de valor.
+import { estadoDaVozSchema } from './voz'
 
 /**
  * O ROTEIRO, do jeito que o Studio o entende: o contrato do passo 2 do
@@ -27,8 +29,15 @@ import type { Cue, EpisodeIndex, Exclusao, Plano } from './episodio'
  * pequeno. As funcoes puras do fim rodam igual no main e no renderer.
  */
 
-/** Sobe quando a forma do <id>.json muda de um jeito que o leitor antigo nao entende. */
-export const RASCUNHO_VERSAO = 1 as const
+/**
+ * Sobe quando a forma do <id>.json muda de um jeito que o leitor antigo nao entende.
+ * 2 = ganhou `voz` (o passo 3, shared/voz.ts). O v1 ainda abre: le como v2 com
+ * `voz: null` e e gravado como v2 na proxima mudanca.
+ */
+export const RASCUNHO_VERSAO = 2 as const
+
+/** As versoes que o leitor entende; todas sobem para RASCUNHO_VERSAO ao ler. */
+const versaoDoRascunhoSchema = z.literal([1, RASCUNHO_VERSAO]).transform((): typeof RASCUNHO_VERSAO => RASCUNHO_VERSAO)
 
 /**
  * Ritmo da narracao falada em PT-BR, medido no AniRecap: ~2,7 palavras por
@@ -203,14 +212,14 @@ export type Roteiro = z.infer<typeof roteiroSchema>
 // ------------------------------------------------------------------ rascunho
 
 /**
- * O RASCUNHO DO RECAP: tudo que o passo 2 produz, gravado em
+ * O RASCUNHO DO RECAP: tudo que os passos 2 (roteiro) e 3 (voz) produzem, gravado em
  * <userData>/recaps/<id>.json (escrita atomica, como o episodio.json).
  *
  * Um rascunho por episodio por enquanto: abrirRascunho(episodioId) reabre o
  * mais recente daquele episodio, ou cria.
  */
 const rascunhoBase = z.object({
-  versao: z.literal(RASCUNHO_VERSAO),
+  versao: versaoDoRascunhoSchema,
   /** 'rc_' + 12 hex do episodio + '_' + carimbo base36. Seguro para nome de arquivo. */
   id: z.string().regex(/^rc_[0-9a-z_]+$/),
   episodioId: z.string().regex(/^ep_[0-9a-f]{40}$/),
@@ -245,6 +254,13 @@ const rascunhoBase = z.object({
   aprovadoEm: z.string().nullable(),
   criadoEm: z.string(),
   atualizadoEm: z.string(),
+  /**
+   * O passo 3 (Voz): takes, o atual e a aprovacao. null = o passo 3 nunca
+   * rodou (e como um rascunho v1 le). As transicoes daqui (editar, trocar de
+   * versao, aprovar o roteiro) NAO mexem nela: quem diz se ela ficou velha e
+   * situacaoDaVoz/frasesMudadas, pelo texto falado.
+   */
+  voz: estadoDaVozSchema.nullable().default(null),
 })
 
 export const rascunhoDoRecapSchema = rascunhoBase.superRefine((r, ctx) => {

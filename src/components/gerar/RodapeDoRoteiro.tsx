@@ -33,8 +33,7 @@ function irAte(problema: ProblemaDoRoteiro): void {
  * esta escrevendo agora -- clicar leva ate o problema; e, sem nada disso, so o
  * "Salvo" discreto.
  *
- * Aprovado, o "Proximo: Voz (parte 3)" aparece DESLIGADO de verdade: a parte
- * 3 ainda nao existe.
+ * Aprovado, o "Proximo: Voz (parte 3)" leva ao passo 3.
  */
 export function RodapeDoRoteiro() {
   const irParaPasso = useGerar((s) => s.irParaPasso)
@@ -82,8 +81,8 @@ export function RodapeDoRoteiro() {
 
   const aprovarEFocar = async (): Promise<void> => {
     await aprovar()
-    // O botao virou "Aprovado": o foco vai para o "Desfazer" ao lado.
-    focarBotao('desaprovar')
+    // O botao virou "Aprovado": o foco vai para o "Proximo: Voz" (Enter segue), ou o "Desfazer".
+    focarBotao('ir-a-voz', 'desaprovar')
   }
 
   return (
@@ -150,8 +149,14 @@ export function RodapeDoRoteiro() {
           >
             Desfazer
           </Link>
-          {/* Desligado de verdade: o clique nem chega (disabled). A parte 3 liga aqui. */}
-          <Botao onClick={() => undefined} disabled title="Em breve">
+          {/* A acao que leva adiante: o rosa da tela, como o "Proximo: Roteiro" do passo 1. */}
+          <Botao
+            principal
+            foco="ir-a-voz"
+            onClick={() => irParaPasso(3)}
+            disabled={geracao !== null}
+            title="Ir a voz (passo 3). O roteiro aprovado e o que vai ser narrado."
+          >
             <AudioLines size={13} strokeWidth={1.5} />
             Proximo: Voz (parte 3)
             <ArrowRight size={13} strokeWidth={1.5} />

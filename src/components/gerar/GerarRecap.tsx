@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Library as LibraryIcon, Settings2, X } from 'lucide-react'
-import { ehEpisodio, escutarGerar, useGerar, type FaseDoEpisodio } from '@/store/gerar'
+import { ArrowRight, Check, Library as LibraryIcon, Settings2, X } from 'lucide-react'
+import {
+  ehEpisodio,
+  escutarGerar,
+  podeIrAoRoteiro,
+  useGerar,
+  type FaseDoEpisodio,
+  type PassoDoAssistente,
+} from '@/store/gerar'
+import { escutarRoteiro, roteiroAprovado, useRoteiro } from '@/store/gerar-roteiro'
 import { useProject } from '@/store/project'
 import { AndamentoDaAnalise, Indexando } from './AndamentoDaAnalise'
 import { AreaDeSoltar, CartaoDoEpisodio } from './CartaoDoEpisodio'
+import { PassoDoRoteiro } from './PassoDoRoteiro'
 import { PedidoDeDescoberta, ResultadoDaBusca } from './ResultadoDaBusca'
 import { ResumoDoEpisodio } from './ResumoDoEpisodio'
+import { RodapeDoRoteiro } from './RodapeDoRoteiro'
 import { Botao } from './pecas'
 
 const PASSOS = [
@@ -17,8 +27,8 @@ const PASSOS = [
 
 /**
  * O ASSISTENTE "GERAR RECAP": do episodio ao projeto, em quatro paradas
- * (Episodio -> Roteiro -> Voz -> Cenas). So o passo 1 existe por enquanto; os
- * outros aparecem apagados, para o caminho inteiro estar a vista desde ja.
+ * (Episodio -> Roteiro -> Voz -> Cenas). Os passos 1 e 2 existem; o 3 e o 4
+ * aparecem apagados, para o caminho inteiro estar a vista desde ja.
  *
  * Tela cheia por cima do app, como a Biblioteca -- e um lugar, nao um aviso.
  * Fica ABAIXO da Biblioteca, das Configuracoes e da paleta (z-35 contra 40 e
@@ -35,6 +45,7 @@ export function GerarRecap() {
   // A escuta mora aqui, e nao no Assistente: o componente monta com o app e
   // continua ouvindo o motor com a tela fechada.
   useEffect(() => escutarGerar(), [])
+  useEffect(() => escutarRoteiro(), [])
 
   if (!aberto) return null
   return <Assistente />
@@ -42,9 +53,12 @@ export function GerarRecap() {
 
 function Assistente() {
   const fase = useGerar((s) => s.fase)
+  const passo = useGerar((s) => s.passo)
   const temJob = useGerar((s) => s.job !== null)
   const fechar = useGerar((s) => s.fechar)
   const openSettings = useProject((s) => s.openSettings)
+  // A IA escrevendo o roteiro: trocar de episodio agora deixaria a resposta gravando no rascunho de outro, fora da vista.
+  const temIa = useRoteiro((s) => s.geracao !== null)
 
   const [arrastando, setArrastando] = useState(false)
   const profundidade = useRef(0)
@@ -91,13 +105,17 @@ function Assistente() {
         const gerar = useGerar.getState()
         const escolhido = caminhos.find(ehEpisodio) ?? caminhos[0]!
         if (escolhido === gerar.arquivo) return
+        if (useRoteiro.getState().geracao) {
+          useRoteiro.setState({ erro: 'Cancele a IA antes de trocar de episodio.' })
+          return
+        }
         void gerar.carregarArquivo(escolhido)
       }}
     >
       {/* O mesmo cabecalho da Biblioteca: 46 px, titulo de 15 px, acoes no canto. */}
       <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-line px-5">
         <h2 className="text-[15px] font-semibold text-ink">Gerar recap</h2>
-        <Passos fase={fase} />
+        <Passos />
         <span className="flex-1" />
         <button
           type="button"
@@ -112,19 +130,26 @@ function Assistente() {
           type="button"
           onClick={fechar}
           aria-label="Fechar"
-          title={temJob ? 'Fechar (Esc). A analise continua rodando.' : 'Fechar (Esc)'}
+          title={temJob ? 'Fechar (Esc). A analise continua rodando.' : temIa ? 'Fechar (Esc). A IA continua.' : 'Fechar (Esc)'}
           className="grid size-6 place-items-center rounded-sm text-ink-3 transition-colors duration-150 hover:text-ink"
         >
           <X size={13} strokeWidth={1.5} />
         </button>
       </header>
 
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
+      {/*
+       * scrollbar-gutter: o lugar da barra de rolagem fica reservado. Sem ele o
+       * conteudo pulava 5 px para o lado quando a barra aparecia ou sumia (passo
+       * 1 -> 2, o roteiro chegando depois da geracao).
+       */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         {fase === 'vazio' ? (
           // Sem episodio, a area de soltar e a tela inteira, como o Dropzone da tela inicial.
           <div className="flex h-full p-6">
             <AreaDeSoltar arrastando={arrastando} />
           </div>
+        ) : passo === 2 ? (
+          <PassoDoRoteiro />
         ) : (
           <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4 px-6 py-6">
             <CartaoDoEpisodio />
@@ -140,46 +165,81 @@ function Assistente() {
           <div className="pointer-events-none fixed inset-x-0 bottom-[52px] top-[46px] z-20 grid place-items-center bg-bg/90 p-6">
             <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-accent bg-accent-dim">
               <span className="text-[32px] font-semibold tracking-tight text-accent">
-                {temJob ? 'Cancele a analise antes de trocar' : 'Solte para trocar de episodio'}
+                {temJob ? 'Cancele a analise antes de trocar' : temIa ? 'Cancele a IA antes de trocar' : 'Solte para trocar de episodio'}
               </span>
             </div>
           </div>
         )}
       </div>
 
-      <Rodape />
+      {passo === 2 && fase !== 'vazio' ? <RodapeDoRoteiro /> : <Rodape />}
     </div>
   )
 }
 
 /**
  * Os quatro passos no cabecalho, numa barra so -- o mesmo seletor das
- * Configuracoes (Geral / Atalhos) e dos Segmentos do painel. Sao marcadores,
- * nao botoes: o passo 1 e onde se esta, e do 2 em diante e "em breve" (no
- * tooltip, para nao repetir a mesma frase tres vezes na tela).
+ * Configuracoes (Geral / Atalhos) e dos Segmentos do painel. O passo onde se
+ * esta fica marcado; o 1 e o 2 viram botao quando da para ir (o 2 so com o
+ * episodio pronto e a regua salva); o 3 e o 4 sao "em breve" (no tooltip, para
+ * nao repetir a mesma frase na tela).
  */
-function Passos({ fase }: { fase: FaseDoEpisodio }) {
+function Passos() {
+  const passo = useGerar((s) => s.passo)
+  const fase = useGerar((s) => s.fase)
+  const pode2 = useGerar(podeIrAoRoteiro)
+  const mudaram = useGerar((s) => s.exclusoesMudaram)
+  const episodioId = useGerar((s) => s.indice?.id ?? null)
+  const irParaPasso = useGerar((s) => s.irParaPasso)
+  const aprovado = useRoteiro((s) => episodioId !== null && s.episodioId === episodioId && roteiroAprovado(s))
+
   return (
     <ol aria-label="Passos do assistente" className="ml-3 flex items-center gap-0.5 rounded-sm border border-line bg-elevated p-0.5">
       {PASSOS.map((p) => {
-        const atual = p.n === 1
-        const feito = atual && fase === 'pronto'
-        return (
-          <li
-            key={p.n}
-            aria-current={atual ? 'step' : undefined}
-            title={atual ? undefined : 'Em breve'}
-            className={[
-              'flex h-6 items-center gap-1.5 rounded-[3px] px-2.5 text-[11px]',
-              atual ? 'bg-accent-dim text-ink ring-1 ring-inset ring-accent' : 'text-ink-3',
-            ].join(' ')}
-          >
+        const atual = p.n === passo
+        const feito = (p.n === 1 && fase === 'pronto') || (p.n === 2 && aprovado)
+        const destino: PassoDoAssistente | null = p.n === 1 ? 1 : p.n === 2 ? 2 : null
+        const clicavel = !atual && destino !== null && (destino === 1 || pode2)
+        const dica = atual
+          ? undefined
+          : p.n === 1
+            ? 'Voltar ao episodio'
+            : p.n === 2
+              ? pode2
+                ? 'Ir ao roteiro'
+                : mudaram
+                  ? 'Salve as marcacoes de OP/ED antes'
+                  : 'Primeiro o episodio'
+              : 'Em breve'
+        const classe = [
+          'flex h-6 items-center gap-1.5 rounded-[3px] px-2.5 text-[11px]',
+          atual
+            ? 'bg-accent-dim text-ink ring-1 ring-inset ring-accent'
+            : clicavel
+              ? 'text-ink-2 transition-colors hover:bg-surface hover:text-ink'
+              : 'text-ink-3',
+        ].join(' ')
+        const conteudo = (
+          <>
             {feito ? (
               <Check size={11} strokeWidth={2} className="text-accent" aria-label="feito" />
             ) : (
               <span className="tnum">{p.n}</span>
             )}
             {p.nome}
+          </>
+        )
+        return (
+          <li key={p.n} aria-current={atual ? 'step' : undefined}>
+            {clicavel && destino !== null ? (
+              <button type="button" onClick={() => irParaPasso(destino)} title={dica} className={classe}>
+                {conteudo}
+              </button>
+            ) : (
+              <span title={dica} className={classe}>
+                {conteudo}
+              </span>
+            )}
           </li>
         )
       })}
@@ -237,6 +297,8 @@ function Rodape() {
   const limparErro = useGerar((s) => s.limparErro)
   const limparRecado = useGerar((s) => s.limparRecado)
   const verNaBiblioteca = useGerar((s) => s.verNaBiblioteca)
+  const irParaPasso = useGerar((s) => s.irParaPasso)
+  const pode2 = useGerar(podeIrAoRoteiro)
   const naBiblioteca = useNaBibliotecaDoEditor()
 
   const texto: Record<FaseDoEpisodio, string> = {
@@ -280,6 +342,18 @@ function Rodape() {
         >
           <LibraryIcon size={13} strokeWidth={1.5} className="text-accent" />
           Ver cenas na Biblioteca
+        </Botao>
+      )}
+      {/* A acao que leva adiante: o rosa da tela (com marcacao por salvar, o Salvar assume). */}
+      {fase === 'pronto' && (
+        <Botao
+          principal
+          onClick={() => irParaPasso(2)}
+          disabled={!pode2}
+          title={pode2 ? 'Ir ao roteiro (passo 2)' : 'Salve ou desfaca as marcacoes de OP/ED antes'}
+        >
+          Proximo: Roteiro
+          <ArrowRight size={13} strokeWidth={1.5} />
         </Botao>
       )}
     </footer>

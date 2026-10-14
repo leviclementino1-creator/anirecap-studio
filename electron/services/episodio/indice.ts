@@ -28,6 +28,7 @@ import {
   marcacaoDaSerie,
 } from './perfil'
 import { garantirGravavel } from './protegidas'
+import { indiceMovido, relocarIndice } from './relocar'
 import { skipRangesDoAnime } from './skip-ranges'
 import { sondarArquivo, type SondaDoArquivo } from './sondar'
 
@@ -225,7 +226,12 @@ export async function indexarEpisodio(
   garantirGravavel(dirname(destino))
 
   const anime = args.palpite.anime.trim() || basename(dirname(args.pastaDoEpisodio)) || 'Sem nome'
-  const anterior = lerIndiceDoDisco(destino)
+  const lido = lerIndiceDoDisco(destino)
+  // A pasta do episodio mudou de lugar com o indice dentro (a biblioteca do
+  // Studio foi movida): os caminhos dele apontam para a pasta velha. Com a
+  // raiz trocada ele volta a valer aqui, e o reaproveitar abaixo regrava.
+  const movido = lido !== null && args.origem === 'studio' && indiceMovido(lido, destino)
+  const anterior = lido && movido ? relocarIndice(lido, args.pastaDoEpisodio) : lido
 
   // REAPROVEITAR: mesmo .mkv (id), mesma pasta, mesma faixa, e a pasta nao
   // mudou desde o indice (mesmos mp4 e shots.json mais velho que ele).
@@ -250,6 +256,7 @@ export async function indexarEpisodio(
         fonte: { ...anterior.fonte, path: args.path },
       }
       const mudou =
+        movido ||
         corrigido.anime !== anterior.anime ||
         corrigido.temporada !== anterior.temporada ||
         corrigido.episodio !== anterior.episodio ||
@@ -350,7 +357,7 @@ export async function indexarEpisodio(
 // ---------------------------------------------------------------- exclusoes
 
 /** Acha o episodio.json pelo id: o lembrado no perfil, o de _indices ou uma varredura curta. */
-function acharIndice(id: string): string | null {
+export function acharIndice(id: string): string | null {
   const confere = (caminho: string | null): boolean => {
     if (!caminho || !existsSync(caminho)) return false
     try {
@@ -401,8 +408,13 @@ export async function salvarExclusoes(indiceId: string, exclusoes: Exclusao[]): 
   if (!caminho) throw new Error('Nao achei os dados desse episodio no disco. Analise o episodio de novo.')
   garantirGravavel(dirname(caminho))
 
-  const atual = lerIndiceDoDisco(caminho)
-  if (!atual) throw new Error('Os dados desse episodio nao abrem (episodio.json quebrado). Analise o episodio de novo.')
+  const lido = lerIndiceDoDisco(caminho)
+  if (!lido) throw new Error('Os dados desse episodio nao abrem (episodio.json quebrado). Analise o episodio de novo.')
+  // A pasta do episodio mudou de lugar com o indice dentro (a biblioteca do
+  // Studio foi movida) e ele ainda nao foi regravado -- o "voltar onde parou"
+  // abre pelo abrirIndicePorId, que corrige so em memoria. Gravar o lido
+  // devolveria a tela os caminhos da pasta velha, e o "Ler de novo" quebrava.
+  const atual = indiceMovido(lido, caminho) ? relocarIndice(lido, dirname(caminho)) : lido
 
   const indice = episodeIndexSchema.parse({
     ...atual,

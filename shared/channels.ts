@@ -20,6 +20,16 @@ import type {
   SondaDoEpisodio,
   StatusDoMotor,
 } from './episodio'
+import type {
+  EventosGerados,
+  PedidoDeRoteiro,
+  ProgressoDoRoteiro,
+  RascunhoAberto,
+  RascunhoDoRecap,
+  ResumoDoRascunho,
+  Roteiro,
+  RoteiroGerado,
+} from './roteiro'
 
 /**
  * Valores de runtime que o preload precisa, sem dependencias.
@@ -126,6 +136,20 @@ export const IPC = {
   analiseProgresso: 'motor:progresso',
   /** main -> renderer, FimDaAnalise (uma vez por job) */
   analiseFim: 'motor:fim',
+
+  // Gerar recap, passo 2 (Roteiro). Tipos em shared/roteiro.ts.
+  abrirRascunho: 'recap:abrir-rascunho',
+  listarRascunhos: 'recap:listar-rascunhos',
+  gerarEventos: 'recap:gerar-eventos',
+  gerarRoteiro: 'recap:gerar-roteiro',
+  cancelarRoteiro: 'recap:cancelar-roteiro',
+  salvarRoteiro: 'recap:salvar-roteiro',
+  escolherVersao: 'recap:escolher-versao',
+  aprovarRoteiro: 'recap:aprovar-roteiro',
+  desaprovarRoteiro: 'recap:desaprovar-roteiro',
+  miniaturasDasCenas: 'recap:miniaturas',
+  /** main -> renderer, ProgressoDoRoteiro (texto de andamento das chamadas a IA) */
+  roteiroProgresso: 'recap:roteiro-progresso',
 } as const
 
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
@@ -894,4 +918,59 @@ export interface DangaiBridge {
    * removeu ou ajustou) e devolve o indice gravado.
    */
   salvarExclusoes(indiceId: string, exclusoes: readonly Exclusao[]): Promise<IpcResult<EpisodeIndex>>
+
+  // -------------------------------------------- Gerar recap, passo 2 (Roteiro)
+  // Tipos e regras em shared/roteiro.ts; o cerebro e electron/services/gerar/.
+  // Tudo que muda o rascunho devolve o rascunho INTEIRO como ficou no disco: a
+  // tela troca o dela por ele, sem remendar.
+
+  /**
+   * Abre o rascunho do recap deste episodio (o mais recente) ou cria um vazio.
+   * Devolve junto o indice do episodio, achado pelo id e com os caminhos
+   * corrigidos se a biblioteca mudou de lugar. Nao chama a IA.
+   */
+  abrirRascunho(episodioId: string, novo?: boolean): Promise<IpcResult<RascunhoAberto>>
+  /** Os rascunhos gravados, o mais recente primeiro (para reabrir onde parou). */
+  listarRascunhos(): Promise<IpcResult<ResumoDoRascunho[]>>
+  /**
+   * Os ACONTECIMENTOS do episodio (15-40), presos as falas. Se o rascunho ja
+   * tem eventos, devolve os mesmos sem chamar a IA (os roteiros citam esses
+   * ids). Andamento por onRoteiroProgresso.
+   */
+  gerarEventos(rascunhoId: string): Promise<IpcResult<EventosGerados>>
+  /**
+   * Escreve uma versao NOVA do roteiro e a poe na tela (`atual`). Sem eventos
+   * ainda, gera os eventos antes. Sem `secaoId`: o roteiro inteiro ("Outra
+   * versao"); com `secaoId`: so aquela parte da versao atual ("Refazer esta
+   * parte"). `pedido.base` = a tela com edicao nao gravada (o main grava antes).
+   */
+  gerarRoteiro(rascunhoId: string, pedido: PedidoDeRoteiro): Promise<IpcResult<RoteiroGerado>>
+  /**
+   * O Cancelar do andamento: a resposta do pedido `pedidoId` (o mesmo do
+   * gerarRoteiro), quando chegar, vai so para o historico -- sem trocar a
+   * versao da tela nem tirar a aprovacao. false = o pedido ja tinha terminado.
+   */
+  cancelarRoteiro(rascunhoId: string, pedidoId: string): Promise<IpcResult<boolean>>
+  /**
+   * Grava a edicao da tela (texto, frases adicionadas/removidas, alvo 60/90).
+   * Regra em aplicarEdicao: conteudo igual nao muda nada; a versao da IA nunca
+   * e sobrescrita (a primeira edicao vira versao nova 'editado'). Desaprova.
+   */
+  salvarRoteiro(rascunhoId: string, roteiro: Roteiro): Promise<IpcResult<RascunhoDoRecap>>
+  /** "Voltar para a versao N": so troca `atual`. Desaprova. */
+  escolherVersao(rascunhoId: string, versao: number): Promise<IpcResult<RascunhoDoRecap>>
+  /**
+   * Grava o roteiro da tela (como salvarRoteiro) e aprova. Recusa com a
+   * mensagem do primeiro `erro` do validarRoteiro.
+   */
+  aprovarRoteiro(rascunhoId: string, roteiro: Roteiro): Promise<IpcResult<RascunhoDoRecap>>
+  /** Tira a aprovacao (o "Editar de novo" depois de aprovar). */
+  desaprovarRoteiro(rascunhoId: string): Promise<IpcResult<RascunhoDoRecap>>
+  /**
+   * A miniatura do keyframe de cada cena pedida, ja publicada no servidor de
+   * midia local (como a Biblioteca faz). Chave = id do plano; null = a cena
+   * nao tem keyframe. O plano de uma frase sai de momentoDaFrase.
+   */
+  miniaturasDasCenas(episodioId: string, planoIds: readonly string[]): Promise<IpcResult<Record<string, string | null>>>
+  onRoteiroProgresso(listener: (progresso: ProgressoDoRoteiro) => void): () => void
 }

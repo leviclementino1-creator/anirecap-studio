@@ -115,7 +115,7 @@ export function AndamentoDaAnalise() {
 }
 
 /** A barra da etapa: cheia ate a fracao, ou um trecho correndo quando o motor nao sabe quanto falta. */
-function Barra({ fracao }: { fracao: number | null }) {
+export function Barra({ fracao }: { fracao: number | null }) {
   return (
     <div className="relative h-[3px] w-full overflow-hidden rounded-full bg-line-strong">
       {fracao === null ? (
@@ -136,7 +136,7 @@ function Barra({ fracao }: { fracao: number | null }) {
 }
 
 /** Um Date.now() que anda de segundo em segundo enquanto `ligado`. */
-function useRelogio(ligado: boolean): number {
+export function useRelogio(ligado: boolean): number {
   const [agora, setAgora] = useState(() => Date.now())
   useEffect(() => {
     if (!ligado) return

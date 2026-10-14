@@ -37,6 +37,12 @@ export interface PedidoJson<S extends z.ZodType> {
   provedor?: Provedor
   /** Teto de saida na Anthropic -- o max_tokens que cada servico ja usava. */
   maxTokens?: number
+  /**
+   * Quanto esperar a resposta do Gemini, em ms. Sem isto, TEMPO_LIMITE_MS. O
+   * passo 2 do "Gerar recap" le o episodio inteiro e escreve 3-4 mil tokens:
+   * medido em 13/10/2026, o gemini-3.8-flash do free tier levou 176 s.
+   */
+  tempoLimiteMs?: number
 }
 
 export type RespostaJson<T> =
@@ -74,6 +80,10 @@ export class ErroDeIa extends Error {
 export const SEM_CHAVE =
   'Sem chave de IA. Abra as configuracoes (Ctrl+,) e cole a do Gemini (gratis) ou a da Anthropic.'
 
+/** O automatico rodou a lista e nenhum modelo gratis atendeu. */
+export const SEM_MODELO_LIVRE =
+  'Nenhum modelo gratis do Gemini atendeu agora (sem cota ou lotado). Tente de novo em alguns minutos.'
+
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta'
 
 /**
@@ -94,9 +104,31 @@ const aposentados = new Set<string>()
  * Modelos que deram 503 ("high demand") ha pouco, e ate quando evitar. Modelo
  * recem-lancado vive lotado; o automatico vai no proximo da lista em vez de
  * deixar a analise sem IA. Passa sozinho: e lotacao, nao aposentadoria.
+ *
+ * O 429 da cota do DIA entra aqui tambem, ate a cota renovar: a cota gratis e
+ * por modelo (medido em 13/10/2026: o gemini-3.8-flash esgotou os 20 do dia e
+ * o 3.7-flash, o 3-flash-preview e o 3.5-flash-lite continuaram respondendo).
  */
 const lotados = new Map<string, number>()
 const LOTADO_POR_MS = 5 * 60_000
+
+/**
+ * Quanto falta para a cota gratis do dia renovar: meia-noite no horario do
+ * Pacifico (o que a nota diz). Minimo de 1 min, para um relogio torto nao
+ * marcar o modelo como livre na hora.
+ */
+export function msAteRenovarACota(agora = Date.now()): number {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hourCycle: 'h23',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  }).formatToParts(new Date(agora))
+  const n = (tipo: string): number => Number(partes.find((p) => p.type === tipo)?.value ?? 0)
+  const passou = (((n('hour') % 24) * 60 + n('minute')) * 60 + n('second')) * 1000
+  return Math.max(60_000, 86_400_000 - passou)
+}
 
 /** Esquece aposentados, lotados e o automatico. So os testes usam. */
 export function esquecerModelos(): void {
@@ -278,15 +310,22 @@ async function viaGemini<S extends z.ZodType>(
   let modelo = modeloConfigurado || (await modeloAutomatico(chave))
   let formato = formatoQueServe
   let trocouFormato = false
-  // Duas trocas: o caso real e aposentado (404) -> sucessor lotado (503) -> outro.
+  /*
+   * Os casos reais: aposentado (404) -> sucessor lotado (503) -> outro; e, em
+   * 13/10/2026, cota do dia no 3.8 e no 3.7 (429) -> 3.6 e 3.5 lotados (503)
+   * -> 2.5 aposentado (404) -> omni sem cota gratis (429) -> o 3.5-flash-lite
+   * respondeu (seis trocas, ~30 s ao todo). Cada troca que falha e rapida;
+   * desistir antes deixa sem roteiro. Oito da folga.
+   */
   let trocasDeModelo = 0
-  const MAX_TROCAS_DE_MODELO = 2
+  const MAX_TROCAS_DE_MODELO = 8
 
   for (;;) {
     const chamada = await chamarComRetentativa(
       chave,
       `models/${modelo}:generateContent`,
       corpoDoPedido(pedido, schema, formato),
+      pedido.tempoLimiteMs,
     )
     if (chamada.ok) {
       formatoQueServe = formato
@@ -299,24 +338,42 @@ async function viaGemini<S extends z.ZodType>(
       trocouFormato = true
       continue
     }
-    // O automatico caiu num modelo que saiu do ar (404) ou que esta lotado
-    // mesmo depois das retentativas (503): marca, e vai no sucessor que o
-    // proprio Google sugere ou no proximo da lista.
+    // O automatico caiu num modelo que saiu do ar (404), que esta lotado
+    // mesmo depois das retentativas (503) ou cuja cota gratis acabou (429 do
+    // dia, ou "limit: 0"): marca, e vai no sucessor que o proprio Google
+    // sugere ou no proximo da lista. Modelo escolhido a mao nao troca: o erro
+    // dele vira a nota.
     const aposentou = erro.status === 404
     const lotou = erro.status === 503
-    if ((aposentou || lotou) && !modeloConfigurado && trocasDeModelo < MAX_TROCAS_DE_MODELO) {
+    const esgotou = erro.status === 429 && (erro.cotaDoDia || erro.semCotaGratis)
+    if ((aposentou || lotou || esgotou) && !modeloConfigurado) {
       if (aposentou) aposentados.add(modelo)
-      else lotados.set(modelo, Date.now() + LOTADO_POR_MS)
+      else lotados.set(modelo, Date.now() + (esgotou ? msAteRenovarACota() : LOTADO_POR_MS))
       automatico = null
-      const sugerido = aposentou ? sucessorSugerido(erro.mensagem) : null
-      const outro = sugerido && !indisponivel(sugerido) ? sugerido : await outroDaLista(chave)
-      trocasDeModelo += 1
-      if (outro && outro !== modelo) {
-        console.warn(`[llm] gemini: ${modelo} deu ${erro.status}, indo no ${outro}`)
-        modelo = outro
-        automatico = { chave, modelo }
-        continue
+      if (trocasDeModelo < MAX_TROCAS_DE_MODELO) {
+        const sugerido = aposentou ? sucessorSugerido(erro.mensagem) : null
+        const outro = sugerido && !indisponivel(sugerido) ? sugerido : await outroDaLista(chave)
+        trocasDeModelo += 1
+        if (outro && outro !== modelo) {
+          console.warn(`[llm] gemini: ${modelo} deu ${erro.status}, indo no ${outro}`)
+          modelo = outro
+          automatico = { chave, modelo }
+          continue
+        }
       }
+      // Rodou a lista e nenhum atendeu. A nota do 404 e a do "limit: 0" mandam
+      // escolher outro modelo -- nao servem para quem ja esta no automatico. A
+      // de lotado e a da cota do dia continuam certas.
+      const notaServe = lotou || (erro.cotaDoDia && !erro.semCotaGratis)
+      if (trocasDeModelo > 0 && !notaServe) {
+        return falha(SEM_MODELO_LIVRE, brutoDoGemini(erro), 'gemini')
+      }
+    }
+    // Demorou demais no automatico: o "Tente de novo" vai em outro modelo. Sem
+    // trocar agora, que seriam mais minutos de espera na mesma chamada.
+    if (erro.codigo === 'TIMEOUT' && !modeloConfigurado) {
+      lotados.set(modelo, Date.now() + LOTADO_POR_MS)
+      automatico = null
     }
     return falha(notaDoGemini(erro, modelo), brutoDoGemini(erro), 'gemini')
   }
@@ -414,9 +471,14 @@ function lerResposta<S extends z.ZodType>(
   return { ok: true, valor: conferido.data, provedor: 'gemini', modelo }
 }
 
-async function chamarComRetentativa(chave: string, caminho: string, corpo?: unknown): Promise<Chamada> {
+async function chamarComRetentativa(
+  chave: string,
+  caminho: string,
+  corpo?: unknown,
+  tempoLimiteMs = TEMPO_LIMITE_MS,
+): Promise<Chamada> {
   for (let tentativa = 0; ; tentativa++) {
-    const chamada = await chamarGemini(chave, caminho, corpo)
+    const chamada = await chamarGemini(chave, caminho, corpo, tempoLimiteMs)
     if (chamada.ok) return chamada
     const espera = esperaParaRetentar(chamada.erro, tentativa)
     if (espera === null) return chamada
@@ -442,7 +504,12 @@ export function esperaParaRetentar(erro: ErroGemini, tentativa: number): number 
   return espera > ESPERA_MAXIMA_MS ? null : espera
 }
 
-async function chamarGemini(chave: string, caminho: string, corpo?: unknown): Promise<Chamada> {
+async function chamarGemini(
+  chave: string,
+  caminho: string,
+  corpo?: unknown,
+  tempoLimiteMs = TEMPO_LIMITE_MS,
+): Promise<Chamada> {
   let resposta: Response
   try {
     resposta = await fetch(`${GEMINI_API}/${caminho}`, {
@@ -453,7 +520,7 @@ async function chamarGemini(chave: string, caminho: string, corpo?: unknown): Pr
           ? { 'x-goog-api-key': chave }
           : { 'x-goog-api-key': chave, 'Content-Type': 'application/json' },
       body: corpo === undefined ? undefined : JSON.stringify(corpo),
-      signal: AbortSignal.timeout(TEMPO_LIMITE_MS),
+      signal: AbortSignal.timeout(tempoLimiteMs),
     })
   } catch (err) {
     return { ok: false, erro: erroDeRede(err) }

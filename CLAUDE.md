@@ -4,7 +4,10 @@ Recap de anime com IA, do episódio ao short editável. É uma cópia do Dangai
 v1.65.0 (`faahpla/dangai@7ceaedd`; commit-base local `d9aa005`) que vai
 ganhando a geração do AniRecap por cima. O plano, as fases e as decisões do Levi
 estão em `G:/ClaudeEditor/fusao/PLANO.md`: leia "Decisões do Levi" e a fase atual
-antes de mexer. Estado: **F0** (base separada, ainda sem geração).
+antes de mexer. Estado: **F1** em andamento. O assistente "Gerar recap" já tem
+o passo 1 (Episódio: índice, falas, OP/ED) e o passo 2 (Roteiro: eventos e
+roteiro pelo Gemini, com versões e aprovação, salvo em `<userData>/recaps`).
+Voz (parte 3) e Cenas (parte 4) ainda não.
 
 ## Regra central (do Dangai, mantida)
 
@@ -43,7 +46,9 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts` |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio) e `roteiro.ts` (eventos, roteiro e rascunho do recap) |
+| `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 e passo 2 (prompts, cache de IA, rascunho) |
+| `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente |
 | `scripts/` | ícone, SFX, `release.mjs` e testes manuais em `scripts/teste/` |
 
 Mudou o formato de uma mensagem IPC? O tipo mora em `shared/`: mexa lá primeiro

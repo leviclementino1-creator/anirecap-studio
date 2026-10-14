@@ -110,6 +110,29 @@ import { procurarEpisodio } from './services/episodio/procurar'
 import { indexarEpisodio, salvarExclusoes } from './services/episodio/indice'
 import { escanearBibliotecaDoEditor } from './services/episodio/biblioteca-editor'
 import { garantirGravavel } from './services/episodio/protegidas'
+import {
+  pedidoDeRoteiroSchema,
+  roteiroSchema,
+  type EventosGerados,
+  type PedidoDeRoteiro,
+  type ProgressoDoRoteiro,
+  type RascunhoAberto,
+  type RascunhoDoRecap,
+  type ResumoDoRascunho,
+  type Roteiro,
+  type RoteiroGerado,
+} from '@shared/roteiro'
+import {
+  abrirRascunho,
+  aprovarRoteiro,
+  desaprovarRoteiro,
+  escolherVersao,
+  listarRascunhos,
+  salvarRoteiro,
+} from './services/gerar/rascunho'
+import { gerarEventos } from './services/gerar/eventos'
+import { cancelarRoteiro, gerarRoteiro } from './services/gerar/roteiro'
+import { miniaturasDasCenas } from './services/gerar/miniaturas'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -807,6 +830,66 @@ export function registerIpc(): void {
   handle<[string, Exclusao[]], EpisodeIndex>(IPC.salvarExclusoes, async (indiceId, exclusoes) =>
     salvarExclusoes(String(indiceId), listaDeExclusoesSchema.parse(exclusoes)),
   )
+
+  // ------------------------------------- Gerar recap, passo 2 (Roteiro)
+  // Contrato e regras em shared/roteiro.ts; o cerebro e electron/services/gerar/.
+  // Ids viram texto conferido aqui: o rascunhoId vira nome de arquivo no main.
+
+  const progressoDoRoteiro = (p: ProgressoDoRoteiro): void => enviarATodas(IPC.roteiroProgresso, p)
+
+  handle<[string, boolean], RascunhoAberto>(IPC.abrirRascunho, async (episodioId, novo) =>
+    abrirRascunho(idDoEpisodio(episodioId), novo === true),
+  )
+
+  handle<[], ResumoDoRascunho[]>(IPC.listarRascunhos, () => listarRascunhos())
+
+  handle<[string], EventosGerados>(IPC.gerarEventos, async (rascunhoId) =>
+    gerarEventos(idDoRascunho(rascunhoId), progressoDoRoteiro),
+  )
+
+  handle<[string, PedidoDeRoteiro], RoteiroGerado>(IPC.gerarRoteiro, async (rascunhoId, pedido) =>
+    gerarRoteiro(idDoRascunho(rascunhoId), pedidoDeRoteiroSchema.parse(pedido), progressoDoRoteiro),
+  )
+
+  handle<[string, string], boolean>(IPC.cancelarRoteiro, async (rascunhoId, pedidoId) =>
+    cancelarRoteiro(idDoRascunho(rascunhoId), String(pedidoId).slice(0, 64)),
+  )
+
+  handle<[string, Roteiro], RascunhoDoRecap>(IPC.salvarRoteiro, async (rascunhoId, roteiro) =>
+    salvarRoteiro(idDoRascunho(rascunhoId), roteiroSchema.parse(roteiro)),
+  )
+
+  handle<[string, number], RascunhoDoRecap>(IPC.escolherVersao, async (rascunhoId, versao) => {
+    if (!Number.isInteger(versao) || versao < 1) throw new Error('Versao invalida.')
+    return escolherVersao(idDoRascunho(rascunhoId), versao)
+  })
+
+  handle<[string, Roteiro], RascunhoDoRecap>(IPC.aprovarRoteiro, async (rascunhoId, roteiro) =>
+    aprovarRoteiro(idDoRascunho(rascunhoId), roteiroSchema.parse(roteiro)),
+  )
+
+  handle<[string], RascunhoDoRecap>(IPC.desaprovarRoteiro, async (rascunhoId) =>
+    desaprovarRoteiro(idDoRascunho(rascunhoId)),
+  )
+
+  handle<[string, string[]], Record<string, string | null>>(IPC.miniaturasDasCenas, async (episodioId, planoIds) => {
+    if (!Array.isArray(planoIds) || planoIds.some((id) => typeof id !== 'string')) {
+      throw new Error('Lista de cenas invalida.')
+    }
+    return miniaturasDasCenas(idDoEpisodio(episodioId), planoIds)
+  })
+}
+
+/** 'ep_' + 40 hex, como o EpisodeIndex.id. Qualquer outra coisa e recusada. */
+function idDoEpisodio(valor: unknown): string {
+  if (typeof valor !== 'string' || !/^ep_[0-9a-f]{40}$/.test(valor)) throw new Error('Episodio invalido.')
+  return valor
+}
+
+/** O formato de idDoRascunho (shared/roteiro.ts): seguro para virar nome de arquivo. */
+function idDoRascunho(valor: unknown): string {
+  if (typeof valor !== 'string' || !/^rc_[0-9a-z_]+$/.test(valor)) throw new Error('Rascunho invalido.')
+  return valor
 }
 
 /**

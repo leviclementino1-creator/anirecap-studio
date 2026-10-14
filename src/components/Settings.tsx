@@ -304,8 +304,8 @@ export function Settings() {
               </select>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
                 {modelos.length === 0
-                  ? "Teste a chave para ver os modelos. No automatico, o app usa o gemini-2.5-flash, ou o melhor flash que a chave tiver."
-                  : "No automatico, o app usa o gemini-2.5-flash, ou o melhor flash que a chave tiver."}
+                  ? "Teste a chave para ver os modelos. No automatico, o app usa o melhor flash da chave e troca sozinho se ele estiver lotado ou sem cota."
+                  : "No automatico, o app usa o melhor flash da chave e troca sozinho se ele estiver lotado ou sem cota."}
               </p>
 
               <label className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">

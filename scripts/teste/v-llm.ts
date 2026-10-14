@@ -33,11 +33,13 @@ import {
 import {
   ErroDeIa,
   SEM_CHAVE,
+  SEM_MODELO_LIVRE,
   escolherProvedor,
   limparSchema,
   melhorFlash,
   sucessorSugerido,
   esquecerModelos,
+  msAteRenovarACota,
   schemaParaGemini,
   testarGemini,
 } from '../../electron/services/llm'
@@ -162,6 +164,8 @@ globalThis.fetch = (async (entrada: string | URL | Request, init?: RequestInit) 
   const proxima = fila.shift()
   if (!proxima) throw new Error(`teste: chamada que nao era esperada para ${url}`)
   if ('rede' in proxima) {
+    // O AbortSignal.timeout rejeita com um erro de nome TimeoutError.
+    if (proxima.rede === 'TIMEOUT') throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
     throw new TypeError('fetch failed', { cause: { code: proxima.rede } })
   }
   return new Response(JSON.stringify(proxima.json), {
@@ -492,12 +496,39 @@ async function main(): Promise<void> {
 
   console.log('Gemini: cota do dia')
   {
+    // A mao: nao troca de modelo, a nota da cota e pronto.
+    saveSettings({ geminiModelo: 'gemini-3.5-flash' })
     preparar([cota(true, '50000s')])
     {
       const err = await erroDe(generateMetadata({ texto: ROTEIRO }))
       conferir('a nota da cota gratis', (err as Error).message.startsWith('A cota gratis do Gemini acabou por hoje; ela renova a meia-noite (horario do Pacifico'), true)
     }
-    conferir('nao tenta de novo (o modelo ja estava guardado)', pedidos.length, 1)
+    conferir('a mao: nao tenta de novo nem troca', pedidos.length, 1)
+    saveSettings({ geminiModelo: '' })
+
+    // O caso real de 13/10/2026: a cota gratis e POR MODELO. No automatico, o
+    // esgotado sai da escolha ate a cota renovar e o proximo da lista responde.
+    preparar([cota(true, '50000s'), ...listaDeModelos(), respostaDoGemini(TEXTOS)])
+    const textos = await generateMetadata({ texto: ROTEIRO })
+    conferir('automatico: troca de modelo e da certo', textos.titles.length, 3)
+    conferir('sem retentativa no esgotado', pedidos.filter((p) => p.url.includes('gemini-3.5-flash:')).length, 1)
+    conferir('foi no proximo da lista', pedidos[pedidos.length - 1]!.url.includes('gemini-2.5-flash:'), true)
+    preparar([respostaDoGemini(TEXTOS)])
+    await generateMetadata({ texto: ROTEIRO })
+    conferir('o seguinte ja vai direto no outro', pedidos.map((p) => p.url.replace(/^.*\/models\//, '')), ['gemini-2.5-flash:generateContent'])
+
+    // A cota renova a meia-noite do Pacifico (PDT = UTC-7 em outubro).
+    const meiaNoitePdt = Date.UTC(2026, 9, 14, 7, 0, 0)
+    conferir('renova a meia-noite do Pacifico', [
+      msAteRenovarACota(meiaNoitePdt - 3_600_000),
+      msAteRenovarACota(meiaNoitePdt + 1_000),
+      msAteRenovarACota(meiaNoitePdt - 10_000),
+    ], [3_600_000, 86_399_000, 60_000])
+
+    // Volta ao estado dos testes seguintes: automatico no gemini-3.5-flash.
+    esquecerModelos()
+    preparar([...listaDeModelos(), respostaDoGemini(TEXTOS)])
+    await generateMetadata({ texto: ROTEIRO })
   }
 
   console.log('Gemini: cota por minuto, com retryDelay')
@@ -509,11 +540,14 @@ async function main(): Promise<void> {
 
   console.log('Gemini: modelo sem cota gratis (limit: 0)')
   {
+    // So acontece com modelo escolhido a mao: o automatico iria no proximo.
+    saveSettings({ geminiModelo: 'gemini-3.5-flash' })
     preparar([cota(true, null, 0)])
     {
       const err = await erroDe(generateMetadata({ texto: ROTEIRO }))
       conferir('diz para trocar de modelo', (err as Error).message.includes('nao tem cota gratis'), true)
     }
+    saveSettings({ geminiModelo: '' })
   }
 
   console.log('Gemini: instavel (5xx)')
@@ -661,6 +695,45 @@ async function main(): Promise<void> {
       const err = await erroDe(testarGemini('AIza-errada', ''))
       conferir('chave errada lanca a nota', (err as Error).message, 'Chave do Gemini recusada. Confira em configuracoes (Ctrl+,).')
     }
+  }
+
+  console.log('Gemini: o automatico sem modelo livre, e o tempo esgotado')
+  {
+    zerar(null)
+    esquecerModelos()
+    saveSettings({ geminiApiKey: 'AIza-falsa-de-teste-0006', iaProvedor: 'gemini' })
+    // Todos sem cota gratis ("limit: 0"): a nota nao manda escolher outro modelo.
+    const semCota = cota(true, null, 0)
+    preparar([...listaDeModelos(), semCota, ...listaDeModelos(), semCota, ...listaDeModelos()])
+    {
+      const err = await erroDe(generateMetadata({ texto: ROTEIRO }))
+      conferir('rodou a lista: a nota do automatico', (err as Error).message, SEM_MODELO_LIVRE)
+    }
+    conferir('tentou os dois modelos', pedidos.filter((p) => p.url.endsWith(':generateContent')).length, 2)
+
+    // Tempo esgotado no automatico: desiste ja (nao espera outro modelo na
+    // mesma chamada), mas o "Tente de novo" vai no proximo da lista.
+    esquecerModelos()
+    preparar([...listaDeModelos(), { rede: 'TIMEOUT' }])
+    {
+      const err = await erroDe(generateMetadata({ texto: ROTEIRO }))
+      conferir('tempo esgotado: a nota', (err as Error).message, 'O Gemini demorou demais para responder. Tente de novo.')
+    }
+    conferir('tempo esgotado: uma chamada so', pedidos.filter((p) => p.url.endsWith(':generateContent')).length, 1)
+    preparar([...listaDeModelos(), respostaDoGemini(TEXTOS)])
+    await generateMetadata({ texto: ROTEIRO })
+    conferir('o seguinte vai em outro modelo', pedidos[pedidos.length - 1]!.url.includes('gemini-2.5-flash:'), true)
+
+    // A mao: o tempo esgotado nao tira o modelo dele.
+    esquecerModelos()
+    saveSettings({ geminiModelo: 'gemini-3.5-flash' })
+    preparar([{ rede: 'TIMEOUT' }])
+    await erroDe(generateMetadata({ texto: ROTEIRO }))
+    preparar([respostaDoGemini(TEXTOS)])
+    await generateMetadata({ texto: ROTEIRO })
+    conferir('a mao: continua no escolhido', pedidos.map((p) => p.url.replace(/^.*\/models\//, '')), ['gemini-3.5-flash:generateContent'])
+    saveSettings({ geminiModelo: '' })
+    esquecerModelos()
   }
 
   console.log('Anthropic pelo mesmo ponto unico')

@@ -115,6 +115,7 @@ export function Botao({
   title,
   principal = false,
   pequeno = false,
+  foco,
   children,
 }: {
   onClick: () => void
@@ -122,6 +123,8 @@ export function Botao({
   title?: string
   principal?: boolean
   pequeno?: boolean
+  /** Nome para devolver o foco do teclado a este botao depois de uma acao (focarBotao). */
+  foco?: string
   children: React.ReactNode
 }) {
   return (
@@ -130,6 +133,7 @@ export function Botao({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      data-foco={foco}
       className={[
         'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border font-medium',
         pequeno ? 'h-7 px-2.5 text-[11px]' : 'h-8 px-3.5 text-[13px]',
@@ -153,11 +157,14 @@ export function Link({
   onClick,
   disabled,
   title,
+  foco,
   children,
 }: {
   onClick: () => void
   disabled?: boolean
   title?: string
+  /** Nome para devolver o foco do teclado a este link depois de uma acao (focarBotao). */
+  foco?: string
   children: React.ReactNode
 }) {
   return (
@@ -166,11 +173,30 @@ export function Link({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      data-foco={foco}
       className="shrink-0 text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:no-underline"
     >
       {children}
     </button>
   )
+}
+
+/**
+ * Devolve o foco do teclado ao primeiro botao com `data-foco` de um dos
+ * nomes (o primeiro que existir e estiver ligado), depois de a tela redesenhar.
+ * O botao que tinha o foco sumiu (Aprovar virou "Aprovado", o Cancelar
+ * desmontou): sem isto o foco caia no body e o proximo Tab recomecava do topo.
+ */
+export function focarBotao(...nomes: string[]): void {
+  requestAnimationFrame(() => {
+    for (const nome of nomes) {
+      const alvo = document.querySelector<HTMLButtonElement>(`[data-foco="${nome}"]:not(:disabled)`)
+      if (alvo) {
+        alvo.focus()
+        return
+      }
+    }
+  })
 }
 
 /**

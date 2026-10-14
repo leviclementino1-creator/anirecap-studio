@@ -220,6 +220,10 @@ export async function procurarEpisodio(
 
       const source = sourceDaPasta(pasta)
       const proprio = resumirIndice(join(pasta, 'episodio.json'))
+      // O episodio.json DENTRO da pasta e dela, mesmo que a pasta tenha mudado
+      // de lugar depois (biblioteca do Studio movida): o caminho gravado nele
+      // seria o da pasta velha.
+      if (proprio) proprio.pasta = pasta
       const indices = [...(proprio ? [proprio] : []), ...(externos.get(chave) ?? [])]
       const conferidos = indices.filter((i) => !i.deOutroArquivo)
       const ident = identidadeDaPasta(pasta)

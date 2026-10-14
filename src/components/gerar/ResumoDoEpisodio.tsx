@@ -179,9 +179,9 @@ export function ResumoDoEpisodio() {
  * jeito e corrigir e tentar de novo. A pasta das cenas nao muda (o store manda
  * a pasta do anime junto, ver `analisar`).
  *
- * E a acao principal da tela enquanto nao ha marcacao para salvar: sem ela o
- * episodio so-corte ficava sem nenhum botao rosa. Com mudancas, ele desliga
- * (neutro) e o principal e o Salvar.
+ * Neutro: o rosa da tela e o "Proximo: Roteiro" do rodape (ou o Salvar, com
+ * marcacao por salvar). Reconhecer e opcional; o roteiro e o caminho. Com
+ * mudancas, ele desliga.
  */
 function ReconhecerAgora() {
   const analisar = useGerar((s) => s.analisar)
@@ -211,7 +211,6 @@ function ReconhecerAgora() {
         className={`${CLASSE_DO_CAMPO} ${CAMPO_NORMAL} w-[260px]`}
       />
       <Botao
-        principal
         onClick={reconhecer}
         disabled={mudaram || !pronto || semAnime}
         title={

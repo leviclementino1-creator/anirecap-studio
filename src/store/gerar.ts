@@ -12,6 +12,7 @@ import type {
   SondaDoEpisodio,
   StatusDoMotor,
 } from '@shared/episodio'
+import type { RascunhoAberto } from '@shared/roteiro'
 import { useProject } from './project'
 
 /**
@@ -25,6 +26,9 @@ import { useProject } from './project'
  * O estado sobrevive a fechar o assistente: a analise leva minutos, e fechar a
  * tela para olhar outra coisa nao pode jogar fora o andamento. Reabrir mostra
  * exatamente onde parou.
+ *
+ * A navegacao entre os passos (`passo`) mora aqui; o passo 2 (Roteiro) tem a
+ * store dele em gerar-roteiro.ts.
  */
 
 /**
@@ -121,6 +125,22 @@ interface EstadoDoGerar {
    * fica no fim delas. AjustesDoStudio rola ate la e apaga o pedido.
    */
   ajustesPedidos: boolean
+  /**
+   * Em que parada do assistente a tela esta. O passo 2 (Roteiro) tem store
+   * propria (gerar-roteiro.ts); aqui mora so a navegacao. Trocar de episodio
+   * volta ao 1.
+   */
+  passo: PassoDoAssistente
+  /**
+   * O rascunho que o "voltar onde parou" ja abriu ao reabrir o app: o passo 2
+   * pega este em vez de pedir de novo ao main. null = nada guardado.
+   */
+  rascunhoRestaurado: RascunhoAberto | null
+
+  /** Vai ao passo. O 2 so com o episodio pronto (podeIrAoRoteiro). */
+  irParaPasso: (passo: PassoDoAssistente) => void
+  /** Entrega (e esquece) o rascunho restaurado, se for deste episodio. */
+  tomarRascunhoRestaurado: (episodioId: string) => RascunhoAberto | null
 
   abrir: (path?: string) => void
   /** Abre as Configuracoes na aba Geral, roladas ate a Biblioteca do Studio. */
@@ -164,6 +184,19 @@ interface EstadoDoGerar {
    * motor que nao respondeu e sondado de novo a cada pedido.
    */
   conferirMotor: () => Promise<void>
+}
+
+/** Os passos que existem por enquanto (3 Voz e 4 Cenas ainda sao "em breve"). */
+export type PassoDoAssistente = 1 | 2
+
+/**
+ * O passo 2 abre com o episodio PRONTO e com a regua salva: os eventos saem
+ * do indice gravado, e marcacao de OP/ED so na tela ficaria fora deles.
+ */
+export function podeIrAoRoteiro(
+  s: Pick<EstadoDoGerar, 'fase' | 'indice' | 'exclusoesMudaram' | 'job'>,
+): boolean {
+  return s.fase === 'pronto' && s.indice !== null && !s.exclusoesMudaram && s.job === null
 }
 
 /** Trecho mais curto que a regua aceita. Menos que isso e clique, nao marcacao. */
@@ -221,6 +254,15 @@ let geracao = 0
 let sincronizando: Promise<void> | null = null
 
 /**
+ * "Voltar onde parou" roda UMA vez por sessao, na primeira abertura do
+ * assistente: depois disso, assistente vazio quer dizer que ele trocou de
+ * episodio de proposito, e reabrir o antigo atrapalharia.
+ */
+let jaRestaurou = false
+/** Um restaurar no ar: o segundo clique no botao nao abre o dialogo por cima. */
+let restaurando = false
+
+/**
  * Os receptores do progresso e do fim, preenchidos dentro do create (precisam
  * do set/get da store). Declarados ANTES dele: o create roda na hora.
  */
@@ -254,6 +296,47 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     salvoEm: null,
     erro: null,
     recado: null,
+    // Outro episodio comeca no passo 1 (o roteiro guardado e de outro).
+    passo: 1 as PassoDoAssistente,
+    rascunhoRestaurado: null,
+  }
+
+  /**
+   * VOLTAR ONDE PAROU: o rascunho mais recente (listarRascunhos) volta com o
+   * episodio dele, direto no passo 2. O store do passo 1 nao persiste, entao
+   * ele e remontado do indice que o abrirRascunho devolve (caminhos ja
+   * corrigidos); a sonda (medidas e faixas de legenda) chega depois, em
+   * segundo plano, se o arquivo ainda existir. true = restaurou.
+   */
+  const restaurar = async (): Promise<boolean> => {
+    const lista = await window.dangai.listarRascunhos()
+    if (!lista.ok || lista.value.length === 0) return false
+    const aberto = await window.dangai.abrirRascunho(lista.value[0]!.episodioId)
+    if (!aberto.ok) return false
+    // Um arquivo chegou enquanto isso (soltou um .mkv): ele manda.
+    if (get().arquivo !== null || get().job !== null) {
+      set({ aberto: true })
+      return true
+    }
+    const { indice } = aberto.value
+    const minhaGeracao = ++geracao
+    set({
+      ...limpo,
+      aberto: true,
+      fase: 'pronto',
+      arquivo: indice.fonte.path,
+      palpite: { anime: indice.anime, temporada: indice.temporada, episodio: indice.episodio, kind: indice.kind },
+      faixaLegenda: indice.faixaLegenda?.index ?? null,
+      indice,
+      exclusoes: emOrdem(indice.exclusoes),
+      passo: 2,
+      rascunhoRestaurado: aberto.value,
+    })
+    if (!get().motor?.studio.pronto) void conferirMotor()
+    void window.dangai.sondarEpisodio(indice.fonte.path).then((r) => {
+      if (r.ok && minhaGeracao === geracao) set({ sonda: r.value })
+    })
+    return true
   }
 
   const procurar = async (minhaGeracao: number): Promise<void> => {
@@ -450,10 +533,32 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         get().abrir()
         return
       }
+      if (restaurando) return
+      if (!jaRestaurou) {
+        jaRestaurou = true
+        restaurando = true
+        try {
+          if (await restaurar()) return
+        } finally {
+          restaurando = false
+        }
+      }
       await get().escolherArquivo()
     },
 
     fechar: () => set({ aberto: false }),
+
+    irParaPasso: (passo) => {
+      if (passo === 2 && !podeIrAoRoteiro(get())) return
+      set({ passo })
+    },
+
+    tomarRascunhoRestaurado: (episodioId) => {
+      const guardado = get().rascunhoRestaurado
+      if (!guardado || guardado.rascunho.episodioId !== episodioId) return null
+      set({ rascunhoRestaurado: null })
+      return guardado
+    },
 
     escolherArquivo: async () => {
       const r = await window.dangai.escolherEpisodio()
@@ -480,6 +585,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         return
       }
       const minhaGeracao = ++geracao
+      // Escolheu um episodio: o "voltar onde parou" nao tem mais o que fazer nesta sessao.
+      jaRestaurou = true
       set({ ...limpo, fase: 'sondando', arquivo: path })
       // O motor e conferido junto: a resposta chega enquanto a sonda roda.
       // Enquanto ele nao estiver pronto, cada arquivo novo pergunta de novo.

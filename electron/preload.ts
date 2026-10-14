@@ -40,6 +40,14 @@ import type {
   SondaDoEpisodio,
   StatusDoMotor,
 } from '@shared/episodio'
+import type {
+  EventosGerados,
+  ProgressoDoRoteiro,
+  RascunhoAberto,
+  RascunhoDoRecap,
+  ResumoDoRascunho,
+  RoteiroGerado,
+} from '@shared/roteiro'
 
 /**
  * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
@@ -298,6 +306,36 @@ const bridge: DangaiBridge = {
   },
   salvarExclusoes: (indiceId, exclusoes) =>
     ipcRenderer.invoke(IPC.salvarExclusoes, indiceId, exclusoes) as Promise<IpcResult<EpisodeIndex>>,
+
+  // Gerar recap, passo 2 (Roteiro)
+  abrirRascunho: (episodioId, novo) =>
+    ipcRenderer.invoke(IPC.abrirRascunho, episodioId, novo === true) as Promise<IpcResult<RascunhoAberto>>,
+  listarRascunhos: () => ipcRenderer.invoke(IPC.listarRascunhos) as Promise<IpcResult<ResumoDoRascunho[]>>,
+  gerarEventos: (rascunhoId) =>
+    ipcRenderer.invoke(IPC.gerarEventos, rascunhoId) as Promise<IpcResult<EventosGerados>>,
+  gerarRoteiro: (rascunhoId, pedido) =>
+    ipcRenderer.invoke(IPC.gerarRoteiro, rascunhoId, pedido) as Promise<IpcResult<RoteiroGerado>>,
+  cancelarRoteiro: (rascunhoId, pedidoId) =>
+    ipcRenderer.invoke(IPC.cancelarRoteiro, rascunhoId, pedidoId) as Promise<IpcResult<boolean>>,
+  salvarRoteiro: (rascunhoId, roteiro) =>
+    ipcRenderer.invoke(IPC.salvarRoteiro, rascunhoId, roteiro) as Promise<IpcResult<RascunhoDoRecap>>,
+  escolherVersao: (rascunhoId, versao) =>
+    ipcRenderer.invoke(IPC.escolherVersao, rascunhoId, versao) as Promise<IpcResult<RascunhoDoRecap>>,
+  aprovarRoteiro: (rascunhoId, roteiro) =>
+    ipcRenderer.invoke(IPC.aprovarRoteiro, rascunhoId, roteiro) as Promise<IpcResult<RascunhoDoRecap>>,
+  desaprovarRoteiro: (rascunhoId) =>
+    ipcRenderer.invoke(IPC.desaprovarRoteiro, rascunhoId) as Promise<IpcResult<RascunhoDoRecap>>,
+  miniaturasDasCenas: (episodioId, planoIds) =>
+    ipcRenderer.invoke(IPC.miniaturasDasCenas, episodioId, planoIds) as Promise<
+      IpcResult<Record<string, string | null>>
+    >,
+  onRoteiroProgresso: (listener) => {
+    const handler = (_event: unknown, progresso: ProgressoDoRoteiro): void => listener(progresso)
+    ipcRenderer.on(IPC.roteiroProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.roteiroProgresso, handler)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('dangai', bridge)

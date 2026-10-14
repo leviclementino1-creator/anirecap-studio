@@ -288,6 +288,23 @@ export interface ResumoDoRascunho {
   aprovado: boolean
 }
 
+// ------------------------------------------------------------ modelo reserva
+
+/**
+ * Os modelos RESERVA do Gemini: lite, nano, 8b e parecidos, pelo id. O resto e
+ * "bom". Quando a cota gratis dos bons acaba, o automatico do llm.ts desce ate
+ * eles -- e o roteiro do 3.5-flash-lite sai chapado, lista de fatos (o Levi
+ * comparou lado a lado em 13/10/2026). Por isso o passo 2 pergunta antes de
+ * usar um.
+ *
+ * A palavra tem que vir separada por hifen/ponto: "gemini" tem "mini" dentro.
+ * Mora aqui, e nao no llm.ts, porque a tela marca "Modelo reserva" pelo mesmo
+ * criterio.
+ */
+export function ehModeloReserva(modelo: string): boolean {
+  return /(?:^|[-_./])(?:lite|nano|mini|tiny|\d+b)(?=$|[-_./])/i.test(modelo)
+}
+
 // ------------------------------------------------------- pedidos e respostas
 
 /**
@@ -313,6 +330,12 @@ export const pedidoDeRoteiroSchema = z.object({
    * a aprovacao.
    */
   pedidoId: z.string().max(64).nullable().optional(),
+  /**
+   * O usuario aceitou o modelo reserva (o "Usar modelo reserva" da tela). Sem
+   * isto, quando so sobra reserva, o pedido PARA antes de chamar a IA e volta
+   * como ParadoNoReserva. Vale para o pedido inteiro: eventos e roteiro.
+   */
+  aceitouReserva: z.boolean().optional(),
 })
 export type PedidoDeRoteiro = z.infer<typeof pedidoDeRoteiroSchema>
 
@@ -327,7 +350,67 @@ export interface RascunhoAberto {
   avisos: string[]
 }
 
-export interface EventosGerados {
+/**
+ * O pedido PAROU antes de chamar o modelo reserva: os bons estao sem cota (ou
+ * lotados) e o pedido nao trazia `aceitouReserva`. Nada foi gravado -- o
+ * rascunho, a versao atual e a aprovacao ficam como estavam. A tela pergunta
+ * ("Usar modelo reserva" / "Esperar") e, se ele aceitar, refaz o MESMO pedido
+ * com `aceitouReserva: true`.
+ *
+ * Volta como resposta (e nao como erro) para atravessar o IPC com tipo: o
+ * erro vira so texto no caminho.
+ */
+export interface ParadoNoReserva {
+  motivo: 'so-reserva'
+  /** Onde parou: lendo o episodio (eventos), escrevendo, ou refazendo uma parte. */
+  etapa: EtapaDoRoteiro
+  /**
+   * Date.now() de quando um modelo bom deve voltar: a cota do dia renova a
+   * meia-noite do Pacifico (~4h em Brasilia no horario de verao dos EUA, 5h
+   * fora dele); lotado volta em minutos.
+   */
+  renovaEm: number
+  /** true = acabou a cota do dia; false = lotados ou lentos agora (volta em minutos). */
+  porCota: boolean
+  /** O reserva que atenderia ("gemini-3.5-flash-lite"), para o tooltip. */
+  reserva: string
+}
+
+/** A resposta e a parada no reserva? (gerarEventos e gerarRoteiro devolvem as duas). */
+export function ehParadaNoReserva(x: object): x is ParadoNoReserva {
+  return (x as { motivo?: unknown }).motivo === 'so-reserva'
+}
+
+/** Um horario em "~4h" ou "~4h30", na hora local (a de quem esta na frente da tela). */
+function horaCurta(quando: number): string {
+  const d = new Date(Math.round(quando / 60_000) * 60_000)
+  const m = d.getMinutes()
+  return `~${d.getHours()}h${m === 0 ? '' : String(m).padStart(2, '0')}`
+}
+
+/**
+ * A frase da parada no reserva: por que parou e quando os modelos bons
+ * voltam. A cota do dia renova a meia-noite do Pacifico (~4h no Brasil com o
+ * horario de verao dos EUA); lotado volta em minutos. `curto` = a do cartao
+ * "Sem roteiro", depois do "Esperar".
+ */
+export function textoDaParada(
+  p: Pick<ParadoNoReserva, 'porCota' | 'renovaEm'>,
+  curto = false,
+  agora = Date.now(),
+): string {
+  const minutos = Math.max(1, Math.ceil((p.renovaEm - agora) / 60_000))
+  if (p.porCota) {
+    const quando = horaCurta(p.renovaEm)
+    return curto ? `Modelos bons sem cota hoje (renova ${quando})` : `Os modelos bons acabaram a cota de hoje (renova ${quando})`
+  }
+  const volta = minutos > 60 ? horaCurta(p.renovaEm) : `em ~${minutos} min`
+  return curto ? `Modelos bons lotados (voltam ${volta})` : `Os modelos bons estao lotados (voltam ${volta})`
+}
+
+export type EventosGerados = EventosProntos | ParadoNoReserva
+
+export interface EventosProntos {
   rascunho: RascunhoDoRecap
   /** Veio do cache de IA (nao gastou cota). */
   doCache: boolean
@@ -335,7 +418,9 @@ export interface EventosGerados {
   avisos: string[]
 }
 
-export interface RoteiroGerado {
+export type RoteiroGerado = RoteiroPronto | ParadoNoReserva
+
+export interface RoteiroPronto {
   rascunho: RascunhoDoRecap
   /** A versao nova (ja e a `atual` do rascunho, menos com `soNoHistorico`). */
   roteiro: Roteiro

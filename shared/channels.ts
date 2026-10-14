@@ -68,6 +68,11 @@ export const IPC = {
   loadMusic: 'music:load',
   generateMetadata: 'metadata:generate',
   testarGemini: 'ia:testar-gemini',
+  // Voz (ElevenLabs e Fish Audio). Tipos perto do TesteDoGemini.
+  testarEleven: 'voz:testar-eleven',
+  testarFish: 'voz:testar-fish',
+  procurarAniRecap: 'voz:procurar-anirecap',
+  importarAniRecap: 'voz:importar-anirecap',
   copyText: 'clipboard:write',
   startRender: 'render:start',
   cancelRender: 'render:cancel',
@@ -532,6 +537,13 @@ export interface PublicSettings {
   apiKeyHint: string
   hasGeminiKey: boolean
   geminiKeyHint: string
+  /** Chaves da voz: mesma regra, so se existe e os quatro ultimos caracteres. */
+  hasElevenKey: boolean
+  elevenKeyHint: string
+  hasFishKey: boolean
+  fishKeyHint: string
+  /** A voz que narra o recap. */
+  vozPadrao: VozPadrao
   /** As chaves estao cifradas no disco (safeStorage). false = texto puro. */
   chavesProtegidas: boolean
   /** Curvas de movimento que ele guardou, para reusar em outros videos. */
@@ -557,6 +569,9 @@ export interface PublicSettings {
 export interface SettingsPatch {
   anthropicApiKey?: string
   geminiApiKey?: string
+  elevenlabsApiKey?: string
+  fishApiKey?: string
+  vozPadrao?: VozPadrao
   iaProvedor?: 'gemini' | 'anthropic'
   /** Vazio = automatico. */
   geminiModelo?: string
@@ -588,6 +603,66 @@ export interface TesteDoGemini {
    * sem cota gratis. null = tudo certo.
    */
   aviso: string | null
+}
+
+/** Quem fala a narracao do recap. */
+export type ProvedorDeVoz = 'elevenlabs' | 'fish'
+
+/**
+ * A voz que narra. Uma so, e nao uma por provedor: o que importa e qual voz o
+ * recap usa, e o provedor vem junto dela.
+ */
+export interface VozPadrao {
+  /** '' = ainda nao escolhida. */
+  provedor: ProvedorDeVoz | ''
+  /** O voice_id do ElevenLabs ou o _id do modelo do Fish Audio. */
+  voiceId: string
+  /** Modelo de TTS (eleven_multilingual_v2, s2.1-pro...). Vazio = o padrao do provedor. */
+  modelId: string
+}
+
+/** Uma voz da conta, como o "Testar" lista para o select. */
+export interface VozDoProvedor {
+  id: string
+  nome: string
+  /** Idioma e rotulos curtos ("pt, male"), para reconhecer sem ouvir. '' = nada. */
+  detalhe: string
+  /** Amostra da voz. null = o provedor nao deu. */
+  previewUrl: string | null
+}
+
+/**
+ * O resultado do "Testar" de uma chave de voz. Testar nao gasta caractere nem
+ * credito: so le o plano/saldo e a lista de vozes.
+ */
+export interface TesteDeVoz {
+  provedor: ProvedorDeVoz
+  /** O plano da conta (ElevenLabs: o tier). null = nao veio. */
+  plano: string | null
+  /** ElevenLabs: caracteres usados no periodo e o limite. null no Fish. */
+  usados: number | null
+  limite: number | null
+  /** Fish Audio: saldo da API, como o Fish manda (texto, em dolar). null no ElevenLabs. */
+  saldo: string | null
+  /** As vozes da conta, as proprias primeiro. */
+  vozes: VozDoProvedor[]
+  /** A chave vale, mas algo ficou de fora (sem creditos, sem permissao, sem voz). null = tudo certo. */
+  aviso: string | null
+}
+
+/**
+ * O que o "Importar do AniRecap" achou no config.json do app antigo. A chave
+ * NUNCA vem para ca: so a dica, e o importar grava direto do arquivo.
+ */
+export interface AchadoDoAniRecap {
+  /** O config.json de onde veio. O importar recebe isto de volta e confere. */
+  arquivo: string
+  /** ••••1234, ou '' se o config nao tem chave. */
+  chaveHint: string
+  voiceId: string
+  modelId: string
+  /** A chave e a voz ja sao as salvas aqui: nao ha o que importar. */
+  jaImportado: boolean
 }
 
 /**
@@ -809,6 +884,23 @@ export interface DangaiBridge {
    * `chave` null testa a que ja esta salva -- a salva nunca volta para ca.
    */
   testarGemini(chave: string | null): Promise<IpcResult<TesteDoGemini>>
+  /**
+   * Confere a chave do ElevenLabs sem gastar caractere: le o plano e lista as
+   * vozes. `chave` null testa a salva, que nunca volta para ca.
+   */
+  testarEleven(chave: string | null): Promise<IpcResult<TesteDeVoz>>
+  /** O mesmo para o Fish Audio: le o saldo da API e lista as vozes proprias. */
+  testarFish(chave: string | null): Promise<IpcResult<TesteDeVoz>>
+  /**
+   * Procura chave e voz do ElevenLabs no config.json do AniRecap antigo, nos
+   * lugares conhecidos. So le. null = nao achou nada.
+   */
+  procurarAniRecap(): Promise<IpcResult<AchadoDoAniRecap | null>>
+  /**
+   * Grava (cifrado) o que o procurarAniRecap achou em `arquivo`: a chave vai
+   * do arquivo direto para o settings, sem passar por aqui.
+   */
+  importarAniRecap(arquivo: string): Promise<IpcResult<PublicSettings>>
   /** Copia texto para a area de transferencia pelo Electron. */
   copyText(text: string): Promise<IpcResult<null>>
   /** Resolve com o caminho do MP4, ou com null se o usuario cancelou. */

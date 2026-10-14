@@ -4,6 +4,7 @@ import {
   ROTULO_DO_PAPEL,
   cuesElegiveis,
   duracaoEstimada,
+  ehModeloReserva,
   eventosOrfaos,
   faixaDePalavras,
   momentoDaFrase,
@@ -19,8 +20,9 @@ import { useProject } from '@/store/project'
 import { Segmentos, type Segmento } from '@/components/painel'
 import { AndamentoDoRoteiro } from './AndamentoDoRoteiro'
 import { CartaoDoEpisodio } from './CartaoDoEpisodio'
-import { COR_DE_AVISO, SecaoDoRoteiro } from './SecaoDoRoteiro'
-import { Aviso, Botao, Link, Secao } from './pecas'
+import { PerguntaDoReserva } from './PerguntaDoReserva'
+import { SecaoDoRoteiro } from './SecaoDoRoteiro'
+import { Aviso, Botao, COR_DE_AVISO, Link, Secao } from './pecas'
 
 /** A cor de "dentro do combinado" do app (a do clipe de audio na timeline). */
 const COR_DE_OK = 'text-[#4f9a74]'
@@ -67,6 +69,7 @@ function Conteudo() {
   const cancelada = useRoteiro((s) => s.geracaoCancelada)
   const erro = useRoteiro((s) => s.erro)
   const entrar = useRoteiro((s) => s.entrar)
+  const reserva = useRoteiro((s) => s.reserva)
   const indice = useIndiceDoRoteiro()
 
   // O rascunho na store ainda e de outro episodio (a troca esta a caminho).
@@ -96,13 +99,17 @@ function Conteudo() {
   // O andamento do roteiro inteiro, ou o do pedido que acabou de ser cancelado
   // (segura o lugar por ~1 s em vez de a lista pular embaixo do cursor).
   const andamento = geracao ?? cancelada
+  // O pedido do roteiro inteiro parou antes do modelo reserva: a pergunta fica
+  // no lugar do andamento (a do "Refazer" mora na parte).
+  const pergunta = !andamento && reserva && reserva.secaoId === null ? reserva : null
 
   return (
     <>
       {/* Sem roteiro na tela a barra nao tem o que mostrar: o 60/90 mora no cartao "Roteiro". */}
       {tela && <BarraDoRoteiro />}
       {andamento && andamento.secaoId === null && <AndamentoDoRoteiro geracao={andamento} cancelado={!geracao} />}
-      {!tela && !andamento && (semFalas ? <SemFalas /> : <SemRoteiro />)}
+      {pergunta && <PerguntaDoReserva pergunta={pergunta} />}
+      {!tela && !andamento && !pergunta && (semFalas ? <SemFalas /> : <SemRoteiro />)}
       {tela && <ListaDoRoteiro tela={tela} />}
     </>
   )
@@ -237,11 +244,11 @@ function Contagem({ roteiro, travado, onRefazer }: { roteiro: Roteiro; travado: 
 /**
  * O roteiro saiu do modelo RESERVA (o "lite", quando os outros estavam sem
  * cota ou lotados): nos roteiros julgados, quase toda gíria vetada, frase
- * partida e fato trocado veio dele. A troca e automatica no llm.ts; aqui ela
- * deixa de ser silenciosa.
+ * partida e fato trocado veio dele. O passo 2 so usa o reserva quando ele
+ * aceita (PerguntaDoReserva); a versao continua marcada.
  */
 function ModeloReserva({ modelo }: { modelo: string }) {
-  if (!/lite/i.test(modelo)) return null
+  if (!ehModeloReserva(modelo)) return null
   return (
     <span
       title={`Escrito pelo ${modelo}, o modelo reserva (os outros estavam sem cota ou lotados). Ele erra mais: revise frase por frase, ou peca outra versao mais tarde.`}
@@ -418,7 +425,11 @@ function SemRoteiro() {
         </div>
         {resumo ? (
           <p className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] text-ink-2" title={falha ?? undefined}>
-            <TriangleAlert size={12} strokeWidth={1.5} className="shrink-0 text-danger" />
+            <TriangleAlert
+              size={12}
+              strokeWidth={1.5}
+              className={`shrink-0 ${resumo.espera ? COR_DE_AVISO : 'text-danger'}`}
+            />
             <span className="min-w-0 truncate">{resumo.curto}</span>
           </p>
         ) : (

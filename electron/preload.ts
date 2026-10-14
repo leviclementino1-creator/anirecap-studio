@@ -19,6 +19,8 @@ import {
   type SettingsPatch,
   type StartRenderArgs,
   type TesteDoGemini,
+  type TesteDeVoz,
+  type AchadoDoAniRecap,
   type TiraDaCena,
   type LegendasSincronizadas,
   type ArquivoDaBin,
@@ -212,6 +214,13 @@ const bridge: DangaiBridge = {
 
   testarGemini: (chave) =>
     ipcRenderer.invoke(IPC.testarGemini, chave) as Promise<IpcResult<TesteDoGemini>>,
+
+  testarEleven: (chave) => ipcRenderer.invoke(IPC.testarEleven, chave) as Promise<IpcResult<TesteDeVoz>>,
+  testarFish: (chave) => ipcRenderer.invoke(IPC.testarFish, chave) as Promise<IpcResult<TesteDeVoz>>,
+  procurarAniRecap: () =>
+    ipcRenderer.invoke(IPC.procurarAniRecap) as Promise<IpcResult<AchadoDoAniRecap | null>>,
+  importarAniRecap: (arquivo) =>
+    ipcRenderer.invoke(IPC.importarAniRecap, arquivo) as Promise<IpcResult<PublicSettings>>,
 
   copyText: (text) => ipcRenderer.invoke(IPC.copyText, text) as Promise<IpcResult<null>>,
 

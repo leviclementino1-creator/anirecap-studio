@@ -4,6 +4,7 @@ import type { PublicSettings } from "@shared/channels";
 import { useProject } from "@/store/project";
 import { Atalhos } from "./Atalhos";
 import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
+import { AjustesDeVoz } from "./gerar/AjustesDeVoz";
 import { useGerar } from "@/store/gerar";
 
 /**
@@ -342,6 +343,8 @@ export function Settings() {
                 Sem nenhuma, as cenas sao distribuidas pelas pausas da
                 narracao.
               </p>
+
+              <AjustesDeVoz settings={settings} onSettings={setSettings} />
 
               <div className="my-5 h-px bg-line" />
 

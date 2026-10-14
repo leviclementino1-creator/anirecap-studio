@@ -20,10 +20,8 @@ import {
 import { useRoteiro, type GeracaoEmCurso } from '@/store/gerar-roteiro'
 import { Linha } from '@/components/painel'
 import { AndamentoDoRoteiro } from './AndamentoDoRoteiro'
-import { Botao, CAMPO_PEQUENO, CLASSE_DO_CAMPO, focarBotao, Link, Secao as Cartao } from './pecas'
-
-/** A cor de "fora do combinado" do app (a do ponto escolhido na curva): aviso, nao erro. */
-export const COR_DE_AVISO = 'text-[#f6a23c]'
+import { PerguntaDoReserva } from './PerguntaDoReserva'
+import { Botao, CAMPO_PEQUENO, CLASSE_DO_CAMPO, COR_DE_AVISO, focarBotao, Link, Secao as Cartao } from './pecas'
 
 /**
  * Poe o cursor numa frase depois que a tela redesenhar (frase nova, dividida,
@@ -71,6 +69,8 @@ export function SecaoDoRoteiro({
   const removerSecao = useRoteiro((s) => s.removerSecao)
   const aprovando = useRoteiro((s) => s.aprovando)
   const cancelada = useRoteiro((s) => (s.geracaoCancelada?.secaoId === secao.id ? s.geracaoCancelada : null))
+  // O "Refazer" desta parte parou antes do modelo reserva: a pergunta fica aqui, onde o olho esta.
+  const reserva = useRoteiro((s) => (s.reserva?.secaoId === secao.id ? s.reserva : null))
   const [instrucao, setInstrucao] = useState<string | null>(null)
 
   const travado = geracao !== null
@@ -147,8 +147,10 @@ export function SecaoDoRoteiro({
         )}
         {refazendo && geracao ? (
           <AndamentoDoRoteiro geracao={geracao} compacto />
+        ) : cancelada ? (
+          <AndamentoDoRoteiro geracao={cancelada} compacto cancelado />
         ) : (
-          cancelada && <AndamentoDoRoteiro geracao={cancelada} compacto cancelado />
+          reserva && <PerguntaDoReserva pergunta={reserva} compacto />
         )}
 
         {secao.frases.length > 0 ? (

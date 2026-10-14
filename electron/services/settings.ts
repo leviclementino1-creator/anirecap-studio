@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app, safeStorage } from 'electron'
+import type { VozPadrao } from '@shared/channels'
 
 /**
  * Guarda tres campos em um JSON no userData.
@@ -20,7 +21,7 @@ import { app, safeStorage } from 'electron'
  */
 
 /** Os campos que sao chave de API: so estes passam pelo cofre. */
-const CAMPOS_DE_CHAVE = ['anthropicApiKey', 'geminiApiKey'] as const
+const CAMPOS_DE_CHAVE = ['anthropicApiKey', 'geminiApiKey', 'elevenlabsApiKey', 'fishApiKey'] as const
 type CampoDeChave = (typeof CAMPOS_DE_CHAVE)[number]
 
 /**
@@ -39,6 +40,15 @@ export interface Settings {
   anthropicApiKey: string
   /** Chave do Google AI Studio. O Gemini e o cerebro padrao: tem cota gratis. */
   geminiApiKey: string
+  /** Chave do ElevenLabs, a voz do AniRecap antigo. */
+  elevenlabsApiKey: string
+  /** Chave do Fish Audio, a outra opcao de voz. */
+  fishApiKey: string
+  /**
+   * A voz que narra o recap. Fica aqui e nao no rascunho: a voz e do canal
+   * dele, vale para todo recap.
+   */
+  vozPadrao: VozPadrao
   /**
    * Qual IA ele prefere. Sem a chave dela, vale a outra que tiver chave -- quem
    * so tem a da Anthropic (todo usuario antigo) continua como estava.
@@ -106,6 +116,9 @@ export interface Settings {
 const DEFAULTS: Settings = {
   anthropicApiKey: '',
   geminiApiKey: '',
+  elevenlabsApiKey: '',
+  fishApiKey: '',
+  vozPadrao: { provedor: '', voiceId: '', modelId: '' },
   iaProvedor: 'gemini',
   geminiModelo: '',
   anthropicModelo: 'claude-sonnet-5',
@@ -321,6 +334,10 @@ export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
   apiKeyHint: string
   hasGeminiKey: boolean
   geminiKeyHint: string
+  hasElevenKey: boolean
+  elevenKeyHint: string
+  hasFishKey: boolean
+  fishKeyHint: string
   chavesProtegidas: boolean
 } {
   const settings = getSettings()
@@ -347,11 +364,16 @@ export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
     apiKeyHint: dicaDaChave(key),
     hasGeminiKey: settings.geminiApiKey.length > 0,
     geminiKeyHint: dicaDaChave(settings.geminiApiKey),
+    hasElevenKey: settings.elevenlabsApiKey.length > 0,
+    elevenKeyHint: dicaDaChave(settings.elevenlabsApiKey),
+    hasFishKey: settings.fishApiKey.length > 0,
+    fishKeyHint: dicaDaChave(settings.fishApiKey),
+    vozPadrao: settings.vozPadrao,
     chavesProtegidas: cifraDisponivel(),
   }
 }
 
-function dicaDaChave(key: string): string {
+export function dicaDaChave(key: string): string {
   return key.length > 8 ? `••••${key.slice(-4)}` : ''
 }
 
@@ -364,6 +386,10 @@ function coerce(raw: unknown): Settings {
     anthropicApiKey:
       typeof value['anthropicApiKey'] === 'string' ? value['anthropicApiKey'].trim() : '',
     geminiApiKey: typeof value['geminiApiKey'] === 'string' ? value['geminiApiKey'].trim() : '',
+    elevenlabsApiKey:
+      typeof value['elevenlabsApiKey'] === 'string' ? value['elevenlabsApiKey'].trim() : '',
+    fishApiKey: typeof value['fishApiKey'] === 'string' ? value['fishApiKey'].trim() : '',
+    vozPadrao: vozSalva(value['vozPadrao']),
     iaProvedor: value['iaProvedor'] === 'anthropic' ? 'anthropic' : 'gemini',
     geminiModelo: nomeDeModelo(value['geminiModelo'], ''),
     anthropicModelo: nomeDeModelo(value['anthropicModelo'], DEFAULTS.anthropicModelo),
@@ -422,10 +448,37 @@ function coerce(raw: unknown): Settings {
  * o valor chega do renderer e de um arquivo editavel a mao: so letra, numero,
  * ponto, traco e sublinhado. Barra ou dois-pontos ali mudariam o endpoint.
  */
-function nomeDeModelo(raw: unknown, padrao: string): string {
+export function nomeDeModelo(raw: unknown, padrao: string): string {
   if (typeof raw !== 'string') return padrao
   const nome = raw.trim().replace(/^models\//, '')
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(nome) ? nome : padrao
+}
+
+/**
+ * O id de uma voz, ou ''.
+ *
+ * Vai parar no caminho da URL do TTS (`/v1/text-to-speech/<id>`) e chega do
+ * renderer e do config do AniRecap: so letra, numero, traco e sublinhado. Os
+ * do ElevenLabs tem 20 caracteres e os do Fish 32 (hex).
+ */
+export function idDeVoz(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const id = raw.trim()
+  return /^[A-Za-z0-9_-]{1,100}$/.test(id) ? id : ''
+}
+
+/** A voz padrao conferida: provedor conhecido, id e modelo limpos. */
+function vozSalva(raw: unknown): VozPadrao {
+  if (typeof raw !== 'object' || raw === null) return { ...DEFAULTS.vozPadrao }
+  const value = raw as Record<string, unknown>
+  const provedor = value['provedor'] === 'elevenlabs' || value['provedor'] === 'fish' ? value['provedor'] : ''
+  return {
+    provedor,
+    voiceId: provedor ? idDeVoz(value['voiceId']) : '',
+    // Vai num cabecalho/corpo do TTS, nao no caminho, mas a mesma regra dos
+    // modelos do Gemini serve: nome curto, sem espaco nem barra.
+    modelId: provedor ? nomeDeModelo(value['modelId'], '') : '',
+  }
 }
 
 /**

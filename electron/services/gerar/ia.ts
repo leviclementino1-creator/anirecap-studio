@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ehModeloReserva, type EtapaDoRoteiro, type ParadoNoReserva } from '@shared/roteiro'
 import { escolherProvedor, gerarJson, type PedidoJson, type RespostaJson } from '../llm'
 import { getSettings } from '../settings'
 import { chaveDoCache, gravarNoCache, lerDoCache } from './cache'
@@ -19,6 +20,11 @@ import { chaveDoCache, gravarNoCache, lerDoCache } from './cache'
  *   cache (`lerCache: false`), so grava: com o mesmo prompt (a IA repetiu um
  *   gancho, ou voltou-se para a mesma base com a mesma instrucao) ele devolvia
  *   o texto que o Levi acabou de recusar.
+ *
+ * E a regra do reserva: com `permitirReserva: false` (o padrao dos eventos e
+ * do roteiro), resposta guardada de um modelo reserva tambem nao e lida -- um
+ * modelo bom pode estar livre agora. Se nao estiver, o llm.ts devolve
+ * 'so-reserva' e, aceito o reserva, o cache volta a valer (sem gastar cota).
  */
 
 export type RespostaDoPasso<T> =
@@ -32,7 +38,18 @@ export type RespostaDoPasso<T> =
       /** Grava a resposta no cache. Chame quando o passo aceitou o valor; do cache, nao faz nada. */
       guardar: () => void
     }
-  | { ok: false; nota: string; bruto: string; ms: number }
+  | { ok: false; motivo?: undefined; nota: string; bruto: string; ms: number }
+  | {
+      /** So sobrou modelo reserva e o pedido nao aceitava: ninguem foi chamado. */
+      ok: false
+      motivo: 'so-reserva'
+      nota: string
+      bruto: string
+      ms: number
+      reserva: string
+      renovaEm: number
+      porCota: boolean
+    }
 
 /** Opcoes do passo, alem do pedido do llm.ts. */
 export interface OpcoesDoCache {
@@ -91,7 +108,8 @@ export async function gerarComCache<S extends z.ZodType>(
   if (chave && opcoes.lerCache !== false) {
     const guardada = lerDoCache<unknown>(chave)
     const conferida = guardada ? pedido.schema.safeParse(guardada.valor) : null
-    if (guardada && conferida?.success) {
+    const reservaRecusado = pedido.permitirReserva === false && guardada !== null && ehModeloReserva(guardada.modelo)
+    if (guardada && conferida?.success && !reservaRecusado) {
       return {
         ok: true,
         valor: conferida.data,
@@ -106,7 +124,14 @@ export async function gerarComCache<S extends z.ZodType>(
 
   const resposta = await chamar({ tempoLimiteMs: TEMPO_LIMITE_DO_PASSO_MS, ...pedido })
   const ms = Date.now() - inicio
-  if (!resposta.ok) return { ok: false, nota: resposta.nota, bruto: resposta.bruto, ms }
+  if (!resposta.ok) {
+    if (resposta.motivo === 'so-reserva') {
+      const { nota, bruto, reserva, renovaEm, porCota } = resposta
+      console.log(`[gerar:${pedido.etapa}] parou: so o reserva ${reserva} esta livre`)
+      return { ok: false, motivo: 'so-reserva', nota, bruto, ms, reserva, renovaEm, porCota }
+    }
+    return { ok: false, nota: resposta.nota, bruto: resposta.bruto, ms }
+  }
   console.log(`[gerar:${pedido.etapa}] ${resposta.provedor} ${resposta.modelo} ${(ms / 1000).toFixed(1)} s`)
   let guardou = false
   const guardar = (): void => {
@@ -120,4 +145,12 @@ export async function gerarComCache<S extends z.ZodType>(
     })
   }
   return { ok: true, valor: resposta.valor, provedor: resposta.provedor, modelo: resposta.modelo, doCache: false, ms, guardar }
+}
+
+/** A parada do llm.ts ("so sobrou reserva") no formato da tela, com a etapa onde parou. */
+export function paradaDoPasso(
+  resposta: { reserva: string; renovaEm: number; porCota: boolean },
+  etapa: EtapaDoRoteiro,
+): ParadoNoReserva {
+  return { motivo: 'so-reserva', etapa, renovaEm: resposta.renovaEm, porCota: resposta.porCota, reserva: resposta.reserva }
 }

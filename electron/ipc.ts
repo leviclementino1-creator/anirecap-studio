@@ -24,6 +24,8 @@ import {
   type SettingsPatch,
   type StartRenderArgs,
   type TesteDoGemini,
+  type TesteDeVoz,
+  type AchadoDoAniRecap,
   type TiraDaCena,
   type LegendasSincronizadas,
   type ArquivoDaBin,
@@ -75,6 +77,7 @@ import { analyze } from './services/transcribe'
 import { generateMetadata } from './services/metadata'
 import { iaDisponivel, testarGemini } from './services/llm'
 import { getSettings, getSettingsForRenderer, saveSettings } from './services/settings'
+import { importarDoAniRecap, procurarNoAniRecap, testarEleven, testarFish } from './services/voz-chaves'
 import { ensureSfxDir, listSfx, sfxDir } from './services/sfx'
 import { caminhoDaFonte, ensureFontesDir, fontesDir, listFontes } from './services/fontes'
 import {
@@ -766,6 +769,28 @@ export function registerIpc(): void {
       throw new Error('Cole a chave do Gemini antes de testar. Ela sai de graca em aistudio.google.com/apikey.')
     }
     return testarGemini(usada, settings.geminiModelo)
+  })
+
+  // Voz: mesma regra do Gemini -- a chave digitada vem do renderer, a salva
+  // fica aqui. Testar so le plano/saldo e vozes, nao gasta credito.
+  handle<[string | null], TesteDeVoz>(IPC.testarEleven, async (chave) => {
+    const usada = (typeof chave === 'string' ? chave.trim() : '') || getSettings().elevenlabsApiKey
+    if (!usada) throw new Error('Cole a chave do ElevenLabs antes de testar.')
+    return testarEleven(usada)
+  })
+
+  handle<[string | null], TesteDeVoz>(IPC.testarFish, async (chave) => {
+    const usada = (typeof chave === 'string' ? chave.trim() : '') || getSettings().fishApiKey
+    if (!usada) throw new Error('Cole a chave do Fish Audio antes de testar.')
+    return testarFish(usada)
+  })
+
+  // So le o config.json do AniRecap antigo; a tela recebe a dica, nunca a chave.
+  handle<[], AchadoDoAniRecap | null>(IPC.procurarAniRecap, async () => procurarNoAniRecap())
+
+  handle<[string], PublicSettings>(IPC.importarAniRecap, async (arquivo) => {
+    importarDoAniRecap(typeof arquivo === 'string' ? arquivo : '')
+    return getSettingsForRenderer()
   })
 
   handle<[string], null>(IPC.copyText, async (text) => {

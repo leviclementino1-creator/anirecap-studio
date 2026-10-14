@@ -2,6 +2,7 @@ import {
   adicionarVersao,
   aplicarEdicao,
   CODIGOS_PARA_REFAZER,
+  ehParadaNoReserva,
   faixaDePalavras,
   FRASES_POR_PAPEL,
   guardarNoHistorico,
@@ -18,6 +19,7 @@ import {
   type AlvoSec,
   type ContextoDaVersao,
   type PapelDaSecao,
+  type ParadoNoReserva,
   type PedidoDeRoteiro,
   type ProblemaDoRoteiro,
   type ProgressoDoRoteiro,
@@ -28,7 +30,7 @@ import {
 import type { EpisodeIndex } from '@shared/episodio'
 import { gerarEventos } from './eventos'
 import { umaFrasePorItem, umaFrasePorItemDaSecao } from './frases'
-import { gerarComCache, nomeDoProvedor } from './ia'
+import { gerarComCache, nomeDoProvedor, paradaDoPasso } from './ia'
 import { acertarNomesDaSecao, acertarNomesDoRoteiro, elencoDoEpisodio, type Elenco } from './nomes'
 import { frasesDoAlvo, promptDaSecao, promptDoRoteiro, SISTEMA_ROTEIRO, SISTEMA_SECAO } from './prompts'
 import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from './rascunho'
@@ -57,7 +59,11 @@ import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from './rascunho
  * - CANCELAR (cancelarRoteiro): a resposta que chega depois entra so no
  *   historico (guardarNoHistorico), sem trocar a versao da tela nem tirar a
  *   aprovacao;
- * - o rascunho e relido na hora de gravar (ver rascunho.ts).
+ * - o rascunho e relido na hora de gravar (ver rascunho.ts);
+ * - MODELO RESERVA: sem `pedido.aceitouReserva`, eventos e roteiro pedem com
+ *   `permitirReserva: false`. So sobrou reserva = devolve ParadoNoReserva sem
+ *   gravar versao (a atual e a aprovacao ficam como estavam) e a tela
+ *   pergunta. Na segunda tentativa, se ja ha uma resposta boa, fica ela.
  */
 
 /** Um pedido de roteiro por rascunho de cada vez: rascunhoId -> pedidoId ('' = sem id). */
@@ -111,7 +117,15 @@ interface Contexto {
   elenco: Elenco
   alvoSec: AlvoSec
   instrucao: string | null
+  /** O usuario aceitou o modelo reserva para este pedido. */
+  permitirReserva: boolean
   avisar: (progresso: ProgressoDoRoteiro) => void
+}
+
+/** O que escreverInteiro e refazerSecao devolvem quando deu certo. */
+interface Feito {
+  candidato: Candidato
+  doCache: boolean
 }
 
 async function gerar(
@@ -130,8 +144,10 @@ async function gerar(
 
   let doCache = true
   const avisos: string[] = []
+  const permitirReserva = pedido.aceitouReserva === true
   if (r.eventos.length === 0) {
-    const ev = await gerarEventos(rascunhoId, avisar)
+    const ev = await gerarEventos(rascunhoId, avisar, { permitirReserva })
+    if (ehParadaNoReserva(ev)) return ev
     doCache = ev.doCache
     avisos.push(...ev.avisos)
     r = lerRascunhoDoDisco(rascunhoId)
@@ -145,10 +161,12 @@ async function gerar(
     elenco: elencoDoEpisodio(indice),
     alvoSec: pedido.alvoSec,
     instrucao: pedido.instrucao?.trim() || null,
+    permitirReserva,
     avisar,
   }
   const secaoId = pedido.secaoId?.trim() || null
   const feito = secaoId ? await refazerSecao(ctx, secaoId) : await escreverInteiro(ctx)
+  if (ehParadaNoReserva(feito)) return feito
   doCache &&= feito.doCache
 
   // Relido agora: sem await daqui ate gravar. A versao ganha o numero livre do
@@ -281,7 +299,7 @@ function motivoDosTermos(problemas: readonly ProblemaDoRoteiro[], roteiro: Pick<
   return `algumas frases quebram as regras: ${itens.join('; ')}. Reescreva essas frases dentro das regras, sem perder a fidelidade.`
 }
 
-async function escreverInteiro(c: Contexto): Promise<{ candidato: Candidato; doCache: boolean }> {
+async function escreverInteiro(c: Contexto): Promise<Feito | ParadoNoReserva> {
   const faixa = faixaDePalavras(c.alvoSec)
   const quem = nomeDoProvedor()
   const anteriores = primeirasFrases(c.r)
@@ -315,12 +333,15 @@ async function escreverInteiro(c: Contexto): Promise<{ candidato: Candidato; doC
         }),
         etapa: 'roteiro',
         maxTokens: 8000,
+        permitirReserva: c.permitirReserva,
       },
       { lerCache },
     )
     if (!resposta.ok) {
-      // A segunda tentativa falhou (cota, rede): fica a primeira, que ja serve.
+      // A segunda tentativa falhou (cota, rede, so reserva livre): fica a
+      // primeira, que ja serve -- melhor que perguntar por um ajuste.
       if (melhor) break
+      if (resposta.motivo === 'so-reserva') return paradaDoPasso(resposta, 'roteiro')
       throw new Error(resposta.nota)
     }
     doCache &&= resposta.doCache
@@ -369,7 +390,7 @@ async function escreverInteiro(c: Contexto): Promise<{ candidato: Candidato; doC
   return { candidato: melhor, doCache }
 }
 
-async function refazerSecao(c: Contexto, secaoId: string): Promise<{ candidato: Candidato; doCache: boolean }> {
+async function refazerSecao(c: Contexto, secaoId: string): Promise<Feito | ParadoNoReserva> {
   const atual = roteiroAtual(c.r)
   if (!atual) throw new Error('Gere um roteiro antes de refazer uma parte.')
   const secao = atual.secoes.find((s) => s.id === secaoId)
@@ -413,11 +434,13 @@ async function refazerSecao(c: Contexto, secaoId: string): Promise<{ candidato: 
         }),
         etapa: 'secao',
         maxTokens: 4000,
+        permitirReserva: c.permitirReserva,
       },
       { lerCache: false },
     )
     if (!resposta.ok) {
       if (melhor) break
+      if (resposta.motivo === 'so-reserva') return paradaDoPasso(resposta, 'secao')
       throw new Error(resposta.nota)
     }
     doCache &&= resposta.doCache

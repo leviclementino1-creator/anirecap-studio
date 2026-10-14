@@ -346,6 +346,13 @@ export function CampoDeTempo({
 }
 
 /**
+ * A cor de "fora do combinado" do app (a do ponto escolhido na curva): aviso,
+ * nao erro. Mora aqui para a pergunta do modelo reserva usar sem importar a
+ * SecaoDoRoteiro (que importa a pergunta).
+ */
+export const COR_DE_AVISO = 'text-[#f6a23c]'
+
+/**
  * Um aviso dentro da secao ("Pode ser outro release"). Icone e texto neutros,
  * como as notas da StatusBar: em rosa, o aviso parecia botao ou selecao.
  */

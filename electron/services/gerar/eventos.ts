@@ -9,7 +9,7 @@ import {
   type EventosGerados,
   type ProgressoDoRoteiro,
 } from '@shared/roteiro'
-import { gerarComCache, nomeDoProvedor, type RespostaDoPasso } from './ia'
+import { gerarComCache, nomeDoProvedor, paradaDoPasso, type RespostaDoPasso } from './ia'
 import { acertarNomesDosEventos, elencoDoEpisodio, type Elenco } from './nomes'
 import { promptDeEventos, SISTEMA_EVENTOS } from './prompts'
 import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from './rascunho'
@@ -23,8 +23,16 @@ import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from './rascunho
  *   `[c0123 12:03] (Senku) texto`, com o elenco na grafia da legenda;
  * - montarEventos faz o resto: t0/t1 SAEM DAS CUES, cue de placa, de musica,
  *   de OP/ED ou inexistente sai, evento sem cue valida sai (com aviso);
- * - nenhum evento valido: uma nova tentativa com o aviso; de novo nada = erro.
+ * - nenhum evento valido: uma nova tentativa com o aviso; de novo nada = erro;
+ * - so modelo reserva livre e `permitirReserva` desligado (o padrao): PARA
+ *   sem chamar e devolve ParadoNoReserva, sem gravar nada. Os eventos ficam
+ *   fixos no rascunho, entao eventos do reserva pesariam em todo roteiro dele.
  */
+
+export interface OpcoesDosEventos {
+  /** O usuario aceitou o modelo reserva ("Usar modelo reserva"). Padrao false. */
+  permitirReserva?: boolean
+}
 
 /** Uma geracao por rascunho de cada vez: dois cliques (ou o roteiro pedindo junto) nao gastam cota duas vezes. */
 const emAndamento = new Map<string, Promise<EventosGerados>>()
@@ -32,10 +40,11 @@ const emAndamento = new Map<string, Promise<EventosGerados>>()
 export function gerarEventos(
   rascunhoId: string,
   avisar: (progresso: ProgressoDoRoteiro) => void,
+  opcoes: OpcoesDosEventos = {},
 ): Promise<EventosGerados> {
   const ja = emAndamento.get(rascunhoId)
   if (ja) return ja
-  const p = gerar(rascunhoId, avisar).finally(() => emAndamento.delete(rascunhoId))
+  const p = gerar(rascunhoId, avisar, opcoes.permitirReserva === true).finally(() => emAndamento.delete(rascunhoId))
   emAndamento.set(rascunhoId, p)
   return p
 }
@@ -83,7 +92,11 @@ function nomesForaDasFalas(eventos: readonly Evento[], indice: EpisodeIndex, ele
   return avisos
 }
 
-async function gerar(rascunhoId: string, avisar: (progresso: ProgressoDoRoteiro) => void): Promise<EventosGerados> {
+async function gerar(
+  rascunhoId: string,
+  avisar: (progresso: ProgressoDoRoteiro) => void,
+  permitirReserva: boolean,
+): Promise<EventosGerados> {
   const r = lerRascunhoDoDisco(rascunhoId)
   if (r.eventos.length > 0) return { rascunho: r, doCache: true, avisos: [] }
 
@@ -118,8 +131,12 @@ async function gerar(rascunhoId: string, avisar: (progresso: ProgressoDoRoteiro)
       prompt: promptDeEventos({ indice, falas, elenco, aviso }),
       etapa: 'eventos',
       maxTokens: 16000,
+      permitirReserva,
     })
-    if (!resposta.ok) throw new Error(resposta.nota)
+    if (!resposta.ok) {
+      if (resposta.motivo === 'so-reserva') return paradaDoPasso(resposta, 'eventos')
+      throw new Error(resposta.nota)
+    }
     doCache &&= resposta.doCache
     modelo = resposta.modelo
     const montado = montarEventos(acertarNomesDosEventos(resposta.valor, elenco), indice)

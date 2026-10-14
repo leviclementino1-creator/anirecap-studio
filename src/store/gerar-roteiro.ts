@@ -5,15 +5,18 @@ import {
   ALVO_PADRAO,
   INSTRUCAO_MAX,
   cuesElegiveis,
+  ehParadaNoReserva,
   fraseVazia,
   idsDeFrase,
   proximoId,
   roteiroAtual,
+  textoDaParada,
   validarRoteiro,
   type AlvoSec,
   type EtapaDoRoteiro,
   type Evento,
   type Frase,
+  type ParadoNoReserva,
   type ProblemaDoRoteiro,
   type RascunhoAberto,
   type RascunhoDoRecap,
@@ -61,6 +64,17 @@ export interface GeracaoEmCurso {
   comecou: boolean
 }
 
+/**
+ * O pedido parou antes do modelo RESERVA (os bons sem cota ou lotados) e a
+ * tela pergunta: "Usar modelo reserva" refaz este mesmo pedido com a
+ * permissao; "Esperar" fecha. Leva o pedido para refazer igual.
+ */
+export interface PerguntaDoReserva extends ParadoNoReserva {
+  /** A parte do "Refazer". null = o roteiro inteiro. */
+  secaoId: string | null
+  instrucao: string | null
+}
+
 /** O que a lixeira (ou o "Remover parte") tirou, para o "Desfazer" do rodape. */
 export type Remocao =
   | { tipo: 'frase'; secaoId: string; frase: Frase; posicao: number }
@@ -105,6 +119,8 @@ interface EstadoDoRoteiro {
   remocao: Remocao | null
   /** A frase com o cursor: o rodape nao grita "Frase vazia" enquanto ele escreve nela. */
   fraseEmFoco: string | null
+  /** O ultimo pedido parou antes do modelo reserva: a pergunta na tela. null = nenhuma. */
+  reserva: PerguntaDoReserva | null
 
   /** Abre (ou reabre) o rascunho do episodio e, sem roteiro, gera sozinho uma vez. */
   entrar: (episodioId: string) => Promise<void>
@@ -113,8 +129,15 @@ interface EstadoDoRoteiro {
    * quando as falas mudaram depois do roteiro. O de agora fica no disco.
    */
   recomecarRascunho: () => Promise<void>
-  /** Sem `secaoId`: "Outra versao" (ou a primeira). Com: "Refazer esta parte". */
-  gerar: (pedido?: { secaoId?: string; instrucao?: string }) => Promise<void>
+  /**
+   * Sem `secaoId`: "Outra versao" (ou a primeira). Com: "Refazer esta parte".
+   * `usarReserva`: ele aceitou o modelo reserva para este pedido.
+   */
+  gerar: (pedido?: { secaoId?: string; instrucao?: string; usarReserva?: boolean }) => Promise<void>
+  /** "Usar modelo reserva": refaz o pedido que parou, com a permissao. */
+  usarReserva: () => void
+  /** "Esperar": fecha a pergunta. O porque fica no cartao "Sem roteiro". */
+  esperarReserva: () => void
   /** Para de esperar. O que chegar depois vai para o historico, sem mexer na tela. */
   cancelarGeracao: () => void
   /** Troca a tela inteira por `mudar(tela)` e agenda a gravacao. Travado durante a IA. */
@@ -211,6 +234,7 @@ const LIMPO = {
   recadoDetalhe: null,
   remocao: null,
   fraseEmFoco: null,
+  reserva: null,
 } satisfies Partial<EstadoDoRoteiro>
 
 /** Os avisos do main que contam conserto na resposta da IA (os outros a tela ja mostra). */
@@ -407,7 +431,7 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       // O que esta digitado fica gravado no rascunho de agora antes de sair dele.
       await naFila(() => gravarPendente(id))
       if (!ainda(id) || get().geracao) return
-      set({ abrindo: true, erro: null, recado: null, recadoDetalhe: null, remocao: null })
+      set({ abrindo: true, erro: null, recado: null, recadoDetalhe: null, remocao: null, reserva: null })
       const r = await window.dangai.abrirRascunho(episodioId, true)
       if (get().episodioId !== episodioId) return
       if (!r.ok) {
@@ -426,6 +450,7 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       const token = ++ultimoToken
       const secaoId = pedido.secaoId ?? null
       const instrucao = pedido.instrucao?.trim().slice(0, INSTRUCAO_MAX) || null
+      const usarReserva = pedido.usarReserva === true
       const alvoSec = s.tela?.alvoSec ?? s.alvoSemRoteiro
       const comEventos = r.eventos.length === 0
       pararRelogio()
@@ -446,6 +471,7 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
         recado: null,
         recadoDetalhe: null,
         remocao: null,
+        reserva: null,
       })
       const vivo = (): boolean => get().geracao?.token === token
       const marcar = (patch: Partial<GeracaoEmCurso>): void => {
@@ -454,6 +480,11 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       }
       const falhou = (erro: string): void => {
         if (vivo()) set({ geracao: null, erro, falhaDaGeracao: erro })
+      }
+      // So sobrou o reserva: nada foi gravado (a versao e a aprovacao ficam). A
+      // tela pergunta; o pedido vai junto para o "Usar modelo reserva" refazer igual.
+      const parou = (p: ParadoNoReserva): void => {
+        if (vivo()) set({ geracao: null, reserva: { ...p, secaoId, instrucao } })
       }
 
       // A IA anterior deste rascunho (um pedido cancelado) ainda no ar: espera
@@ -474,21 +505,31 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
       })
       if (!pronto) return
 
-      if (get().rascunho!.eventos.length === 0) {
+      /*
+       * Com o reserva aceito, os eventos que faltam vao no proprio pedido do
+       * roteiro (o main roda os dois): o gerarEventos do IPC so leva o id, e
+       * pediria sem a permissao. A etapa vem do andamento do main.
+       */
+      if (get().rascunho!.eventos.length === 0 && !usarReserva) {
         marcar({ etapa: 'eventos', mensagem: null })
         const ev = await noAr(id, window.dangai.gerarEventos(id))
         if (!ainda(id)) return
         if (!ev.ok) return falhou(ev.error)
+        if (ehParadaNoReserva(ev.value)) return parou(ev.value)
         set({ rascunho: maisNovo(get().rascunho, ev.value.rascunho) })
         if (!vivo()) return
       }
 
       // A versao na tela antes do pedido: e para ela que a corrida do Cancelar volta.
       const anterior = get().rascunho!.atual
-      marcar({ etapa: secaoId ? 'secao' : 'roteiro', mensagem: null })
-      const ro = await noAr(id, window.dangai.gerarRoteiro(id, { alvoSec, instrucao, secaoId, pedidoId: String(token) }))
+      if (get().rascunho!.eventos.length > 0) marcar({ etapa: secaoId ? 'secao' : 'roteiro', mensagem: null })
+      const ro = await noAr(
+        id,
+        window.dangai.gerarRoteiro(id, { alvoSec, instrucao, secaoId, pedidoId: String(token), aceitouReserva: usarReserva }),
+      )
       if (!ainda(id)) return
       if (!ro.ok) return falhou(ro.error)
+      if (ehParadaNoReserva(ro.value)) return parou(ro.value)
       const { rascunho, roteiro, doCache, soNoHistorico, avisos } = ro.value
       const consertos = reparos(avisos)
 
@@ -554,6 +595,18 @@ export const useRoteiro = create<EstadoDoRoteiro>((set, get) => {
         }
         set({ rascunho: final, recado: `Versao ${roteiro.versao} guardada em Versoes.`, recadoDetalhe: null })
       })
+    },
+
+    usarReserva: () => {
+      const p = get().reserva
+      if (!p) return
+      void get().gerar({ secaoId: p.secaoId ?? undefined, instrucao: p.instrucao ?? undefined, usarReserva: true })
+    },
+
+    esperarReserva: () => {
+      const p = get().reserva
+      if (!p) return
+      set({ reserva: null, falhaDaGeracao: textoDaParada(p, true) })
     },
 
     cancelarGeracao: () => {
@@ -935,8 +988,13 @@ export function escutarRoteiro(): () => void {
  * Configuracoes (chave, cota, modelo). A nota inteira do llm.ts fica no
  * tooltip: cortada pelo rodape estreito, ela perdia justamente a parte do
  * "o que fazer".
+ *
+ * `espera`: nao e falha, e o "Esperar" do modelo reserva. A tela mantem a cor
+ * de aviso da pergunta, em vez de virar erro vermelho depois do clique.
  */
-export function resumoDaFalha(nota: string): { curto: string; configuracoes: boolean } {
+export function resumoDaFalha(nota: string): { curto: string; configuracoes: boolean; espera?: boolean } {
+  // O "Esperar" do modelo reserva: a frase ja e curta (textoDaParada).
+  if (/^Modelos bons/.test(nota)) return { curto: nota, configuracoes: false, espera: true }
   if (/cota gratis do Gemini acabou por hoje/i.test(nota)) {
     return { curto: 'Cota gratis acabou hoje', configuracoes: true }
   }

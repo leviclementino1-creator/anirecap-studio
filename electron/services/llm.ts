@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { z } from 'zod'
 import type { TesteDoGemini } from '@shared/channels'
+import { ehModeloReserva } from '@shared/roteiro'
 import { getSettings, type Settings } from './settings'
 
 /**
@@ -43,22 +44,55 @@ export interface PedidoJson<S extends z.ZodType> {
    * medido em 13/10/2026, o gemini-3.8-flash do free tier levou 176 s.
    */
   tempoLimiteMs?: number
+  /**
+   * false = no automatico do Gemini, quando so sobram modelos RESERVA (lite,
+   * nano: ehModeloReserva), NAO chama o reserva: devolve `motivo: 'so-reserva'`
+   * e quem pediu pergunta ao usuario. O roteiro do lite sai bem pior, e cota
+   * gasta nele nao volta.
+   *
+   * Padrao true: o planner e o metadata continuam descendo ate o reserva como
+   * sempre (para eles, reserva e melhor que nada). Modelo escolhido a mao nas
+   * configuracoes nao e afetado: foi escolha dele.
+   */
+  permitirReserva?: boolean
 }
 
-export type RespostaJson<T> =
-  | { ok: true; valor: T; provedor: Provedor; modelo: string }
-  | {
-      ok: false
-      /** Pronta para a interface, em portugues. */
-      nota: string
-      /**
-       * O erro tecnico, com o codigo HTTP quando houver. O friendlyAiNote do
-       * transcribe.ts traduz por palavra-chave ('401', '429', 'fetch', 'api
-       * key'), e continua funcionando com isto nos dois provedores.
-       */
-      bruto: string
-      provedor: Provedor | null
-    }
+/** Falha comum: a nota pronta e o erro tecnico. */
+export interface FalhaDeIa {
+  ok: false
+  /** Ausente na falha comum; 'so-reserva' em SoReserva. */
+  motivo?: undefined
+  /** Pronta para a interface, em portugues. */
+  nota: string
+  /**
+   * O erro tecnico, com o codigo HTTP quando houver. O friendlyAiNote do
+   * transcribe.ts traduz por palavra-chave ('401', '429', 'fetch', 'api
+   * key'), e continua funcionando com isto nos dois provedores.
+   */
+  bruto: string
+  provedor: Provedor | null
+}
+
+/**
+ * So sobraram modelos reserva e o pedido veio com `permitirReserva: false`:
+ * nenhuma chamada foi feita ao reserva. Tem `nota` e `bruto` como a falha
+ * comum, para quem nao trata o caso continuar funcionando.
+ */
+export interface SoReserva {
+  ok: false
+  motivo: 'so-reserva'
+  nota: string
+  bruto: string
+  provedor: 'gemini'
+  /** O reserva que o automatico usaria ("gemini-3.5-flash-lite"). */
+  reserva: string
+  /** Date.now() de quando o primeiro modelo bom volta (cota do dia ou fim da lotacao). */
+  renovaEm: number
+  /** true = os bons acabaram a cota do dia; false = estao lotados/lentos, voltam em minutos. */
+  porCota: boolean
+}
+
+export type RespostaJson<T> = { ok: true; valor: T; provedor: Provedor; modelo: string } | FalhaDeIa | SoReserva
 
 /**
  * Falha de IA para quem precisa lancar (o planner, cujo chamador espera
@@ -109,7 +143,7 @@ const aposentados = new Set<string>()
  * por modelo (medido em 13/10/2026: o gemini-3.8-flash esgotou os 20 do dia e
  * o 3.7-flash, o 3-flash-preview e o 3.5-flash-lite continuaram respondendo).
  */
-const lotados = new Map<string, number>()
+const lotados = new Map<string, { ate: number; porCota: boolean }>()
 const LOTADO_POR_MS = 5 * 60_000
 
 /**
@@ -139,11 +173,38 @@ export function esquecerModelos(): void {
 
 function indisponivel(id: string): boolean {
   if (aposentados.has(id)) return true
-  const ate = lotados.get(id)
-  if (ate === undefined) return false
-  if (Date.now() < ate) return true
+  const marca = lotados.get(id)
+  if (marca === undefined) return false
+  if (Date.now() < marca.ate) return true
   lotados.delete(id)
   return false
+}
+
+/**
+ * A resposta de "so sobrou reserva": quando o primeiro modelo BOM volta, pelo
+ * que esta sessao ja sabe (a marca de cada um em `lotados`). Sem marca nenhuma
+ * (a lista nem tinha modelo bom), vale a renovacao da cota do dia.
+ */
+function paradaNoReserva(reserva: string, agora = Date.now()): SoReserva {
+  let volta: { ate: number; porCota: boolean } | null = null
+  for (const [id, marca] of lotados) {
+    if (ehModeloReserva(id) || marca.ate <= agora) continue
+    if (!volta || marca.ate < volta.ate) volta = marca
+  }
+  const renovaEm = volta?.ate ?? agora + msAteRenovarACota(agora)
+  const porCota = volta?.porCota ?? true
+  return {
+    ok: false,
+    motivo: 'so-reserva',
+    nota: porCota
+      ? `Os modelos bons do Gemini acabaram a cota de hoje (renova a meia-noite do Pacifico, 4h ou 5h em Brasilia). So o ${reserva} esta livre.`
+      : `Os modelos bons do Gemini estao lotados agora. So o ${reserva} esta livre.`,
+    bruto: `so reserva livre (${reserva}); bom volta em ${Math.round((renovaEm - agora) / 60_000)} min`,
+    provedor: 'gemini',
+    reserva,
+    renovaEm,
+    porCota,
+  }
 }
 
 /** O 404 de modelo aposentado as vezes diz qual usar: "use models/gemini-X". */
@@ -216,12 +277,7 @@ export async function gerarJson<S extends z.ZodType>(
   return resposta
 }
 
-function falha(nota: string, bruto: string, provedor: Provedor | null): {
-  ok: false
-  nota: string
-  bruto: string
-  provedor: Provedor | null
-} {
+function falha(nota: string, bruto: string, provedor: Provedor | null): FalhaDeIa {
   return { ok: false, nota, bruto, provedor }
 }
 
@@ -307,7 +363,11 @@ async function viaGemini<S extends z.ZodType>(
   modeloConfigurado: string,
 ): Promise<RespostaJson<z.infer<S>>> {
   const schema = schemaParaGemini(pedido.schema)
-  let modelo = modeloConfigurado || (await modeloAutomatico(chave))
+  // So o automatico desce ate o reserva; o escolhido a mao fica como esta.
+  const soBons = pedido.permitirReserva === false && !modeloConfigurado
+  const inicial = modeloConfigurado || (await modeloAutomatico(chave, soBons))
+  if (typeof inicial !== 'string') return paradaNoReserva(inicial.reserva)
+  let modelo = inicial
   let formato = formatoQueServe
   let trocouFormato = false
   /*
@@ -348,11 +408,20 @@ async function viaGemini<S extends z.ZodType>(
     const esgotou = erro.status === 429 && (erro.cotaDoDia || erro.semCotaGratis)
     if ((aposentou || lotou || esgotou) && !modeloConfigurado) {
       if (aposentou) aposentados.add(modelo)
-      else lotados.set(modelo, Date.now() + (esgotou ? msAteRenovarACota() : LOTADO_POR_MS))
+      else {
+        lotados.set(
+          modelo,
+          esgotou
+            ? { ate: Date.now() + msAteRenovarACota(), porCota: true }
+            : { ate: Date.now() + LOTADO_POR_MS, porCota: false },
+        )
+      }
       automatico = null
       if (trocasDeModelo < MAX_TROCAS_DE_MODELO) {
         const sugerido = aposentou ? sucessorSugerido(erro.mensagem) : null
-        const outro = sugerido && !indisponivel(sugerido) ? sugerido : await outroDaLista(chave)
+        const sugeridoServe = sugerido !== null && !indisponivel(sugerido) && !(soBons && ehModeloReserva(sugerido))
+        const lista = sugeridoServe ? null : await escolherDaLista(chave, soBons)
+        const outro = sugeridoServe ? sugerido : (lista?.modelo ?? null)
         trocasDeModelo += 1
         if (outro && outro !== modelo) {
           console.warn(`[llm] gemini: ${modelo} deu ${erro.status}, indo no ${outro}`)
@@ -360,6 +429,9 @@ async function viaGemini<S extends z.ZodType>(
           automatico = { chave, modelo }
           continue
         }
+        // So sobrou reserva e este pedido nao aceita reserva: para ANTES de
+        // chamar o reserva, e quem pediu pergunta ao usuario.
+        if (lista?.reserva) return paradaNoReserva(lista.reserva)
       }
       // Rodou a lista e nenhum atendeu. A nota do 404 e a do "limit: 0" mandam
       // escolher outro modelo -- nao servem para quem ja esta no automatico. A
@@ -372,7 +444,7 @@ async function viaGemini<S extends z.ZodType>(
     // Demorou demais no automatico: o "Tente de novo" vai em outro modelo. Sem
     // trocar agora, que seriam mais minutos de espera na mesma chamada.
     if (erro.codigo === 'TIMEOUT' && !modeloConfigurado) {
-      lotados.set(modelo, Date.now() + LOTADO_POR_MS)
+      lotados.set(modelo, { ate: Date.now() + LOTADO_POR_MS, porCota: false })
       automatico = null
     }
     return falha(notaDoGemini(erro, modelo), brutoDoGemini(erro), 'gemini')
@@ -814,22 +886,24 @@ export function modelosDeTexto(ids: readonly string[]): string[] {
 }
 
 /**
- * O modelo do automatico: o melhor "flash" estavel e cheio (nao lite), do mais
- * novo; senao qualquer Gemini de texto. Os que ja deram 404 nesta sessao ficam
- * de fora.
+ * O modelo do automatico: o melhor "flash" estavel e cheio (nao reserva: lite,
+ * nano...), do mais novo; senao qualquer Gemini de texto. Os que ja deram 404
+ * nesta sessao, e os lotados ou sem cota, ficam de fora.
  *
  * "Flash" porque e a familia da cota gratis, e e rapido o bastante para a
  * analise nao parecer travada. Nao ha preferencia fixa por versao: o Google
  * aposenta modelo para chave nova antes de tira-lo da lista.
+ *
+ * `soBons`: o reserva nem entra. null = nao ha modelo BOM livre agora.
  */
-export function melhorFlash(ids: readonly string[]): string | null {
-  const texto = modelosDeTexto(ids.filter((id) => !indisponivel(id)))
+export function melhorFlash(ids: readonly string[], soBons = false): string | null {
+  const texto = modelosDeTexto(ids.filter((id) => !indisponivel(id) && !(soBons && ehModeloReserva(id))))
   const flashes = texto
     .filter((id) => id.includes('flash'))
     .sort(
       (a, b) =>
         Number(instavel(a)) - Number(instavel(b)) ||
-        Number(a.includes('lite')) - Number(b.includes('lite')) ||
+        Number(ehModeloReserva(a)) - Number(ehModeloReserva(b)) ||
         versaoDe(b) - versaoDe(a) ||
         a.length - b.length,
     )
@@ -869,28 +943,43 @@ export async function listarModelosGemini(chave: string): Promise<string[]> {
 }
 
 /**
- * O proximo modelo para quando o atual falhou: so da lista, nunca o padrao fixo
- * (que pode ser justamente o aposentado). null quando nao ha alternativa.
+ * O proximo modelo pela lista, para quando o atual falhou: so da lista, nunca
+ * o padrao fixo (que pode ser justamente o aposentado). null = sem lista (rede,
+ * chave).
+ *
+ * `modelo` e o melhor que o pedido aceita (null = nenhum). Com `soBons` e
+ * nenhum bom livre, `reserva` diz qual reserva o automatico usaria -- e o
+ * sinal de parar e perguntar, em vez de chamar.
  */
-async function outroDaLista(chave: string): Promise<string | null> {
+async function escolherDaLista(
+  chave: string,
+  soBons: boolean,
+): Promise<{ modelo: string | null; reserva: string | null } | null> {
+  let ids: string[]
   try {
-    return melhorFlash(await listarModelosGemini(chave))
+    ids = await listarModelosGemini(chave)
   } catch {
     return null
   }
+  const modelo = melhorFlash(ids, soBons)
+  return { modelo, reserva: soBons && !modelo ? melhorFlash(ids) : null }
 }
 
-async function modeloAutomatico(chave: string): Promise<string> {
-  if (automatico?.chave === chave) return automatico.modelo
-  try {
-    const modelo = melhorFlash(await listarModelosGemini(chave)) ?? GEMINI_PADRAO
-    automatico = { chave, modelo }
-    return modelo
-  } catch {
-    // Sem lista (rede, chave), vai no padrao: o erro de verdade aparece na
-    // chamada, com a nota certa.
-    return GEMINI_PADRAO
-  }
+/**
+ * O modelo do automatico, lembrado por chave. Com `soBons`, um reserva
+ * lembrado nao serve: a lista e lida de novo (um bom pode ter voltado da
+ * lotacao) e, se so houver reserva, volta `{ reserva }` sem chamar ninguem.
+ */
+async function modeloAutomatico(chave: string, soBons = false): Promise<string | { reserva: string }> {
+  if (automatico?.chave === chave && !(soBons && ehModeloReserva(automatico.modelo))) return automatico.modelo
+  const lista = await escolherDaLista(chave, soBons)
+  // Sem lista (rede, chave), vai no padrao: o erro de verdade aparece na
+  // chamada, com a nota certa.
+  if (!lista) return GEMINI_PADRAO
+  if (!lista.modelo && lista.reserva) return { reserva: lista.reserva }
+  const modelo = lista.modelo ?? GEMINI_PADRAO
+  automatico = { chave, modelo }
+  return modelo
 }
 
 /**

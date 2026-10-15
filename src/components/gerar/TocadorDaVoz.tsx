@@ -5,6 +5,7 @@ import {
   ROTULO_DA_FONTE,
   estadoDaVoz,
   modeloEleven,
+  velocidadeNativaEnviada,
   type ConfigDaVoz,
   type PalavraComTempo,
   type TakeDaVoz,
@@ -385,7 +386,10 @@ function detalheDoTake(take: TakeDaVoz, vozes: Record<'elevenlabs' | 'fish', Voz
   }
   return [
     `${ROTULO_DA_FONTE[c.fonte]} · ${nomeDaVoz(c, vozes)}${c.fonte === 'elevenlabs' ? ` · ${modeloEleven(c.modelId).nome}` : c.fonte === 'fish' ? ` · ${c.modelId}` : ''}`,
-    `${textoDaVelocidade(c.velocidade)} · ${c.cortarPausas ? 'pausas cortadas' : 'pausas inteiras'} · ${segundosCurtos(take.duracao)}`,
+    // As duas velocidades (15/10): a nativa (gerada) e o acelerar (o pos). A
+    // nativa e a que FOI ao provedor: o eleven_v4 nao tem speed e gera a 1,0,
+    // mesmo com a do perfil guardada no take (a mesma conta do cache e do slider).
+    `${c.fonte !== 'importado' ? `velocidade ${textoDaVelocidade(velocidadeNativaEnviada(c))} · ` : ''}acelerar ${textoDaVelocidade(c.velocidade)} · ${c.cortarPausas ? 'pausas cortadas' : 'pausas inteiras'} · ${segundosCurtos(take.duracao)}`,
     take.cobrados > 0 ? textoDoGasto(c.fonte, take.cobrados) : 'sem custo',
     take.volume ? `volume ${take.volume.lufs.toFixed(1).replace('.', ',')} LUFS ${take.volume.ganho >= 0 ? '+' : ''}${take.volume.ganho.toFixed(1).replace('.', ',')} dB` : null,
     origem[take.origemDoAlinhamento],

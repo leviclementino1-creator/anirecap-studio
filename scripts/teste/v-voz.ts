@@ -240,7 +240,8 @@ function testesDoImportar(): void {
   conferir('nada em texto puro no settings.json', [texto.includes(CHAVE), 'elevenlabsApiKey' in disco], [false, false])
   conferir('cifrada no campo *Enc', typeof disco['elevenlabsApiKeyEnc'], 'string')
   conferir('o *Enc abre na chave certa', decifrar(String(disco['elevenlabsApiKeyEnc'])) === CHAVE, true)
-  conferir('voz padrao veio junto', disco['vozPadrao'], { provedor: 'elevenlabs', voiceId: VOZ, modelId: MODELO })
+  // A velocidade nativa sai no padrao do perfil (1,2, 15/10): importar so a voz nao a escolhe.
+  conferir('voz padrao veio junto', disco['vozPadrao'], { provedor: 'elevenlabs', voiceId: VOZ, modelId: MODELO, velocidadeNativa: 1.2 })
 
   configureSettings(dados) // sem cache: le do disco
   conferir('ida e volta', getSettings().elevenlabsApiKey === CHAVE, true)
@@ -263,9 +264,14 @@ function testesDoImportar(): void {
   const comFish = readFileSync(arquivoSettings, 'utf8')
   conferir('fish cifrada tambem', [comFish.includes(CHAVE_FISH), typeof JSON.parse(comFish)['fishApiKeyEnc']], [false, 'string'])
   saveSettings({ vozPadrao: { provedor: 'fish', voiceId: 'barra/x', modelId: 'a b' } as never })
-  conferir('voz com id ou modelo invalido e limpa', getSettings().vozPadrao, { provedor: 'fish', voiceId: '', modelId: '' })
+  conferir('voz com id ou modelo invalido e limpa', getSettings().vozPadrao, { provedor: 'fish', voiceId: '', modelId: '', velocidadeNativa: 1.2 })
   saveSettings({ vozPadrao: { provedor: 'outro', voiceId: VOZ, modelId: MODELO } as never })
-  conferir('provedor desconhecido vira nenhum', getSettings().vozPadrao, { provedor: '', voiceId: '', modelId: '' })
+  conferir('provedor desconhecido vira nenhum', getSettings().vozPadrao, { provedor: '', voiceId: '', modelId: '', velocidadeNativa: 1.2 })
+  saveSettings({ vozPadrao: { provedor: 'elevenlabs', voiceId: VOZ, modelId: MODELO, velocidadeNativa: 1 } })
+  saveSettings({ vozPadrao: { provedor: 'elevenlabs', voiceId: VOZ, modelId: '' } })
+  conferir('trocar so a voz mantem a velocidade nativa escolhida', getSettings().vozPadrao.velocidadeNativa, 1)
+  saveSettings({ vozPadrao: { provedor: 'elevenlabs', voiceId: VOZ, modelId: '', velocidadeNativa: 1.5 } })
+  conferir('velocidade nativa fora da faixa volta para dentro (1,2)', getSettings().vozPadrao.velocidadeNativa, 1.2)
 
   console.log('migracao: chave de voz aberta no settings antigo')
   writeFileSync(arquivoSettings, JSON.stringify({ elevenlabsApiKey: CHAVE, whisperModel: 'base' }), 'utf8')

@@ -9,11 +9,14 @@ import { ehEpisodio, useGerar } from '@/store/gerar'
  * "Adicionar ao projeto" da Biblioteca), na mesma altura e no mesmo tamanho de
  * letra dos vizinhos. E o primeiro da linha no Tab.
  *
- * Clicar abre o dialogo e vai direto ao episodio escolhido -- um clique a
- * menos que abrir o assistente vazio. Com um episodio ja no assistente (ou uma
- * analise rodando), clicar so reabre onde parou.
+ * Clicar abre a escolha "Novo recap | Continuar" (EscolhaDoRecap, decisao do
+ * Levi em 15/10): comecar outro episodio ou voltar a um dos ultimos recaps
+ * onde parou. Sem recap nenhum, vai direto ao dialogo do .mkv -- um clique a
+ * menos. Com um episodio ja no assistente (ou uma analise rodando), clicar so
+ * reabre onde parou. Quem decide e o abrirOuEscolher (gerar.ts).
  *
- * Soltar o .mkv EM CIMA do botao tambem vale, como no "Legendar video pronto":
+ * Soltar o .mkv EM CIMA do botao vai direto para um recap NOVO, sem a
+ * escolha, como no "Legendar video pronto":
  * enquanto um arquivo passa por cima, ele acende cheio. Solto em qualquer
  * outro lugar da tela inicial, o .mkv continua fazendo o que o Dangai faz
  * (vira clipe de um projeto novo). `aoAcender` avisa a tela inicial, que apaga
@@ -65,7 +68,7 @@ export function BotaoGerarRecap({
         event.stopPropagation()
         useGerar.getState().abrir(episodio)
       }}
-      title={rodando ? 'Analise rodando. Clique para ver o andamento.' : 'Gerar recap de um episodio (clique ou solte o .mkv aqui)'}
+      title={rodando ? 'Analise rodando. Clique para ver o andamento.' : 'Novo recap ou continuar um (solte o .mkv aqui para um novo)'}
       className={[
         'flex shrink-0 items-center gap-2 rounded-sm border border-accent px-3 py-1.5 text-[12px] font-medium transition-colors duration-150',
         acesso ? 'bg-accent text-white' : 'bg-accent-dim text-ink hover:bg-accent-glow',

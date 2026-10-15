@@ -253,6 +253,37 @@ anime novo ficava com 1 retrato por personagem (AniList) e terminava em
      `mal-direto/scripts/t_parser.py`, `t_falhas.py` (MAL respondendo torto)
      e `t_kitsu_nome.py`; o aviso tem `scripts/teste/v-arte-unica.ts`.
 
+### Acento no caminho e placa sem kernel no cu128 (15/10)
+
+Motivo: o app instalado roda em PCs que não são o do Levi. As duas mudanças
+são pequenas e marcadas `[Studio]`; a 9 é para levar ao ancut-hub-engine.
+
+9. **`app/cv2_unicode.py`** (arquivo novo) + **`app/headless.py`** (`main()`,
+   uma chamada antes do modo, menos no `probe`). O OpenCV 5 do lock
+   (`opencv-python 5.0.0.93`) abre arquivo pela API ANSI do Windows: com
+   acento no caminho (`C:\Users\Usuário`, anime com acento na pasta), o
+   `cv2.imwrite` devolve False e o `cv2.imread` devolve None, sem erro. O
+   corte saía normal (o ffmpeg e o `VideoCapture` aceitam), mas nenhum keyframe
+   era gravado e nenhuma foto do elenco lida: o episódio terminava sem
+   personagem nenhum. O módulo troca os dois por `np.fromfile + imdecode` e
+   `imencode + tofile` (o jeito do `rostos.py`) SÓ quando o caminho não é
+   ASCII: nas pastas do Levi o resultado é o do upstream byte a byte.
+   - Medido (`extract_keyframes_batch` real, scratchpad `v010/corrigir`): sem
+     a troca, "Usuario" = 3 de 3 keyframes, "Usuário" = 0 de 3; com a troca,
+     3 de 3 nos dois e o `imread` lê os três.
+10. **`app/config.py`**: `use_cuda` nasce `False` com
+    `ANIRECAP_MOTOR_SEM_CUDA=1`. O runtime cu128 cuja conferência não rodou a
+    conta na GPU (GTX 10xx: o torch 2.11 cu128 só tem sm_75+) subia com
+    `CUDA_VISIBLE_DEVICES=-1`, que escondia a placa também do ffmpeg (sem
+    NVENC/NVDEC: `cuInit` = NO_DEVICE). Agora o torch vai para a CPU pelo
+    `use_cuda` de sempre (YOLO, CLIP, SCRFD, `rostos.py`) e o ffmpeg segue
+    com a placa. Só do Studio.
+
+Os modelos (CLIP, YOLO, CCIP, SCRFD) no app instalado vão para
+`<runtime>\modelos` (`HF_HOME`, `motor-runtime/ambiente.ts`), não para o
+`~/.cache/huggingface`: entram no disco escolhido, no Remover e no
+desinstalador. No dev continua o cache global.
+
 ## Como o Studio chama
 
 `electron/services/motor.ts`:
@@ -358,7 +389,7 @@ normal.
 ## Atualizar a cópia
 
 1. Copiar o ancut-hub-engine novo por cima de `motor/` (sem `.venv`).
-2. Reaplicar as oito mudanças acima (procurar `[Studio]` no diff; o
+2. Reaplicar as dez mudanças acima (procurar `[Studio]` no diff; o
    `app/rostos.py` é só do Studio e fica como está; o
    `app/providers/mal_direto.py` fica até o upstream ter o seu).
 3. Atualizar o commit no topo deste arquivo e no `NOTICE`.

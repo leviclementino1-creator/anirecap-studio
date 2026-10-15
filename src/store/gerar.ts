@@ -19,6 +19,7 @@ import {
 import type { RascunhoAberto } from '@shared/roteiro'
 import { useProject } from './project'
 import { passoAoRestaurar, type PassoDoAssistente } from './gerar-passos'
+import { recapsParaContinuar, type RecapParaContinuar } from './gerar-continuar'
 import { pedirMotor, quandoAFaseMudar } from './motor-runtime'
 
 /*
@@ -80,6 +81,27 @@ export interface DescobertaPendente {
   motivo: 'anime-nao-encontrado' | 'sem-referencias'
   motor: Motor
   erro: string
+}
+
+/**
+ * O recado de um Continuar que nao abriu, dito para ESTA tela: o main manda
+ * "Abra o episodio de novo no passo 1", mas na escolha nao ha passo 1 -- o
+ * caminho e o Novo recap com o .mkv.
+ */
+export function recadoDaEscolha(erro: string): string {
+  return /Abra o episodio de novo no passo 1/.test(erro) ? 'Episodio nao encontrado. Use Novo recap.' : erro
+}
+
+/** A escolha "Novo recap | Continuar" na tela (EscolhaDoRecap.tsx, regras em gerar-continuar.ts). */
+export interface EscolhaAberta {
+  /** As linhas do "Continuar", do mais recente ao mais antigo. Nunca vazia: sem recap, o clique vai direto ao arquivo. */
+  recaps: RecapParaContinuar[]
+  /** O episodio que esta abrindo (clicou na linha). As outras linhas esperam. */
+  abrindo: string | null
+  /** Por que o ultimo nao abriu (o recado do abrirRascunho), em ASCII. */
+  erro: string | null
+  /** O episodio cujo Continuar nao abriu: a linha fica marcada e o foco volta a ela. */
+  falhou?: string | null
 }
 
 interface EstadoDoGerar {
@@ -165,10 +187,12 @@ interface EstadoDoGerar {
    */
   passo: PassoDoAssistente
   /**
-   * O rascunho que o "voltar onde parou" ja abriu ao reabrir o app: o passo 2
-   * pega este em vez de pedir de novo ao main. null = nada guardado.
+   * O rascunho que o "Continuar" ja abriu: o passo 2 pega este em vez de pedir
+   * de novo ao main. null = nada guardado.
    */
   rascunhoRestaurado: RascunhoAberto | null
+  /** A escolha "Novo recap | Continuar" aberta. null = fechada. Fica fora do `limpo`: nao e do episodio. */
+  escolha: EscolhaAberta | null
 
   /** Vai ao passo. O 2 e o 3 so com o episodio pronto (podeIrAoRoteiro). */
   irParaPasso: (passo: PassoDoAssistente) => void
@@ -181,10 +205,22 @@ interface EstadoDoGerar {
   ajustesVistos: () => void
   /**
    * A porta do assistente (botao da tela inicial, paleta): com um episodio ja
-   * nele, reabre onde parou; sem, vai direto ao dialogo de escolher o .mkv --
-   * um clique a menos que abrir o assistente vazio.
+   * nele (ou uma analise rodando), reabre onde parou; sem, abre a escolha
+   * "Novo recap | Continuar" -- e, sem recap nenhum para continuar, vai
+   * direto ao dialogo de escolher o .mkv (decisao do Levi, 15/10).
    */
   abrirOuEscolher: () => Promise<void>
+  /**
+   * "Novo recap" da escolha: com `path` (o .mkv solto nela), abre com ele;
+   * sem, o dialogo. Cancelar o dialogo deixa a escolha na tela.
+   */
+  novoRecap: (path?: string) => Promise<void>
+  /**
+   * "Continuar" um recap da escolha: reabre o episodio do rascunho no passo
+   * onde parou. Nao abriu: a escolha fica, com o recado do main.
+   */
+  continuar: (episodioId: string) => Promise<void>
+  fecharEscolha: () => void
   fechar: () => void
   /** Dialogo nativo. true = escolheu um arquivo (e o assistente abriu). */
   escolherArquivo: () => Promise<boolean>
@@ -300,13 +336,10 @@ let geracao = 0
 let sincronizando: Promise<void> | null = null
 
 /**
- * "Voltar onde parou" roda UMA vez por sessao, na primeira abertura do
- * assistente: depois disso, assistente vazio quer dizer que ele trocou de
- * episodio de proposito, e reabrir o antigo atrapalharia.
+ * A lista de rascunhos no ar (o clique na porta): o segundo clique no botao
+ * nao abre o dialogo nem a escolha por cima.
  */
-let jaRestaurou = false
-/** Um restaurar no ar: o segundo clique no botao nao abre o dialogo por cima. */
-let restaurando = false
+let lendoAPorta = false
 
 /**
  * Os receptores do progresso e do fim, preenchidos dentro do create (precisam
@@ -439,6 +472,10 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       else if (corteDeOutro?.episodioId === e.episodioId) set({ corteDeOutro: null })
       return
     }
+    // O corte deste episodio corria como "de outro" (Trocar episodio) e ele foi
+    // reaberto (Continuar, ou o mesmo .mkv pelo dialogo): agora ele e o da tela.
+    // Sem isto a barra de status ficava presa no "Cenas 30%" velho para sempre.
+    const deOutro = corteDeOutro?.episodioId === e.episodioId ? { corteDeOutro: null } : {}
     // O tempo de motor desta rodada, quando ela acaba (pronta, parada ou cancelada):
     // como na analise em primeiro plano, o resumo soma as rodadas do episodio.
     const anterior = get().corte
@@ -448,13 +485,14 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     const gasto = get().tempoDoMotor
     const tempoDoMotor = acabouRodada ? { segundos: gasto.segundos + segundos, rodadas: gasto.rodadas + 1 } : gasto
     if (!e.indice) {
-      set({ corte: maisNovo(anterior, e.estado), tempoDoMotor })
+      set({ corte: maisNovo(anterior, e.estado), tempoDoMotor, ...deOutro })
       return
     }
     const novo = e.indice
     // O recado "ainda sendo cortadas" falava de antes das cenas chegarem.
     const recado = get().recado
     set({
+      ...deOutro,
       corte: e.estado,
       indice: novo,
       ...(recado?.startsWith('As cenas ainda') ? { recado: null } : {}),
@@ -480,21 +518,21 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
   }
 
   /**
-   * VOLTAR ONDE PAROU: o rascunho mais recente (listarRascunhos) volta com o
-   * episodio dele, direto no passo 2. O store do passo 1 nao persiste, entao
-   * ele e remontado do indice que o abrirRascunho devolve (caminhos ja
-   * corrigidos); a sonda (medidas e faixas de legenda) chega depois, em
-   * segundo plano, se o arquivo ainda existir. true = restaurou.
+   * CONTINUAR UM RECAP: o rascunho mais recente do episodio `episodioId`
+   * (abrirRascunho) volta com o episodio dele, no passo onde parou. O store do
+   * passo 1 nao persiste, entao ele e remontado do indice que o abrirRascunho
+   * devolve (caminhos ja corrigidos); a sonda (medidas e faixas de legenda)
+   * chega depois, em segundo plano, se o arquivo ainda existir -- video que
+   * sumiu nao impede: roteiro e voz moram no rascunho, as cenas na biblioteca.
+   * null = abriu; texto = por que nao (o erro do main, ja em ASCII).
    */
-  const restaurar = async (): Promise<boolean> => {
-    const lista = await window.dangai.listarRascunhos()
-    if (!lista.ok || lista.value.length === 0) return false
-    const aberto = await window.dangai.abrirRascunho(lista.value[0]!.episodioId)
-    if (!aberto.ok) return false
+  const restaurar = async (episodioId: string): Promise<string | null> => {
+    const aberto = await window.dangai.abrirRascunho(episodioId)
+    if (!aberto.ok) return aberto.error
     // Um arquivo chegou enquanto isso (soltou um .mkv): ele manda.
     if (get().arquivo !== null || get().job !== null) {
       set({ aberto: true })
-      return true
+      return null
     }
     const { indice } = aberto.value
     const minhaGeracao = ++geracao
@@ -511,6 +549,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       passo: passoAoRestaurar(aberto.value.rascunho),
       rascunhoRestaurado: aberto.value,
       corte: corteDoIndice(indice),
+      // O corte dele seguia por tras como "de outro": volta a ser o da tela.
+      ...(get().corteDeOutro?.episodioId === indice.id ? { corteDeOutro: null } : {}),
     })
     if (!get().motor?.studio.pronto) void conferirMotor()
     /*
@@ -532,7 +572,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     void window.dangai.sondarEpisodio(indice.fonte.path).then((r) => {
       if (r.ok && minhaGeracao === geracao) set({ sonda: r.value })
     })
-    return true
+    return null
   }
 
   const procurar = async (minhaGeracao: number): Promise<void> => {
@@ -713,6 +753,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
     job: null,
     corteDeOutro: null,
     ajustesPedidos: false,
+    escolha: null,
 
     abrir: (path) => {
       set({ aberto: true })
@@ -731,18 +772,59 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         get().abrir()
         return
       }
-      if (restaurando) return
-      if (!jaRestaurou) {
-        jaRestaurou = true
-        restaurando = true
-        try {
-          if (await restaurar()) return
-        } finally {
-          restaurando = false
-        }
+      if (lendoAPorta || get().escolha) return
+      /*
+       * Antes, o primeiro clique da sessao reabria sozinho o ultimo rascunho,
+       * e quem queria comecar outro episodio caia no recap velho. Agora ele
+       * escolhe: "Novo recap" ou um dos ultimos. A lista que falha vale como
+       * vazia -- o dialogo de sempre continua sendo um caminho.
+       */
+      lendoAPorta = true
+      let recaps: RecapParaContinuar[] = []
+      try {
+        const lista = await window.dangai.listarRascunhos()
+        if (lista.ok) recaps = recapsParaContinuar(lista.value)
+      } finally {
+        lendoAPorta = false
+      }
+      // Um .mkv solto no botao chegou enquanto a lista vinha: ele ja abriu o assistente.
+      if (get().arquivo !== null || get().job !== null) return
+      if (recaps.length > 0) {
+        set({ escolha: { recaps, abrindo: null, erro: null } })
+        return
       }
       await get().escolherArquivo()
     },
+
+    novoRecap: async (path) => {
+      if (get().escolha?.abrindo) return
+      if (path) {
+        set({ escolha: null })
+        get().abrir(path)
+        return
+      }
+      const jaAberto = get().aberto
+      const escolheu = await get().escolherArquivo()
+      // Escolheu, ou o dialogo falhou e o assistente abriu com o erro: a escolha sai.
+      if (escolheu || (!jaAberto && get().aberto)) set({ escolha: null })
+    },
+
+    continuar: async (episodioId) => {
+      const antes = get().escolha
+      if (antes?.abrindo) return
+      if (antes) set({ escolha: { ...antes, abrindo: episodioId, erro: null, falhou: null } })
+      const erro = await restaurar(episodioId)
+      const agora = get().escolha
+      if (erro === null) {
+        if (agora) set({ escolha: null })
+        return
+      }
+      // Nao abriu (o episodio.json sumiu, a biblioteca esta fora): a lista fica, com o porque.
+      if (agora) set({ escolha: { ...agora, abrindo: null, erro: recadoDaEscolha(erro), falhou: episodioId } })
+      else set({ aberto: true, erro })
+    },
+
+    fecharEscolha: () => set({ escolha: null }),
 
     fechar: () => set({ aberto: false }),
 
@@ -783,8 +865,6 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         return
       }
       const minhaGeracao = ++geracao
-      // Escolheu um episodio: o "voltar onde parou" nao tem mais o que fazer nesta sessao.
-      jaRestaurou = true
       // O corte em segundo plano do episodio anterior NAO para: segue no main.
       guardarCorteQueSegue()
       set({ ...limpo, fase: 'sondando', arquivo: path })

@@ -1,5 +1,5 @@
 import { notaDaFalha } from '../voz-chaves'
-import type { ConfigFish } from '@shared/voz'
+import { velocidadeNativaEnviada, type ConfigFish } from '@shared/voz'
 import { settingsEnviados, type PedidoDeVoz } from './cache'
 import { ErroDoProvedor, fetchPago, lerErroEleven, pagoSemVoz, type RespostaDoProvedor } from './eleven'
 import { Cancelado } from './ffmpeg'
@@ -19,7 +19,9 @@ import { Cancelado } from './ffmpeg'
  *     o texto do roteiro -- origemDoAlinhamento 'alinhador';
  *   - nao ha previous_text: regravar uma frase no Fish vai sem contexto.
  *
- * O prosody.speed fica em 1: a velocidade e do pos, igual para as tres fontes.
+ * O prosody.speed e a velocidade NATIVA da config (0,7-1,2, como no
+ * ElevenLabs). A 1,0 o corpo e o de antes do campo. O "acelerar" e do pos
+ * (atempo), igual para as tres fontes.
  */
 
 const FISH_API = 'https://api.fish.audio'
@@ -49,7 +51,7 @@ export async function sintetizarFish(
     sample_rate: taxaDoFormato(formato),
     ...settingsEnviados(config),
     latency: 'normal',
-    prosody: { speed: 1, volume: 0, normalize_loudness: true },
+    prosody: { speed: velocidadeNativaEnviada(config), volume: 0, normalize_loudness: true },
   }
   // O Cancelar so vale ate os cabecalhos: depois do 200 o audio (pago) tem que chegar ao cache (fetchPago).
   let chamada: Awaited<ReturnType<typeof fetchPago>>

@@ -29,6 +29,7 @@ import {
   type Secao,
 } from '@shared/roteiro'
 import { useGerar } from './gerar'
+import { useRitmoDaVoz } from './ritmo'
 
 /**
  * O ASSISTENTE "GERAR RECAP", passo 2 (Roteiro).
@@ -1294,6 +1295,7 @@ let ultimaConta: {
   tela: Roteiro
   eventos: readonly Evento[]
   indice: EpisodeIndex | null
+  ritmo: number
   problemas: ProblemaDoRoteiro[]
 } | null = null
 
@@ -1305,15 +1307,17 @@ export function useProblemasDoRoteiro(): ProblemaDoRoteiro[] {
   const tela = useRoteiro((s) => s.tela)
   const eventos = useRoteiro((s) => s.rascunho?.eventos)
   const indice = useIndiceDoRoteiro()
+  // O "Curto/Longo" mede o TEMPO na voz que vai narrar (shared/ritmo.ts), nao palavras a 2,7.
+  const ritmo = useRitmoDaVoz()
   return useMemo(() => {
     if (!tela || !eventos) return []
-    if (ultimaConta && ultimaConta.tela === tela && ultimaConta.eventos === eventos && ultimaConta.indice === indice) {
+    if (ultimaConta && ultimaConta.tela === tela && ultimaConta.eventos === eventos && ultimaConta.indice === indice && ultimaConta.ritmo === ritmo) {
       return ultimaConta.problemas
     }
-    const problemas = validarRoteiro(tela, eventos, indice ?? undefined)
-    ultimaConta = { tela, eventos, indice, problemas }
+    const problemas = validarRoteiro(tela, eventos, indice ?? undefined, ritmo)
+    ultimaConta = { tela, eventos, indice, ritmo, problemas }
     return problemas
-  }, [tela, eventos, indice])
+  }, [tela, eventos, indice, ritmo])
 }
 
 /** O roteiro aprovado esta na tela, sem nada digitado depois. */

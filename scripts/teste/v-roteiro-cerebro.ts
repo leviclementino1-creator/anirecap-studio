@@ -56,6 +56,7 @@ import {
 } from '../../electron/services/gerar/rascunho'
 import { gerarEventos } from '../../electron/services/gerar/eventos'
 import { gerarRoteiro } from '../../electron/services/gerar/roteiro'
+import { ritmoDoRascunho } from '../../electron/services/voz/ritmo'
 import { miniaturasDasCenas } from '../../electron/services/gerar/miniaturas'
 
 const BIBLIOTECA = 'G:\\AniRecap Studio\\Biblioteca'
@@ -289,10 +290,13 @@ async function principal(): Promise<void> {
     secao('5. Roteiro: primeira versao com nova tentativa pelo tamanho')
     const antes = contar('roteiro')
     const r1 = await gerarRoteiro(id, { alvoSec: 60 }, nada)
-    const faixa = faixaDePalavras(60)
+    // O alvo e no ritmo da voz que narra (shared/ritmo.ts): aqui, sem voz, o do audio importado (2,84 p/s -> 171).
+    const ritmo = ritmoDoRascunho(null)
+    const faixa = faixaDePalavras(60, ritmo.ritmo)
+    confere(ritmo.origem === 'inicial' && faixa.alvo === 171, `sem voz escolhida: alvo ${faixa.alvo} palavras em 60 s (${ritmo.ritmo.toFixed(2)} p/s)`)
     const pal1 = palavrasDoRoteiro(r1.roteiro)
     confere(contar('roteiro') - antes === 2, '60 palavras na primeira resposta: 1 nova tentativa')
-    confere(/tinha 6\d palavras faladas em \d+ frases, e o alvo é 162 palavras/.test(chamadas.at(-1)!.prompt) && /Faltam frases em: .*desenvolvimento \(tem \d+, o pedido é 7\)/.test(chamadas.at(-1)!.prompt) && chamadas.at(-1)!.prompt.includes('[s1 · gancho]'), 'a tentativa leva a resposta anterior e o motivo (em frases por parte)')
+    confere(new RegExp(`tinha 6\\d palavras faladas em \\d+ frases, e o alvo é ${faixa.alvo} palavras`).test(chamadas.at(-1)!.prompt) && /Faltam frases em: .*desenvolvimento \(tem \d+, o pedido é 7\)/.test(chamadas.at(-1)!.prompt) && chamadas.at(-1)!.prompt.includes('[s1 · gancho]'), 'a tentativa leva a resposta anterior e o motivo (em frases por parte)')
     const pRot = chamadas.at(-1)!.prompt
     confere(pRot.includes('DIVISÃO (frases por seção): gancho 2, contexto 2, desenvolvimento 7') && pRot.includes('SALTO DE TEMPO: placa na tela (11:31) "A Few Years Later"') && pRot.includes('   (sem cena no episódio)') && /\n   em cena: /.test(pRot), 'prompt do roteiro: frases por parte, salto de tempo, sem cena, em cena')
     confere(pal1 >= faixa.min && pal1 <= faixa.max, `ficou a que acertou o tamanho: ${pal1} palavras (${faixa.min}-${faixa.max})`)

@@ -1641,6 +1641,16 @@ def _read_timings(episode_root: Path) -> dict[str, Any] | None:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     mode = args[0] if args else "run"
+    # [Studio] app/cv2_unicode.py: imread/imwrite com acento no caminho (um
+    # usuario do Windows com acento no nome). Antes de qualquer modo; o probe
+    # nao le nem grava imagem.
+    if mode != "probe":
+        try:
+            from .cv2_unicode import instalar as _cv2_unicode
+
+            _cv2_unicode()
+        except Exception as e:  # noqa: BLE001 -- sem isto o motor roda como o upstream
+            print(f"[studio] cv2_unicode: {e}", file=sys.stderr)
     try:
         if mode == "probe":
             _probe()

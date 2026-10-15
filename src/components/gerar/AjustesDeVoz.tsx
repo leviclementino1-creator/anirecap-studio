@@ -10,6 +10,7 @@ import type {
 } from '@shared/channels'
 import { modeloEleven } from '@shared/voz'
 import { MODELOS_FISH, useVoz } from '@/store/gerar-voz'
+import { VelocidadeDaVoz } from './VelocidadeDaVoz'
 
 /**
  * A secao "Voz" das Configuracoes: a voz padrao, as chaves do ElevenLabs e do
@@ -46,9 +47,16 @@ const BOTAO =
 export function AjustesDeVoz({
   settings,
   onSettings,
+  compacto = false,
 }: {
   settings: PublicSettings | null
   onSettings: (s: PublicSettings) => void
+  /**
+   * A boas-vindas: as chaves PRIMEIRO (sem chave a voz e a velocidade nao
+   * servem), voz e velocidade so depois de uma chave de voz salva, sem a
+   * linha de cima nem as frases de rodape.
+   */
+  compacto?: boolean
 }) {
   const [entrada, setEntrada] = useState<Record<ProvedorDeVoz, string>>({ elevenlabs: '', fish: '' })
   /*
@@ -99,6 +107,24 @@ export function AjustesDeVoz({
   useEffect(() => {
     void procurar()
   }, [])
+
+  /*
+   * Na boas-vindas, depois de reabrir o app, a voz salva aparecia como o id
+   * cru ("Crm8... (salva)"): ninguem tinha testado a chave nesta sessao.
+   * Testar e de graca (so le as vozes da conta), entao ja testa a chave da voz
+   * salva quando a lista dela esta vazia.
+   */
+  const testouSozinho = useRef(false)
+  useEffect(() => {
+    if (!compacto || testouSozinho.current || !settings) return
+    const provedor = settings.vozPadrao.provedor
+    if (!provedor || !settings.vozPadrao.voiceId) return
+    const tem = provedor === 'elevenlabs' ? settings.hasElevenKey : settings.hasFishKey
+    if (!tem || vozes[provedor].length > 0) return
+    testouSozinho.current = true
+    void testar(provedor, null)
+    // So na abertura: o resto e o Testar de sempre.
+  }, [compacto, settings])
 
   // Armado e esquecido nao pode virar gravacao num clique distraido minutos
   // depois. O onBlur sozinho nao basta: com a janela sem foco ele nao dispara.
@@ -292,11 +318,13 @@ export function AjustesDeVoz({
     )
   }
 
-  return (
-    <>
-      <div ref={ancora} className="my-5 h-px bg-line" />
+  const temChaveDeVoz = !!settings && (settings.hasElevenKey || settings.hasFishKey)
+  // Na boas-vindas: sem chave de voz, voz e velocidade nao aparecem.
+  const mostrarVoz = !compacto || temChaveDeVoz
 
-      <label className="mb-1.5 block text-[11px] font-medium text-ink-2">Voz</label>
+  const blocoDaVoz = (
+    <>
+      <label className={['mb-1.5 block text-[11px] font-medium text-ink-2', compacto ? 'mt-4' : ''].join(' ')}>Voz</label>
       {/* pr-7 + reticencias: as vozes da biblioteca do ElevenLabs tem nome longo
           ("Andrea Wolff - clear, youthful...") e o texto encostava na seta. */}
       <select
@@ -319,12 +347,32 @@ export function AjustesDeVoz({
           )
         })}
       </select>
-      {(semLista || (voz?.provedor && voz.modelId)) && (
+      {((semLista && !compacto) || (voz?.provedor && voz.modelId)) && (
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          {semLista ? 'Teste uma chave para ver as vozes da conta. ' : ''}
+          {semLista && !compacto ? 'Teste uma chave para ver as vozes da conta. ' : ''}
           {voz?.provedor && voz.modelId ? `Modelo ${nomeDoModelo(voz.provedor, voz.modelId)}.` : ''}
         </p>
       )}
+      <VelocidadeDaVoz settings={settings} onSettings={onSettings} />
+    </>
+  )
+
+  if (compacto) {
+    // A primeira chave nao precisa do respiro de cima (o cabecalho da linha ja separa).
+    return (
+      <div ref={ancora} className="[&>div:first-child]:mt-0">
+        {blocoDaChave('elevenlabs')}
+        {blocoDaChave('fish')}
+        {mostrarVoz && blocoDaVoz}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div ref={ancora} className="my-5 h-px bg-line" />
+
+      {blocoDaVoz}
 
       {blocoDaChave('elevenlabs')}
       {blocoDaChave('fish')}

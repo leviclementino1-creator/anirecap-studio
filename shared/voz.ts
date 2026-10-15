@@ -22,17 +22,28 @@ import type { RascunhoDoRecap, Roteiro } from './roteiro'
  *   1. O texto das palavras e o do roteiro (tokenizeScript de cada frase), nunca
  *      o que o provedor ou o Whisper "ouviram". O audio so da os tempos.
  *   2. Tempos em SEGUNDOS, relativos ao inicio do arquivo do take.
- *   3. O pos (corte de pausa e velocidade) e calculado das pausas do PROPRIO
+ *   3. O pos (corte de pausa e "acelerar") e calculado das pausas do PROPRIO
  *      alinhamento e aplicado em WAV (atrim/concat, atempo), com remapeamento
  *      exato: nada de recalibracao linear pela duracao do arquivo (era a deriva
  *      de 0,1-0,3 s do AniRecap), nada de mp3 reencodado, corte nunca dentro de
  *      palavra.
  *   4. Arquivo de audio e enderecado por conteudo e nunca sobrescrito.
  *   5. Nunca pagar duas vezes pela mesma coisa: o cache do motor e por
- *      sha256 de { fonte, voiceId, modelId, settings, texto, contexto, formato }.
- *      Velocidade e corte de pausa NAO entram na chave: sao pos, e trocar a
- *      velocidade parte do bruto do take, de graca (ajustarVoz). Era o defeito
- *      do AniRecap: o cache ignorava os voice settings.
+ *      sha256 de { fonte, voiceId, modelId, settings, texto, contexto, formato }
+ *      (+ velocidadeNativa SO quando diferente de 1: a chave de quem gerou a
+ *      1.0 continua identica, e o cache pago antigo vale). O "acelerar" e o
+ *      corte de pausa NAO entram na chave: sao pos, e trocar os dois parte do
+ *      bruto do take, de graca (ajustarVoz). Era o defeito do AniRecap: o
+ *      cache ignorava os voice settings.
+ *
+ * DUAS VELOCIDADES (decisao do Levi, 15/10):
+ *   - NATIVA (velocidadeNativa, 0,7-1,2, padrao 1,2 no perfil): a voz ja e
+ *     GERADA nesse ritmo (voice_settings.speed do ElevenLabs, prosody.speed do
+ *     Fish). Encolhe tambem as pausas: o 1,2 encurta ~1,3x. Muda o audio, entao
+ *     e paga (passa pela pergunta de custo). Takes e rascunhos de antes, sem o
+ *     campo, valem 1,0;
+ *   - ACELERAR (velocidade, 0,9-1,25, padrao 1): o pos, de graca, pelo atempo
+ *     do ffmpeg (o do App Resumo; o rubberband a 1,5 soou robotico).
  *
  * Os tipos saem de z.infer, como em roteiro.ts. channels.ts so importa TIPOS
  * daqui. Este arquivo so importa TIPOS de roteiro.ts (roteiro.ts importa o
@@ -98,10 +109,22 @@ export const PAUSA_LONGA_SEC = 0.3
 /** Quanto sobra de uma pausa longa depois do corte. */
 export const PAUSA_CURTA_SEC = 0.15
 
-/** Velocidade do pos (atempo). Fora disso a voz fica robotica ou arrastada. */
+/** O "acelerar" do pos (atempo). Acima de 1,25 a voz fica robotica; abaixo de 0,9, arrastada. */
 export const VELOCIDADE_MIN = 0.9
-export const VELOCIDADE_MAX = 1.2
+export const VELOCIDADE_MAX = 1.25
 export const VELOCIDADE_PASSO = 0.05
+
+/**
+ * A velocidade NATIVA (a voz ja gerada nesse ritmo). O ElevenLabs so aceita
+ * voice_settings.speed de 0,7 a 1,2 (1,5 deu 400 invalid_voice_settings em
+ * 15/10); o Fish aceita prosody.speed de 0,5 a 2, mas fica na mesma faixa para
+ * as duas fontes pagas se comportarem igual.
+ */
+export const VELOCIDADE_NATIVA_MIN = 0.7
+export const VELOCIDADE_NATIVA_MAX = 1.2
+export const VELOCIDADE_NATIVA_PASSO = 0.05
+/** O padrao do perfil (Configuracoes > Voz) e da voz nova. Take e rascunho antigos sem o campo valem 1. */
+export const VELOCIDADE_NATIVA_PADRAO = 1.2
 
 /** Folga de comparacao de tempo em conferirTake (o WAV e exato; isto e so arredondamento). */
 export const TOLERANCIA_SEC = 0.005
@@ -181,7 +204,7 @@ export const settingsElevenSchema = z.object({
 })
 export type SettingsEleven = z.infer<typeof settingsElevenSchema>
 
-/** O que o Fish aceita e muda o som. A velocidade e do pos, nao do prosody.speed. */
+/** O que o Fish aceita e muda o som. A velocidade nativa (prosody.speed) e a `velocidadeNativa` da config. */
 export const settingsFishSchema = z.object({
   temperature: z.number().min(0).max(1).default(0.7),
   topP: z.number().min(0).max(1).default(0.7),
@@ -189,6 +212,8 @@ export const settingsFishSchema = z.object({
 export type SettingsFish = z.infer<typeof settingsFishSchema>
 
 const velocidadeSchema = z.number().min(VELOCIDADE_MIN).max(VELOCIDADE_MAX).default(1)
+/** Default 1 (e nao o 1,2 do perfil): o take de antes do campo foi gerado a 1,0. */
+const velocidadeNativaSchema = z.number().min(VELOCIDADE_NATIVA_MIN).max(VELOCIDADE_NATIVA_MAX).default(1)
 const cortarPausasSchema = z.boolean().default(true)
 /** Seguro para cabecalho e caminho de URL: o voice_id do ElevenLabs e o _id do Fish. */
 const idDeVozSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)
@@ -197,14 +222,17 @@ const idDeModeloSchema = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/)
 const hashSchema = z.string().regex(/^[0-9a-f]{16,64}$/)
 
 /**
- * COMO a narracao e feita. As tres fontes dividem `velocidade` e
- * `cortarPausas` (o pos, que vale para todas e e de graca); o resto e da fonte.
+ * COMO a narracao e feita. As tres fontes dividem `velocidade` (o "acelerar")
+ * e `cortarPausas` (o pos, que vale para todas e e de graca); o resto e da
+ * fonte. As pagas tem a `velocidadeNativa` (a voz gerada nesse ritmo).
  */
 export const configDaVozSchema = z.discriminatedUnion('fonte', [
   z.object({
     fonte: z.literal('elevenlabs'),
     voiceId: idDeVozSchema,
     modelId: idDeModeloSchema,
+    /** voice_settings.speed. O eleven_v4 nao tem speed: o motor nao manda (velocidadeNativaEnviada). */
+    velocidadeNativa: velocidadeNativaSchema,
     velocidade: velocidadeSchema,
     cortarPausas: cortarPausasSchema,
     settings: settingsElevenSchema,
@@ -215,6 +243,8 @@ export const configDaVozSchema = z.discriminatedUnion('fonte', [
     voiceId: idDeVozSchema,
     /** Cabecalho `model`. */
     modelId: idDeModeloSchema,
+    /** prosody.speed. */
+    velocidadeNativa: velocidadeNativaSchema,
     velocidade: velocidadeSchema,
     cortarPausas: cortarPausasSchema,
     settings: settingsFishSchema,
@@ -243,11 +273,13 @@ export type ConfigImportado = Extract<ConfigDaVoz, { fonte: 'importado' }>
  * escolhida ainda (a tela manda para Configuracoes > Voz, ou para "Importar").
  */
 export function configPadrao(voz: VozPadrao): ConfigDaVoz | null {
+  const velocidadeNativa = velocidadeNativaDoPerfil(voz)
   if (voz.provedor === 'elevenlabs' && voz.voiceId) {
     return {
       fonte: 'elevenlabs',
       voiceId: voz.voiceId,
       modelId: voz.modelId || MODELO_PADRAO.elevenlabs,
+      velocidadeNativa,
       velocidade: 1,
       cortarPausas: true,
       settings: settingsElevenSchema.parse({}),
@@ -258,6 +290,7 @@ export function configPadrao(voz: VozPadrao): ConfigDaVoz | null {
       fonte: 'fish',
       voiceId: voz.voiceId,
       modelId: voz.modelId || MODELO_PADRAO.fish,
+      velocidadeNativa,
       velocidade: 1,
       cortarPausas: true,
       settings: settingsFishSchema.parse({}),
@@ -266,20 +299,48 @@ export function configPadrao(voz: VozPadrao): ConfigDaVoz | null {
   return null
 }
 
+/** Na faixa e no passo de 0,05 (o slider soma em ponto flutuante; 1.2000000002 viraria outra chave de cache). */
+export function arrumarVelocidadeNativa(v: number): number {
+  if (!Number.isFinite(v)) return VELOCIDADE_NATIVA_PADRAO
+  const passo = Math.round(v / VELOCIDADE_NATIVA_PASSO) * VELOCIDADE_NATIVA_PASSO
+  return Math.round(Math.min(VELOCIDADE_NATIVA_MAX, Math.max(VELOCIDADE_NATIVA_MIN, passo)) * 100) / 100
+}
+
+/** A velocidade nativa do perfil: a salva, ou VELOCIDADE_NATIVA_PADRAO (perfil de antes do campo). */
+export function velocidadeNativaDoPerfil(voz: Pick<VozPadrao, 'velocidadeNativa'>): number {
+  return voz.velocidadeNativa === undefined ? VELOCIDADE_NATIVA_PADRAO : arrumarVelocidadeNativa(voz.velocidadeNativa)
+}
+
 /**
- * As duas configs geram o MESMO bruto (mesma fonte, voz, modelo, settings e
- * audio): so o pos muda. A tela usa para escolher entre ajustarVoz (gratis) e
- * gerarVoz (paga, com estimativa).
+ * A velocidade nativa que de fato vai ao provedor: 1 no audio importado e nos
+ * modelos sem speed (eleven_v4: modeloEleven(...).estilo === false). E ela que
+ * entra na chave do cache, no corpo do pedido e no ritmo.
+ */
+export function velocidadeNativaEnviada(c: ConfigDaVoz): number {
+  if (c.fonte === 'importado') return 1
+  if (c.fonte === 'elevenlabs' && !modeloEleven(c.modelId).estilo) return 1
+  return c.velocidadeNativa
+}
+
+/**
+ * As duas configs geram o MESMO bruto (mesma fonte, voz, modelo, settings,
+ * velocidade nativa e audio): so o pos muda. A tela usa para escolher entre
+ * ajustarVoz (gratis) e gerarVoz (paga, com estimativa).
  */
 export function soMudaOPos(a: ConfigDaVoz, b: ConfigDaVoz): boolean {
   return assinaturaSemPos(a) === assinaturaSemPos(b)
 }
 
-/** A config sem o pos, com as chaves em ordem (a tela e o zod podem montar o objeto em ordens diferentes). */
+/**
+ * A config sem o pos, com as chaves em ordem (a tela e o zod podem montar o
+ * objeto em ordens diferentes). A velocidade nativa entra como a ENVIADA: no
+ * eleven_v4 trocar o numero nao muda o audio, e nao pode virar gasto.
+ */
 function assinaturaSemPos(c: ConfigDaVoz): string {
   const resto: Record<string, unknown> = { ...c }
   delete resto['velocidade']
   delete resto['cortarPausas']
+  if (c.fonte !== 'importado') resto['velocidadeNativa'] = velocidadeNativaEnviada(c)
   return JSON.stringify(emOrdem(resto))
 }
 
@@ -330,7 +391,8 @@ const arquivoBrutoSchema = z.string().regex(/^bruto-[0-9a-f]{16,64}\.wav$/)
 
 /**
  * O audio ANTES do pos: o que o provedor devolveu (ou o importado
- * decodificado), em WAV, sem corte e na velocidade 1, com os tempos dele. E
+ * decodificado), em WAV, sem corte e sem o "acelerar" (na velocidade nativa
+ * em que foi gerado), com os tempos dele. E
  * daqui que o pos parte -- sempre --, entao trocar a velocidade ou ligar/desligar
  * o corte nao paga de novo e nao perde frase regravada.
  */
@@ -372,7 +434,7 @@ export const takeDaVozSchema = z.object({
   palavras: z.array(palavraComTempoSchema),
   /** Um por frase, na ordem do roteiro; cobrem o arquivo inteiro. */
   trechos: z.array(trechoDaFraseSchema),
-  /** O mesmo antes do pos (velocidade 1, sem corte). */
+  /** O mesmo antes do pos (sem o "acelerar", sem corte). */
   bruto: audioBrutoSchema,
   origemDoAlinhamento: origemDoAlinhamentoSchema,
   /**
@@ -494,7 +556,7 @@ export const pedidoDeRegravarSchema = z.object({
 })
 export type PedidoDeRegravar = z.infer<typeof pedidoDeRegravarSchema>
 
-/** Trocar so o pos do take atual (velocidade, corte de pausa): take novo, de graca. */
+/** Trocar so o pos do take atual (acelerar, corte de pausa): take novo, de graca. A velocidade nativa fica a do take. */
 export const pedidoDeAjusteSchema = z.object({
   velocidade: velocidadeSchema,
   cortarPausas: cortarPausasSchema,
@@ -766,6 +828,26 @@ export function caracteresDasFrases(roteiro: Pick<Roteiro, 'secoes'>, fraseIds: 
   return textoParaNarrar(roteiro)
     .frases.filter((f) => ids.has(f.fraseId))
     .reduce((soma, f) => soma + contarCaracteres(f.texto), 0)
+}
+
+/** 60 -> "1 min", 90 -> "1 min 30". */
+function textoDoAlvo(alvoSec: number): string {
+  const min = Math.floor(alvoSec / 60)
+  const seg = alvoSec % 60
+  return min === 0 ? `${seg} s` : seg === 0 ? `${min} min` : `${min} min ${seg}`
+}
+
+/**
+ * O take ficou abaixo do alvo do roteiro ("52 s - abaixo de 1 min"). null =
+ * chegou. O Levi nao quer video abaixo de 1 min: o caminho e "Outra versao"
+ * no roteiro (mais frases) ou menos acelerar.
+ */
+export function avisoDoAlvo(duracao: number, alvoSec: number): string | null {
+  // Arredondado, como o player mostra (0:47.9 = "48 s"): e o take de referencia
+  // do Levi (59,82 s, aprovado) nao vira aviso por 0,2 s.
+  const segundos = Math.round(duracao)
+  if (!(duracao > 0) || segundos >= alvoSec) return null
+  return `${segundos} s - abaixo de ${textoDoAlvo(alvoSec)}`
 }
 
 /** A duracao da narracao montada: a soma dos trechos (que cobrem o arquivo). */

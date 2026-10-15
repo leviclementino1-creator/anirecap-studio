@@ -693,7 +693,8 @@ async function main(): Promise<void> {
     preparar([json(400, { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } })])
     {
       const err = await erroDe(testarGemini('AIza-errada', ''))
-      conferir('chave errada lanca a nota', (err as Error).message, 'Chave do Gemini recusada. Confira em configuracoes (Ctrl+,).')
+      // O teste roda no proprio campo da chave: sem o "Confira em configuracoes" (revisao C de 15/10).
+      conferir('chave errada lanca a nota (curta: o campo esta ali)', (err as Error).message, 'Chave do Gemini recusada.')
     }
   }
 

@@ -187,7 +187,8 @@ async function rodar(): Promise<void> {
   const s = getSettings()
   if (!s.elevenlabsApiKey) throw new Error('A chave do ElevenLabs nao abriu na copia do perfil.')
   console.log(`chave ElevenLabs: abre (${s.elevenlabsApiKey.length > 0}); Fish: ${s.fishApiKey.length > 0 ? 'tem' : 'nao tem'}`)
-  const config = configPadrao(s.vozPadrao)
+  // A 1,0: e a leitura que ja esta no cache pago semeado (a nativa 1,2, o padrao novo do perfil, seria outra chave e pagaria de novo).
+  const config = configPadrao({ ...s.vozPadrao, velocidadeNativa: 1 })
   if (!config || config.fonte !== 'elevenlabs') throw new Error('A voz padrao nao e do ElevenLabs.')
   console.log(`voz: ${config.voiceId} / ${config.modelId}`)
   const r = lerRascunhoDoDisco(ID)

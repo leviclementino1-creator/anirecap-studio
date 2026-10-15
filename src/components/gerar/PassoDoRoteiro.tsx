@@ -24,6 +24,8 @@ import {
   type ModoDoRoteiro,
 } from '@/store/gerar-roteiro'
 import { useProject } from '@/store/project'
+import { useRitmo, useRitmoDaVoz, useSeguirRitmo } from '@/store/ritmo'
+import { textoDoRitmo } from '@shared/ritmo'
 import { Segmentos, type Segmento } from '@/components/painel'
 import { AndamentoDoRoteiro } from './AndamentoDoRoteiro'
 import { CartaoDoEpisodio } from './CartaoDoEpisodio'
@@ -66,10 +68,15 @@ const AVISOS_DA_BARRA = new Set<ProblemaDoRoteiro['codigo']>(['sem-gancho', 'sem
 export function PassoDoRoteiro() {
   const episodioId = useGerar((s) => s.indice?.id ?? null)
   const entrar = useRoteiro((s) => s.entrar)
+  const rascunhoId = useRoteiro((s) => s.rascunho?.id ?? null)
+  const takeAtual = useRoteiro((s) => s.rascunho?.voz?.atual ?? null)
 
   useEffect(() => {
     if (episodioId) void entrar(episodioId)
   }, [episodioId, entrar])
+
+  // O tempo do roteiro e o da voz que vai narrar (o take atual, ou a voz padrao).
+  useSeguirRitmo(rascunhoId, takeAtual)
 
   return (
     <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4 px-6 py-6">
@@ -279,11 +286,14 @@ function BarraDoRoteiro() {
  * preciso pedir o roteiro de novo para o tamanho novo.
  */
 function Contagem({ roteiro, travado, onRefazer }: { roteiro: Roteiro; travado: boolean; onRefazer: () => void }) {
+  const ritmo = useRitmoDaVoz()
+  const deOnde = useRitmo((s) => s.valor?.origem ?? null)
   const palavras = palavrasDoRoteiro(roteiro)
-  const faixa = faixaDePalavras(roteiro.alvoSec)
+  const faixa = faixaDePalavras(roteiro.alvoSec, ritmo)
   const dentro = palavras >= faixa.min && palavras <= faixa.max
-  const segundos = Math.round(duracaoEstimada(palavras))
-  const dica = `Para ${roteiro.alvoSec} s: ${faixa.min} a ${faixa.max} palavras (narracao a ~2,7 palavras por segundo)`
+  const segundos = Math.round(duracaoEstimada(palavras, ritmo))
+  // O ritmo e o da voz que narra: medido nos takes dela, ou estimado pela velocidade.
+  const dica = `Para ${roteiro.alvoSec} s: ${faixa.min} a ${faixa.max} palavras (voz a ~${textoDoRitmo({ ritmo })}${deOnde === 'medido' ? ', medido nos takes' : ''})`
   return (
     <span className="flex min-w-0 items-center gap-2">
       <span

@@ -23,7 +23,7 @@ import { configureWhisper, encerrarWhisper } from './services/whisper'
 import { configureFaces } from './services/faces'
 import { configurarMotor, encerrarMotor } from './services/motor'
 import { encerrarRostosDoMotor } from './services/montar/rostos-motor'
-import { configurarMotorRuntime, encerrarMotorRuntime, iniciarMotorRuntime } from './services/motor-runtime'
+import { configurarMotorRuntime, encerrarMotorRuntime, iniciarMotorRuntime, remocaoEmAndamento } from './services/motor-runtime'
 import { configurarEpisodios } from './services/episodio/indice'
 
 const isDev = !app.isPackaged
@@ -246,6 +246,21 @@ app.on('before-quit', encerrarRostosDoMotor)
 // E a instalacao do runtime do motor: o uv sai junto, e o que ja baixou fica
 // para o "Continuar" (inclusive quando quem fecha e a atualizacao do app).
 app.on('before-quit', encerrarMotorRuntime)
+/*
+ * O "Remover motor" apaga ~5 GB por tras. Fechar o app no meio deixava o
+ * resto num motor-runtime.apagar-* que so o proprio app limpava (e quem
+ * desinstalava logo depois ficava com ele). A janela some na hora e o
+ * processo espera o fim da remocao (no maximo 10 min) antes de sair.
+ */
+let esperandoRemocao = false
+app.on('before-quit', (evento) => {
+  const pendente = remocaoEmAndamento()
+  if (!pendente || esperandoRemocao) return
+  evento.preventDefault()
+  esperandoRemocao = true
+  for (const janela of BrowserWindow.getAllWindows()) if (!janela.isDestroyed()) janela.hide()
+  void Promise.race([pendente, new Promise((r) => setTimeout(r, 10 * 60_000))]).finally(() => app.quit())
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

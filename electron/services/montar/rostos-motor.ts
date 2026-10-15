@@ -321,7 +321,7 @@ interface Backend {
   cwd: string
   dados: string
   /** O runtime do app instalado: o ambiente vem do ambienteDoRuntime. */
-  runtime?: { cudaOk: boolean }
+  runtime?: { cudaOk: boolean; modelos: string }
 }
 
 function backend(o: OpcoesDoRostoPeloMotor): Backend | { erro: string } {
@@ -332,7 +332,7 @@ function backend(o: OpcoesDoRostoPeloMotor): Backend | { erro: string } {
     if (usaRuntime()) {
       const r = backendDoRuntime()
       if ('erro' in r) return { erro: r.erro }
-      return { python: r.python, cwd: r.cwd, dados: o.dados ?? pastaDeDadosDoMotor(), runtime: { cudaOk: r.cudaOk } }
+      return { python: r.python, cwd: r.cwd, dados: o.dados ?? pastaDeDadosDoMotor(), runtime: { cudaOk: r.cudaOk, modelos: r.modelos } }
     }
     const cwd = join(c.appPath, 'motor')
     const python =
@@ -358,6 +358,11 @@ function matarArvore(filho: ChildProcess, sincrono = false): void {
   const args = ['/PID', String(pid), '/T', '/F']
   if (sincrono) spawnSync('taskkill', args, { windowsHide: true, timeout: 5000, stdio: 'ignore' })
   else spawn('taskkill', args, { windowsHide: true, stdio: 'ignore' }).on('error', () => filho.kill())
+}
+
+/** Ha um lote de rostos rodando (o runtime nao reinstala por baixo dele). */
+export function rostosRodando(): boolean {
+  return [...vivos].some((f) => f.exitCode === null && f.signalCode === null)
 }
 
 /** Mata o motor de rostos que estiver rodando (saida do app). */

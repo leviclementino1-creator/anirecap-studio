@@ -1,5 +1,4 @@
-import { roteiroAtual, type RascunhoDoRecap } from '@shared/roteiro'
-import { situacaoDaVoz } from '@shared/voz'
+import { passoDoRascunho, type RascunhoDoRecap } from '@shared/roteiro'
 
 /**
  * A ORDEM DO ASSISTENTE "GERAR RECAP" (decisao do Levi, 14/10):
@@ -56,16 +55,16 @@ export function passoLiberado(passo: PassoDoAssistente, c: CondicoesDosPassos): 
 }
 
 /**
- * Onde o "voltar onde parou" reabre o rascunho: no 4 quando a voz esta
- * aprovada e em dia com o roteiro (o mesmo que libera o passo 4); no 3 quando
- * o roteiro aprovado ja tem voz; senao no 2.
+ * Onde o "Continuar" reabre o rascunho: no 4 quando a voz esta aprovada e em
+ * dia com o roteiro (o mesmo que libera o passo 4); no 3 quando o roteiro
+ * aprovado ja tem voz; senao no 2. A regra mora em shared/roteiro.ts
+ * (passoDoRascunho) porque a lista de rascunhos do main sai com ela: a linha
+ * do "Continuar" e o abrir tem de dizer o mesmo passo.
  */
 export function passoAoRestaurar(
   r: Pick<RascunhoDoRecap, 'aprovado' | 'voz' | 'roteiros' | 'atual'>,
 ): PassoDoAssistente {
-  if (!r.aprovado) return 2
-  if (situacaoDaVoz(r, roteiroAtual(r)) === 'aprovada') return 4
-  return (r.voz?.takes.length ?? 0) > 0 ? 3 : 2
+  return passoDoRascunho(r)
 }
 
 /**

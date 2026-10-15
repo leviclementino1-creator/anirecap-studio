@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { modeloEleven, type ConfigEleven, type ConfigFish } from '@shared/voz'
+import { modeloEleven, velocidadeNativaEnviada, type ConfigEleven, type ConfigFish } from '@shared/voz'
 import type { AlinhamentoDeCaracteres } from './palavras'
 import { pastaDaVoz, pastaDoCacheDaVoz } from './pastas'
 import { sha256 } from './wav'
@@ -13,9 +13,11 @@ import { sha256 } from './wav'
  *                                          request-id, character-cost)
  *
  * A chave e sha256 de { fonte, voiceId, modelId, settings ENVIADOS, texto,
- * contexto, formato } -- tudo o que muda o audio que volta. Velocidade e corte
- * de pausa ficam fora (sao pos, de graca). Era o defeito do AniRecap: a chave
- * dele nao tinha os voice settings.
+ * contexto, formato } -- tudo o que muda o audio que volta. A velocidade
+ * NATIVA (speed do provedor) entra SO quando nao e 1: a chave de quem gerou a
+ * 1.0 fica identica a de antes do campo, e o cache pago antigo continua
+ * valendo. O "acelerar" e o corte de pausa ficam fora (sao pos, de graca). Era
+ * o defeito do AniRecap: a chave dele nao tinha os voice settings.
  *
  * VARIANTE. "Gerar tudo de novo" e "Regravar esta frase" sao pedidos de uma
  * leitura NOVA do mesmo texto: devolver o mesmo audio do cache faria o botao
@@ -95,6 +97,9 @@ export function chaveDoCache(pedido: PedidoDeVoz, formato: string, variante: num
     formato,
   }
   if (variante > 0) base['variante'] = variante
+  // So fora do 1: a chave da 1.0 e byte a byte a de antes (v-voz-velocidade.ts confere o hash antigo).
+  const nativa = velocidadeNativaEnviada(pedido.config)
+  if (nativa !== 1) base['velocidadeNativa'] = nativa
   return sha256(JSON.stringify(emOrdem(base)))
 }
 

@@ -1,5 +1,5 @@
 import { notaDaFalha } from '../voz-chaves'
-import type { ConfigEleven } from '@shared/voz'
+import { velocidadeNativaEnviada, type ConfigEleven } from '@shared/voz'
 import { settingsEnviados, type PedidoDeVoz } from './cache'
 import { Cancelado } from './ffmpeg'
 import { alinhamentoDe, type AlinhamentoDeCaracteres } from './palavras'
@@ -29,8 +29,10 @@ import { alinhamentoDe, type AlinhamentoDeCaracteres } from './palavras'
  * imprevisivel. O texto vizinho e deterministico, vale para sempre e entra na
  * chave do cache.
  *
- * A velocidade NAO vai no voice_settings: e do pos (rubberband), de graca, e
- * igual para as tres fontes.
+ * A velocidade NATIVA vai no voice_settings.speed (0,7-1,2: 1,5 deu 400
+ * invalid_voice_settings em 15/10), e SO quando nao e 1: o pedido a 1,0 e o
+ * de antes do campo, byte a byte (o padrao da API ja e 1). O "acelerar" e do
+ * pos (atempo), de graca, e igual para as tres fontes.
  */
 
 const ELEVEN_API = 'https://api.elevenlabs.io/v1'
@@ -159,10 +161,11 @@ export async function sintetizarEleven(
   signal?: AbortSignal,
 ): Promise<RespostaDoProvedor> {
   const { config, texto, contexto } = pedido
+  const nativa = velocidadeNativaEnviada(config)
   const corpo: Record<string, unknown> = {
     text: texto,
     model_id: config.modelId,
-    voice_settings: settingsEnviados(config),
+    voice_settings: nativa !== 1 ? { ...settingsEnviados(config), speed: nativa } : settingsEnviados(config),
   }
   if (contexto.anterior) corpo['previous_text'] = contexto.anterior
   if (contexto.seguinte) corpo['next_text'] = contexto.seguinte

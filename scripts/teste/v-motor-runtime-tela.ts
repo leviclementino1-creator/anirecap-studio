@@ -121,6 +121,13 @@ async function main(): Promise<void> {
   assert.equal(await pedirMotor(() => (rodou += 1)), true)
   assert.equal(useMotorRuntime.getState().aberta, true)
   console.log('ok instalando: mostra o andamento')
+
+  // 7. a placa na tela (revisao A de 15/10): cu128 que nao rodou a conta na GPU diz "CPU"
+  const { textoDaPlaca } = await import('../../src/components/motor-runtime/InstalarMotor')
+  assert.equal(textoDaPlaca({ ...estado('pronto'), variante: 'cu128', cudaOk: true }), 'RTX 5080')
+  assert.match(textoDaPlaca({ ...estado('pronto'), variante: 'cu128', cudaOk: false }), /CPU/)
+  assert.equal(textoDaPlaca({ ...estado('ausente'), varianteSugerida: 'cpu', gpu: { ...estado('ausente').gpu!, computeCap: 6.1 } }), 'CPU (sem CUDA)')
+  console.log('ok placa: "CPU" quando o cu128 nao roda na GPU')
   console.log('TUDO OK')
   process.exit(0)
 }

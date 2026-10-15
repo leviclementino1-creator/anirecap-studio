@@ -273,7 +273,14 @@ function Miniaturas({ cenas }: { cenas: readonly CenaDaFrase[] }) {
   const primeira = cenas[0]?.candidato.planoIds[0] ?? null
   const url = useCenas((s) => (primeira ? (s.miniaturas[primeira] ?? null) : null))
   const [quebrou, setQuebrou] = useState(false)
-  useEffect(() => setQuebrou(false), [url])
+  // Uma segunda tentativa: no primeiro carregamento de um perfil novo a miniatura
+  // pode chegar antes do arquivo terminar de ser escrito (o .webp fica integro
+  // logo depois). Remontar o <img> uma vez pede de novo; a segunda falha e de verdade.
+  const [tentativa, setTentativa] = useState(0)
+  useEffect(() => {
+    setQuebrou(false)
+    setTentativa(0)
+  }, [url])
   if (!primeira) {
     return <span className="block h-[36px] w-[64px] shrink-0 rounded-[2px] border border-dashed border-line-strong" title="Sem cena" />
   }
@@ -281,10 +288,14 @@ function Miniaturas({ cenas }: { cenas: readonly CenaDaFrase[] }) {
     <span className="relative shrink-0">
       {url && !quebrou ? (
         <img
+          key={tentativa}
           src={url}
           alt=""
           draggable={false}
-          onError={() => setQuebrou(true)}
+          onError={() => {
+            if (tentativa === 0) window.setTimeout(() => setTentativa(1), 400)
+            else setQuebrou(true)
+          }}
           className="h-[36px] w-[64px] rounded-[2px] border border-line object-cover"
         />
       ) : (

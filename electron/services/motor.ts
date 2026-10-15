@@ -22,7 +22,7 @@ import { garantirGravavel, saidaDoCorteCenas } from './episodio/protegidas'
 import { porDeLadoElencoDegradado } from './elenco-degradado'
 import { fotosDoElenco, idDaPastaDeRefs, reservarElenco, type ReservaDoElenco } from './elenco-reserva'
 import { ffmpegPath } from './ffmpeg-path'
-import { ascii, fraseDoMotor } from './frase-do-motor'
+import { ascii, fraseDoErroDoMotor, fraseDoMotor } from './frase-do-motor'
 import { pastaDaBibliotecaStudio, pastaDeDocumentos } from './settings'
 import { pythonDoMotor } from './python-do-motor'
 import { ambienteDoRuntime, backendDoRuntime, usaRuntime } from './motor-runtime'
@@ -109,7 +109,7 @@ interface Backend {
   /** Variaveis a mais para o processo (o __PYVENV_LAUNCHER__ do motor do Studio). */
   env?: Record<string, string>
   /** O motor do Studio no runtime do app instalado: o ambiente vem do ambienteDoRuntime. */
-  runtime?: { cudaOk: boolean }
+  runtime?: { cudaOk: boolean; modelos: string }
 }
 
 /**
@@ -130,7 +130,7 @@ function backendDoStudio(): Backend | { erro: string } {
     const r = backendDoRuntime()
     if ('erro' in r) return { erro: r.erro }
     const { cmd, env } = pythonDoMotor(r.python)
-    return { cmd, args: ['-m', 'app.headless'], cwd: r.cwd, env, runtime: { cudaOk: r.cudaOk } }
+    return { cmd, args: ['-m', 'app.headless'], cwd: r.cwd, env, runtime: { cudaOk: r.cudaOk, modelos: r.modelos } }
   }
   const pasta = join(c.appPath, 'motor')
   const python =
@@ -677,7 +677,9 @@ function tratarEvento(job: Job, ev: Evento): void {
     case 'failed': {
       const msg = typeof ev['message'] === 'string' && ev['message'] ? ascii(ev['message']) : 'erro sem mensagem'
       if (typeof ev['detail'] === 'string') job.log?.write(`\n[studio] detalhe do erro:\n${ev['detail']}\n`)
-      entregar(job, job.cancelado ? cancelou(job) : falhou(job, `O motor parou com erro: ${msg}`))
+      // Os modelos da 1a analise sem rede saiam como "AttributeError ... CascadeClassifier".
+      const frase = fraseDoErroDoMotor(msg, typeof ev['detail'] === 'string' ? ev['detail'] : '')
+      entregar(job, job.cancelado ? cancelou(job) : falhou(job, frase ?? `O motor parou com erro: ${msg}`))
       return
     }
     case 'discovery-ready': {
@@ -1090,6 +1092,17 @@ export function comandarDescoberta(jobId: string, comando: ComandoCommitDiscover
  * aberto. O Windows nao mata o filho junto (a licao do whisper-cli), e um
  * motor orfao segura a GPU ate alguem abrir o Gerenciador de Tarefas.
  */
+/**
+ * Ha um processo do motor vivo (a analise/corte, ou um comando curto)? O
+ * runtime recusa Reinstalar/Recomecar enquanto isso (o venv esta em uso), e a
+ * barra segura o "Atualizar" (o quitAndInstall mataria o corte no meio).
+ */
+export function motorRodando(): boolean {
+  const vivo = (f: ChildProcess | null | undefined): boolean => !!f && f.exitCode === null && f.signalCode === null
+  // Um job na fila (filho ainda nulo) tambem conta: ele sobe o python do runtime ja ja.
+  return atual !== null || [...curtos].some(vivo)
+}
+
 export function encerrarMotor(): void {
   try {
     const job = atual

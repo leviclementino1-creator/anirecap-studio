@@ -21,8 +21,21 @@ o caminho inteiro, na ordem decidida pelo Levi em 14/10 (`src/store/gerar-passos
    `<userData>/recaps`; modo "Partes | Texto" e "Meu roteiro" (re-divide pelos
    pontos finais, mantém id e vínculos do que não mudou e religa o resto numa
    chamada só, `religar.ts`). Aprovado, as sugestões de cena saem de graça por trás.
+   O alvo (prompt, mínimo de 92%, nº de frases, "~Xs") é no **ritmo** da voz que
+   vai narrar (`shared/ritmo.ts`): palavras/s do take final, aprendido dos takes
+   em `<userData>/recaps/ritmos.json`; sem take, o inicial calibrado (2,84 p/s a
+   1,0; ~3,76 a 1,2). Só take de roteiro inteiro ensina (≥ 20 s e ≥ 50
+   palavras), e o aprendido fica entre 0,75x e 1,35x do inicial daquela
+   velocidade. O 2,7 fixo ficou só como molde das frases por papel.
 3. **Voz**: ElevenLabs, Fish Audio ou áudio importado; corte de pausas, takes,
-   regravar frase e aprovação, no mesmo rascunho.
+   regravar frase e aprovação, no mesmo rascunho. Duas velocidades (15/10): a
+   NATIVA (speed do provedor, 0,7–1,2, padrão 1,2 no perfil; muda o áudio, é
+   paga) e o "acelerar" do pós (atempo, até 1,25, grátis). A nativa só entra na
+   chave do cache quando ≠ 1,0: a chave da 1,0 é a de antes (`v-voz-velocidade.ts`
+   confere o hash antigo). Take abaixo do alvo avisa ("52 s - abaixo de 1 min",
+   em segundos arredondados), e o passo 3 ja mostra a duracao PREVISTA ("~48 s")
+   antes de gerar ou aplicar. Com o atempo, os testes aceitam palavra contra tom
+   ate 25 ms (meio quadro, sem deriva) quando ha acelerar (`pos.ts`).
 4. **Cenas**: no tempo REAL do take aprovado (`shared/encaixe.ts`): a tela da
    seleção do Dangai (roteiro à esquerda com a barrinha rosa, grade com
    "Sugestoes para este trecho", player com a narração por cima). O casar
@@ -105,8 +118,13 @@ encerra uma cena.
   (`resources/motor`) e o uv (`resources/uv`); o RUNTIME do motor (Python +
   torch, ~5 GB) é instalado pelo app no 1º uso em
   `%LOCALAPPDATA%\AniRecap Studio\motor-runtime` (o GitHub limita a 2 GB por
-  arquivo). Nada é gravado na pasta de instalação. O desinstalador pergunta se
-  apaga o runtime (padrão Não; na atualização nunca: `build/installer.nsh`).
+  arquivo). Nada é gravado na pasta de instalação. Os modelos da 1ª análise
+  (~1,1 GB) vão para `<runtime>\modelos` (`HF_HOME`). GTX 10xx (compute cap
+  < 7.5) é sugerida como cpu; cu128 que não roda a conta na GPU sobe com
+  `ANIRECAP_MOTOR_SEM_CUDA=1` (torch na CPU, NVENC fica) e a conta é refeita
+  quando o driver muda. O desinstalador pergunta se apaga o runtime (padrão
+  Não; na atualização nunca: `build/installer.nsh`) e apaga os restos de um
+  "Remover motor"; o app espera o Remover terminar antes de sair.
 
 ## Layout
 
@@ -115,12 +133,12 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto, camada de cor), `loudness.ts` (BS.1770 em JS) e `descoberta.ts` (Reconhecer na mao: protocolo cru do motor, decisao, juntar/ignorar, `paraOMotor`) |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo, velocidade nativa), `ritmo.ts` (palavras/s por voz: o inicial calibrado e o aprendido), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto, camada de cor), `loudness.ts` (BS.1770 em JS) e `descoberta.ts` (Reconhecer na mao: protocolo cru do motor, decisao, juntar/ignorar, `paraOMotor`) |
 | `electron/services/descoberta/` | o main do Reconhecer na mao: uma rodada por vez segurando o motor (`index.ts`), recortes copiados por job e elenco (`recortes.ts`), o indice pelo caminho do fim de corte (`aplicar.ts`), o erro do motor em frase curta (`erro.ts`) e o aviso "Confira" quando o reconhecimento seguinte dependeu das fotos do batismo (`refs.ts`) ou quando um reconhecido so tinha UMA arte do elenco, o retrato do MAL e o da AniList em dois recortes (`arte-unica.ts`, ORB do OpenCV em WASM, depois do `done`); a tela e `ReconhecerNaMao.tsx`, `GrupoDeRostos.tsx`, `EntradaDaDescoberta.tsx` e `src/store/gerar-descoberta.ts` |
 | `electron/services/som/` | a Edição rápida no main: `medir.ts` (loudness com cache), `musicas.ts` (pasta e histórico), `planejar.ts` (SFX e música) e `mix.ts` (envelope e limitador do render) |
 | `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 (índice, `falas.ts`, `corte-fundo.ts`) e passo 2 (prompts, cache de IA, rascunho, `religar.ts` + `prompt-religar.ts`) |
 | `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`; `edicao-rapida.ts` e `rostos-motor.ts` para a Edição rápida) |
-| `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e velocidade, volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
+| `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e acelerar (atempo, arquivo em exatas N/v amostras), ritmo aprendido (`ritmo.ts`), volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
 | `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente (`gerar-passos.ts` = a ordem dos passos; `gerar-cenas.ts` = o passo 4 e as sugestões em segundo plano) |
 | `electron/services/motor-runtime/`, `shared/motor-runtime.ts` | o runtime do motor no app instalado: pasta, lock (`motor/studio-runtime.json`, gerado por `npm run motor:lock`), impressão, instalação pelo uv com retomada, ambiente do motor (ffmpeg do app primeiro, ffprobe do Remotion por último); a tela é `src/components/motor-runtime/` + `src/store/motor-runtime.ts` |
 | `scripts/` | ícone, SFX, `release.mjs` (publica), `conferir-pacote.mjs` (confere `release/`), `baixar-uv.mjs` (`npm run uv`), `motor-lock.mjs` e testes manuais em `scripts/teste/` |
@@ -144,7 +162,9 @@ npm run release -- --dry-run       # o caminho da publicação inteiro, sem subi
 `GH_TOKEN` (de `gh auth token`) só é necessário para **publicar** release.
 Ordem: commit, `git push`, `git push origin vX.Y.Z`, `npm run release` (ou o
 workflow `release` do GitHub). O `release.mjs` recusa publicar sem a tag no
-remoto apontando para o HEAD e confere o `latest.yml` (versão, nome
-`AniRecap-Studio-Setup-<v>.exe`, tamanho e sha512) antes de subir.
+remoto apontando para o HEAD, versão já publicada (só com `--republicar`) ou
+não maior que a mais recente, e o lock do motor fora do `motor/.venv`; confere
+o `latest.yml` (versão, nome `AniRecap-Studio-Setup-<v>.exe`, tamanho e
+sha512) e o lock contra o `motor/requirements.txt` antes de subir.
 
 Ambiente: Node 24 e npm 11; ffmpeg 9 no PATH.

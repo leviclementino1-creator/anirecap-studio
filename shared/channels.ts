@@ -66,6 +66,7 @@ import type {
 import type { EstadoDoMotorRuntime, PedidoDeInstalacao } from './motor-runtime'
 import type {
   AudioDoTake,
+  ConfigDaVoz,
   EstimativaDeCusto,
   PedidoDeAjuste,
   PedidoDeEstimativa,
@@ -75,6 +76,7 @@ import type {
   ProgressoDaVoz,
   VozGerada,
 } from './voz'
+import type { RitmoDaVoz } from './ritmo'
 
 /**
  * Valores de runtime que o preload precisa, sem dependencias.
@@ -223,6 +225,8 @@ export const IPC = {
   desaprovarVoz: 'recap:voz-desaprovar',
   urlDoAudio: 'recap:voz-url-do-audio',
   escolherNarracao: 'dialog:escolher-narracao',
+  /** O ritmo da voz que narra o rascunho (shared/ritmo.ts): o "~Xs" e o "Curto/Longo" do roteiro. */
+  ritmoDaVoz: 'recap:voz-ritmo',
   /** main -> renderer, ProgressoDaVoz (andamento de gerar/regravar/ajustar/importar) */
   vozProgresso: 'recap:voz-progresso',
 
@@ -641,6 +645,8 @@ export const RELEASES_URL = `https://github.com/${REPO}/releases`
 export interface PublicSettings {
   /** A IA preferida. Sem a chave dela, o main usa a outra que tiver chave. */
   iaProvedor: 'gemini' | 'anthropic'
+  /** "Nao perguntar mais" da tela de boas-vindas (sem chave de IA, ela abre recomendando o Gemini). */
+  naoPerguntarChave: boolean
   /** Modelo do Gemini. Vazio = automatico. */
   geminiModelo: string
   anthropicModelo: string
@@ -706,6 +712,7 @@ export interface SettingsPatch {
   fishApiKey?: string
   vozPadrao?: VozPadrao
   iaProvedor?: 'gemini' | 'anthropic'
+  naoPerguntarChave?: boolean
   /** Vazio = automatico. */
   geminiModelo?: string
   anthropicModelo?: string
@@ -755,6 +762,12 @@ export interface VozPadrao {
   voiceId: string
   /** Modelo de TTS (eleven_multilingual_v2, s2.1-pro...). Vazio = o padrao do provedor. */
   modelId: string
+  /**
+   * A velocidade NATIVA da voz nova (0,7-1,2, shared/voz.ts). O main sempre
+   * devolve preenchida (perfil de antes do campo = 1,2); opcional so no envio:
+   * gravar so a voz mantem a velocidade que ja estava.
+   */
+  velocidadeNativa?: number
 }
 
 /** Uma voz da conta, como o "Testar" lista para o select. */
@@ -1265,6 +1278,13 @@ export interface DangaiBridge {
   urlDoAudio(rascunhoId: string, takeId: string): Promise<IpcResult<AudioDoTake>>
   /** Dialogo de abrir a narracao gravada (.wav/.mp3/.m4a...). null = fechou sem escolher. */
   escolherNarracao(): Promise<IpcResult<string | null>>
+  /**
+   * Palavras por segundo da voz que narra o rascunho (o take atual; sem take, a
+   * voz padrao na velocidade nativa do perfil), aprendidas dos takes reais.
+   * null = sem rascunho (a voz padrao). Com `config`, o ritmo dessa config (a
+   * previsao do passo 3 antes de gerar ou aplicar). Nao gasta nada.
+   */
+  ritmoDaVoz(rascunhoId: string | null, config?: ConfigDaVoz | null): Promise<IpcResult<RitmoDaVoz>>
   onVozProgresso(listener: (progresso: ProgressoDaVoz) => void): () => void
 
   // ------------------------------- Gerar recap, passo 1 sem esperar o corte

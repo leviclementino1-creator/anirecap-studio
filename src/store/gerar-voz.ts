@@ -4,6 +4,8 @@ import type { IpcResult, ProvedorDeVoz, PublicSettings, VozDoProvedor, VozPadrao
 import { roteiroAtual, type RascunhoDoRecap, type Roteiro } from '@shared/roteiro'
 import {
   MODELO_PADRAO,
+  VELOCIDADE_NATIVA_PADRAO,
+  arrumarVelocidadeNativa,
   caracteresDasFrases,
   configDaVozSchema,
   contarCaracteres,
@@ -17,6 +19,7 @@ import {
   soMudaOPos,
   takeAtual,
   textoParaNarrar,
+  velocidadeNativaDoPerfil,
   type AudioDoTake,
   type ConfigDaVoz,
   type EstimativaDeCusto,
@@ -43,7 +46,8 @@ import { useRoteiro } from './gerar-roteiro'
  * na primeira gravacao cruzada.
  *
  * Aqui mora o que e so da TELA do passo 3:
- *   - o formulario da narracao (fonte, voz, modelo, velocidade, cortar pausas);
+ *   - o formulario da narracao (fonte, voz, modelo, velocidade nativa, acelerar,
+ *     cortar pausas);
  *   - a estimativa de custo (estimarVoz, que nao gasta nada);
  *   - a PERGUNTA de custo: gastar sempre passa por ela, e o `confirmado` que o
  *     main recebe e o numero que o Levi viu;
@@ -74,6 +78,9 @@ export interface Formulario {
   fonte: FonteDaVoz
   eleven: { voiceId: string; modelId: string }
   fish: { voiceId: string; modelId: string }
+  /** A velocidade NATIVA das fontes pagas (a voz gerada nesse ritmo: muda o audio, e paga). */
+  nativa: number
+  /** O "acelerar" (o pos, de graca). */
   velocidade: number
   cortarPausas: boolean
 }
@@ -125,9 +132,9 @@ export interface EstimativaNaTela {
 
 /**
  * O que o cartao da narracao oferece, pelo formulario contra o take atual:
- * - 'gerar': sem take, ou outra voz/modelo -- PAGO (pergunta antes);
+ * - 'gerar': sem take, ou outra voz/modelo/velocidade nativa -- PAGO (pergunta antes);
  * - 'de-novo': a mesma voz do take -- "Gerar tudo de novo", PAGO;
- * - 'aplicar': so velocidade/corte mudaram -- de graca, a partir do bruto;
+ * - 'aplicar': so o acelerar/corte mudaram -- de graca, a partir do bruto;
  * - 'importar': a fonte e o audio dele (a area de soltar e a acao);
  * - 'escolher-voz' / 'sem-chave': falta algo antes de poder gerar.
  */
@@ -157,6 +164,7 @@ const FORM_INICIAL: Formulario = {
   fonte: 'elevenlabs',
   eleven: { voiceId: '', modelId: MODELO_PADRAO.elevenlabs },
   fish: { voiceId: '', modelId: MODELO_PADRAO.fish },
+  nativa: VELOCIDADE_NATIVA_PADRAO,
   velocidade: 1,
   cortarPausas: true,
 }
@@ -183,6 +191,8 @@ function formComTake(take: TakeDaVoz, base: Formulario): Formulario {
   const f: Formulario = { ...base, fonte: c.fonte, velocidade: c.velocidade, cortarPausas: c.cortarPausas }
   if (c.fonte === 'elevenlabs') f.eleven = { voiceId: c.voiceId, modelId: c.modelId }
   if (c.fonte === 'fish') f.fish = { voiceId: c.voiceId, modelId: c.modelId }
+  // A nativa do take (o de antes do campo le 1,0): reabrir nao muda a voz que ja foi paga.
+  if (c.fonte !== 'importado') f.nativa = c.velocidadeNativa
   return f
 }
 
@@ -205,7 +215,7 @@ function formDosAjustes(a: AjustesDaVoz, base: Formulario): Formulario {
         : a.hasFishKey
           ? 'fish'
           : 'importado'
-  return { ...base, fonte, eleven, fish, velocidade: 1, cortarPausas: fonte !== 'importado' }
+  return { ...base, fonte, eleven, fish, nativa: velocidadeNativaDoPerfil(v), velocidade: 1, cortarPausas: fonte !== 'importado' }
 }
 
 /**
@@ -240,6 +250,7 @@ function completarVozes(form: Formulario, takes: readonly TakeDaVoz[], ajustes: 
  */
 export function configDoForm(form: Formulario, take: TakeDaVoz | null): ConfigDaVoz | null {
   const pos = { velocidade: arredondar(form.velocidade), cortarPausas: form.cortarPausas }
+  const velocidadeNativa = arrumarVelocidadeNativa(form.nativa)
   let bruto: unknown
   if (form.fonte === 'elevenlabs') {
     if (!form.eleven.voiceId) return null
@@ -247,6 +258,7 @@ export function configDoForm(form: Formulario, take: TakeDaVoz | null): ConfigDa
       fonte: 'elevenlabs',
       voiceId: form.eleven.voiceId,
       modelId: form.eleven.modelId || MODELO_PADRAO.elevenlabs,
+      velocidadeNativa,
       ...pos,
       settings: take?.config.fonte === 'elevenlabs' ? take.config.settings : settingsElevenSchema.parse({}),
     }
@@ -256,6 +268,7 @@ export function configDoForm(form: Formulario, take: TakeDaVoz | null): ConfigDa
       fonte: 'fish',
       voiceId: form.fish.voiceId,
       modelId: form.fish.modelId || MODELO_PADRAO.fish,
+      velocidadeNativa,
       ...pos,
       settings: take?.config.fonte === 'fish' ? take.config.settings : settingsFishSchema.parse({}),
     }
@@ -761,7 +774,7 @@ export const useVoz = create<EstadoDaVozNaTela>((set, get) => {
       const novo = mudar(s.form)
       if (novo === s.form) return
       set({
-        form: { ...novo, velocidade: arredondar(novo.velocidade) },
+        form: { ...novo, velocidade: arredondar(novo.velocidade), nativa: arrumarVelocidadeNativa(novo.nativa) },
         formMexido: true,
         // A pergunta era do formulario de antes.
         pergunta: s.pergunta?.onde === 'narracao' ? null : s.pergunta,

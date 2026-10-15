@@ -87,6 +87,11 @@ export function ConfigDoMotorRuntime() {
         )}
       </div>
       {erro && <p className="select-text text-[11px] leading-relaxed text-danger">{erro}</p>}
+      {estado.apagando && (
+        <p className="text-[11px] text-ink-3" title="Fechar o app agora espera terminar de apagar">
+          Apagando o motor antigo...
+        </p>
+      )}
       <p className="text-[11px] leading-relaxed text-ink-3">Python e torch do motor, baixados no 1o uso. Ficam fora da pasta do app.</p>
     </div>
   )

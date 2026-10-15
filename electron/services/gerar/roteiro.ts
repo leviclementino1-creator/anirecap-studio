@@ -4,7 +4,7 @@ import {
   CODIGOS_PARA_REFAZER,
   ehParadaNoReserva,
   faixaDePalavras,
-  FRASES_POR_PAPEL,
+  frasesPorPapel,
   guardarNoHistorico,
   PAPEIS,
   palavrasDoRoteiro,
@@ -34,6 +34,7 @@ import { gerarComCache, nomeDoProvedor, paradaDoPasso } from './ia'
 import { acertarNomesDaSecao, acertarNomesDoRoteiro, elencoDoEpisodio, type Elenco } from './nomes'
 import { frasesDoAlvo, promptDaSecao, promptDoRoteiro, SISTEMA_ROTEIRO, SISTEMA_SECAO } from './prompts'
 import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from './rascunho'
+import { ritmoDoRascunho } from '../voz/ritmo'
 
 /**
  * Passo 2b: o ROTEIRO do short em PT-BR falado, em secoes com papel.
@@ -138,6 +139,12 @@ interface Contexto {
   indice: EpisodeIndex
   elenco: Elenco
   alvoSec: AlvoSec
+  /**
+   * Palavras por segundo da voz que vai narrar (o take atual, ou a voz padrao
+   * na velocidade nativa do perfil): o alvo, o minimo de 92% e o numero de
+   * frases do prompt sao no ritmo DELA (shared/ritmo.ts).
+   */
+  ritmo: number
   instrucao: string | null
   /** O usuario aceitou o modelo reserva para este pedido. */
   permitirReserva: boolean
@@ -182,6 +189,7 @@ async function gerar(
     indice,
     elenco: elencoDoEpisodio(indice),
     alvoSec: pedido.alvoSec,
+    ritmo: ritmoDoRascunho(r).ritmo,
     instrucao: pedido.instrucao?.trim() || null,
     permitirReserva,
     avisar,
@@ -200,7 +208,7 @@ async function gerar(
   const rascunho = soNoHistorico ? guardarNoHistorico(fresco, roteiro, quando) : adicionarVersao(fresco, roteiro, quando)
   gravarRascunho(rascunho)
 
-  avisos.push(...feito.candidato.reparos, ...resumirAvisos(validarRoteiro(roteiro, rascunho.eventos, indice)))
+  avisos.push(...feito.candidato.reparos, ...resumirAvisos(validarRoteiro(roteiro, rascunho.eventos, indice, ctx.ritmo)))
   return { rascunho, roteiro, doCache, soNoHistorico, avisos }
 }
 
@@ -270,8 +278,8 @@ const PAPEL_NO_RECADO: Record<PapelDaSecao, string> = {
  * Antes era so "alongue", e o de 90 s voltava com 196 de 224.
  */
 function motivoDoTamanho(roteiro: Roteiro, palavrasNoTotal: number, c: Contexto): string {
-  const faixa = faixaDePalavras(c.alvoSec)
-  const pedidas = FRASES_POR_PAPEL[c.alvoSec]
+  const faixa = faixaDePalavras(c.alvoSec, c.ritmo)
+  const pedidas = frasesPorPapel(c.alvoSec, c.ritmo)
   const porPapel = new Map<PapelDaSecao, number>()
   for (const s of roteiro.secoes) porPapel.set(s.papel, (porPapel.get(s.papel) ?? 0) + s.frases.length)
   const frases = roteiro.secoes.reduce((n, s) => n + s.frases.length, 0)
@@ -286,7 +294,7 @@ function motivoDoTamanho(roteiro: Roteiro, palavrasNoTotal: number, c: Contexto)
   })
   let texto =
     `ela tinha ${palavrasNoTotal} palavras faladas em ${frases} frases, e o alvo é ${faixa.alvo} palavras ` +
-    `(entre ${faixa.min} e ${faixa.max}), em umas ${frasesDoAlvo(c.alvoSec)} frases. `
+    `(entre ${faixa.min} e ${faixa.max}), em umas ${frasesDoAlvo(c.alvoSec, c.ritmo)} frases. `
   // O numero de frases certo com frases longas tambem estoura: o lite do S4-37
   // devolveu 18 frases de ~13 palavras (233 para 60 s), e o recado so de
   // frases nao mexia nisso.
@@ -322,7 +330,7 @@ function motivoDosTermos(problemas: readonly ProblemaDoRoteiro[], roteiro: Pick<
 }
 
 async function escreverInteiro(c: Contexto): Promise<Feito | ParadoNoReserva> {
-  const faixa = faixaDePalavras(c.alvoSec)
+  const faixa = faixaDePalavras(c.alvoSec, c.ritmo)
   const quem = nomeDoProvedor()
   const anteriores = primeirasFrases(c.r)
   const ganchos = anteriores.slice(-4).map((g) => g.texto)
@@ -348,6 +356,7 @@ async function escreverInteiro(c: Contexto): Promise<Feito | ParadoNoReserva> {
           indice: c.indice,
           eventos: c.r.eventos,
           alvoSec: c.alvoSec,
+          ritmo: c.ritmo,
           elenco: c.elenco,
           instrucao: c.instrucao,
           ganchosAnteriores: ganchos,
@@ -375,7 +384,7 @@ async function escreverInteiro(c: Contexto): Promise<Feito | ParadoNoReserva> {
         derivadoDe: null,
       }),
     )
-    const problemas = validarRoteiro(roteiro, c.r.eventos, c.indice)
+    const problemas = validarRoteiro(roteiro, c.r.eventos, c.indice, c.ritmo)
     const erros = problemas.filter((p) => p.nivel === 'erro')
     if (erros.length > 0) {
       ultimoErro = erros[0]!.mensagem
@@ -420,7 +429,7 @@ async function refazerSecao(c: Contexto, secaoId: string): Promise<Feito | Parad
 
   // A parte nova cobre o que falta para o alvo, sem fugir muito do tamanho de
   // hoje: "refazer" nao e "reescrever o roteiro dentro de uma secao".
-  const faixa = faixaDePalavras(c.alvoSec)
+  const faixa = faixaDePalavras(c.alvoSec, c.ritmo)
   const hoje = palavrasDoRoteiro({ secoes: [secao] })
   const outras = palavrasDoRoteiro(atual) - hoje
   const piso = Math.max(6, Math.round(hoje * 0.6))
@@ -447,6 +456,7 @@ async function refazerSecao(c: Contexto, secaoId: string): Promise<Feito | Parad
           indice: c.indice,
           eventos: c.r.eventos,
           alvoSec: c.alvoSec,
+          ritmo: c.ritmo,
           elenco: c.elenco,
           roteiro: atual,
           secaoId,
@@ -484,7 +494,7 @@ async function refazerSecao(c: Contexto, secaoId: string): Promise<Feito | Parad
     }
     // So o que e DESTA parte: uma frase vazia que o Levi deixou em outra parte
     // barra a aprovacao, nao o "Refazer" (antes falhava sempre, gastando 2 chamadas).
-    const daParte = validarRoteiro(trocado.roteiro, c.r.eventos, c.indice).filter((p) => p.secaoId === secaoId)
+    const daParte = validarRoteiro(trocado.roteiro, c.r.eventos, c.indice, c.ritmo).filter((p) => p.secaoId === secaoId)
     const erros = daParte.filter((p) => p.nivel === 'erro')
     if (erros.length > 0) {
       aviso = `ela veio com problema de formato (${[...new Set(erros.map((e) => e.mensagem))].join('; ')}).`

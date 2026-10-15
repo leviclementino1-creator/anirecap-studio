@@ -35,7 +35,25 @@ export const FRASE_DO_ERRO: Record<TipoDeErroDaInstalacao, string> = {
   ocupado: 'Outra janela do app ja esta instalando o motor.',
   pasta: 'Nao deu para gravar na pasta do motor. Escolha outra pasta.',
   'uv-ausente': 'O app veio sem o instalador do motor. Reinstale o AniRecap Studio.',
+  antivirus: 'O antivirus bloqueou o instalador do motor. Libere e clique em Continuar.',
+  demorou: 'O motor demorou para responder (antivirus examinando?). Clique em Continuar.',
   sistema: 'O motor de personagens so roda no Windows 64 bits.',
+}
+
+/**
+ * O processo nao chegou a rodar: spawn recusado (EPERM, EACCES, UNKNOWN: o
+ * Smart App Control ou o antivirus barrando um exe nao assinado, como o uv).
+ */
+export function ehBloqueio(texto: string): boolean {
+  return /spawn\s+\S*\s*(EPERM|EACCES|UNKNOWN)|\b(EPERM|EACCES)\b.*spawn|operation not permitted|blocked by|bloqueado/i.test(texto)
+}
+
+/**
+ * Arquivo preso no meio (o antivirus segurando uma DLL recem-extraida):
+ * "os error 32" (em uso por outro processo) e "os error 5" (acesso negado).
+ */
+export function ehArquivoPreso(texto: string): boolean {
+  return /os error (32|5)\b|being used by another process|sendo usado por outro processo|access is denied|acesso negado/i.test(texto)
 }
 
 export function falha(tipo: TipoDeErroDaInstalacao, detalhe?: string, mensagem?: string): FalhaDaInstalacao {
@@ -72,7 +90,12 @@ export function paraErroDaInstalacao(e: unknown): ErroDaInstalacao {
   const texto = e instanceof Error ? e.message : String(e)
   if (ehSemEspaco(e)) return { tipo: 'sem-espaco', mensagem: FRASE_DO_ERRO['sem-espaco'], detalhe: texto.slice(0, 1500) }
   if (ehDeRede(e)) return { tipo: 'sem-internet', mensagem: FRASE_DO_ERRO['sem-internet'], detalhe: texto.slice(0, 1500) }
-  if ((e as { code?: unknown } | null)?.code === 'EPERM' || (e as { code?: unknown } | null)?.code === 'EACCES') {
+  const codigo = (e as { code?: unknown } | null)?.code
+  // EPERM/EBUSY dentro do venv e o motor rodando (uma .pyd carregada), nao a pasta.
+  if ((codigo === 'EPERM' || codigo === 'EBUSY') && /[\\/]venv[\\/]/i.test(texto)) {
+    return { tipo: 'ocupado', mensagem: 'O motor esta em uso. Espere a analise terminar e tente de novo.', detalhe: texto.slice(0, 1500) }
+  }
+  if (codigo === 'EPERM' || codigo === 'EACCES') {
     return { tipo: 'pasta', mensagem: FRASE_DO_ERRO.pasta, detalhe: texto.slice(0, 1500) }
   }
   return { tipo: 'uv', mensagem: 'A instalacao do motor parou. Veja o log e clique em Continuar.', detalhe: texto.slice(0, 1500) }

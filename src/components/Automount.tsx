@@ -1,7 +1,36 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Wand2, Clapperboard, Lightbulb, Library as LibraryIcon, Loader2 } from 'lucide-react'
 import { useProject } from '@/store/project'
 import type { AutomountMode } from '@shared/channels'
+import { Segmentos, type Segmento } from '@/components/painel'
+import { gravarModoDoAutomount, lerModoDoAutomount } from '@/components/automount-modo'
+
+/*
+ * A cronologia e a unica diferenca entre os dois modos, e e decisiva: por isso
+ * ela vai no title de cada opcao, e nao em texto na tela.
+ */
+const MODOS: readonly Segmento<AutomountMode>[] = [
+  {
+    valor: 'recap',
+    rotulo: (
+      <>
+        <Clapperboard size={12} strokeWidth={1.5} />
+        Recap
+      </>
+    ),
+    title: 'Recap: segue a ordem do episodio, cada cena vem depois da anterior (so escolhe o modo)',
+  },
+  {
+    valor: 'theory',
+    rotulo: (
+      <>
+        <Lightbulb size={12} strokeWidth={1.5} />
+        Teoria
+      </>
+    ),
+    title: 'Teoria: segue a ordem do argumento, misturando temporadas (so escolhe o modo)',
+  },
+]
 
 /**
  * A escolha entre recap e teoria, no instante em que ela existe.
@@ -10,6 +39,11 @@ import type { AutomountMode } from '@shared/channels'
  * depois de soltar o mp3 sozinho. Quem solta narracao E imagens nunca ve isto,
  * e o caminho manual continua intocado: montar sozinho e um segundo gesto no
  * mesmo lugar, nao um modo em que se entra.
+ *
+ * "Montar recap" e "Montar teoria" eram dois botoes com o MESMO gesto e uma
+ * diferenca so; viraram um "Montar sozinho" com a escolha dentro (decisao do
+ * Levi, 15/10). A escolha fica lembrada (automount-modo.ts), entao o caso de
+ * sempre e um clique.
  *
  * O botao da Biblioteca fica AQUI ao lado, e nao so na tela vazia: soltar a
  * narracao ja tira o app do estado vazio, e ele ficou sem nenhuma porta visivel
@@ -26,6 +60,7 @@ export function Automount() {
   const syncLibrary = useProject((s) => s.syncLibrary)
   const serie = useProject((s) => s.automountSeries)
   const setSerie = useProject((s) => s.setAutomountSeries)
+  const [modo, setModo] = useState<AutomountMode>(lerModoDoAutomount)
 
   const visivel = audio !== null && images.length === 0
 
@@ -40,21 +75,11 @@ export function Automount() {
 
   if (!visivel) return null
 
-  const opcoes: { mode: AutomountMode; icon: typeof Wand2; label: string; hint: string }[] = [
-    {
-      mode: 'recap',
-      icon: Clapperboard,
-      label: 'Montar recap',
-      // A cronologia e a unica diferenca entre os dois modos, e e decisiva.
-      hint: 'Segue a ordem do episodio: cada cena vem depois da anterior',
-    },
-    {
-      mode: 'theory',
-      icon: Lightbulb,
-      label: 'Montar teoria',
-      hint: 'Segue a ordem do argumento, misturando temporadas',
-    },
-  ]
+  const ocupado = busy !== null
+  const trocarModo = (m: AutomountMode): void => {
+    setModo(m)
+    gravarModoDoAutomount(m)
+  }
 
   return (
     <div className="enter flex flex-col items-center gap-4 rounded-lg border border-dashed border-line p-8">
@@ -71,7 +96,7 @@ export function Automount() {
           id="automount-serie"
           value={serie ?? ''}
           onChange={(e) => setSerie(e.target.value || null)}
-          disabled={busy !== null || !library}
+          disabled={ocupado || !library}
           className="min-w-[200px] rounded-sm border border-line bg-bg px-2 py-1.5 text-[12px] text-ink disabled:opacity-40"
         >
           {/* Deduzir continua sendo o padrao, mas dizer e uma linha so a menos de
@@ -90,25 +115,40 @@ export function Automount() {
         )}
       </div>
 
-      <div className="flex gap-2">
-        {opcoes.map(({ mode, icon: Icon, label, hint }) => (
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {/*
+          O botao e a escolha moram na MESMA moldura rosa: a escolha e parte do
+          gesto de montar, nao um ajuste solto. O fieldset desliga os dois de
+          uma vez enquanto algo roda (o mesmo jeito do "Partes | Texto").
+          A explicacao que antes ficava num paragrafo embaixo foi para o title:
+          pouco texto na tela.
+        */}
+        <fieldset
+          disabled={ocupado}
+          aria-label="Montar sozinho"
+          className="flex items-center gap-1 rounded-sm border border-accent bg-accent-dim p-[3px] disabled:opacity-40"
+        >
           <button
-            key={mode}
             type="button"
-            onClick={() => void automount(mode, serie)}
-            disabled={busy !== null}
-            title={hint}
-            className="flex items-center gap-2 rounded-sm border border-line bg-bg px-4 py-2 text-[13px] text-ink transition-colors duration-150 hover:border-accent disabled:opacity-40"
+            onClick={() => void automount(modo, serie)}
+            title={`${modo === 'recap' ? 'Recap' : 'Teoria'}: le a narracao, descobre quem esta em cada frase e traz uma cena para cada uma. Depois voce troca o que nao gostou.`}
+            className="flex h-[30px] items-center gap-2 rounded-[3px] px-3 text-[13px] font-medium text-ink transition-colors duration-150 enabled:hover:bg-accent-glow"
           >
-            <Icon size={14} strokeWidth={1.5} className="text-accent" />
-            {label}
+            <Wand2 size={14} strokeWidth={1.5} className="text-accent" />
+            Montar sozinho
           </button>
-        ))}
+          {/* O divisor separa o gesto (montar) da escolha (o modo): clicar em
+              "Teoria" so escolhe, quem monta e o botao. */}
+          <span aria-hidden className="h-5 w-px shrink-0 bg-accent/30" />
+          <div className="flex w-[148px] shrink-0">
+            <Segmentos opcoes={MODOS} ativo={(v) => v === modo} onChange={trocarModo} />
+          </div>
+        </fieldset>
 
         <button
           type="button"
           onClick={() => void openLibrary(true)}
-          disabled={busy !== null}
+          disabled={ocupado}
           title="Escolher as cenas na mao (Ctrl+B)"
           className="flex items-center gap-2 rounded-sm border border-line bg-bg px-4 py-2 text-[13px] text-ink-2 transition-colors duration-150 hover:border-line-strong hover:text-ink disabled:opacity-40"
         >
@@ -116,11 +156,6 @@ export function Automount() {
           Escolher na biblioteca
         </button>
       </div>
-
-      <p className="max-w-[440px] text-center text-[11px] leading-relaxed text-ink-3">
-        Montar sozinho le a narracao, descobre quem esta em cada frase e traz uma
-        cena para cada uma. Depois voce troca o que nao gostou.
-      </p>
     </div>
   )
 }

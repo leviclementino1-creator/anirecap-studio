@@ -103,6 +103,41 @@ function codigoDoMotorNoRepo(raiz) {
  * Confere release/ inteira. Devolve { erros, info }: erros vazio = pode subir.
  * Nunca lanca por arquivo faltando; cada falta vira uma linha em `erros`.
  */
+/*
+ * O LOCK ACOMPANHA O CODIGO DO MOTOR? Todo pacote que o motor/requirements.txt
+ * pede (menos o Qt, que so a interface do motor usa) tem que estar no
+ * motor/studio-runtime.json. Roda aqui (e no CI, onde nao ha motor/.venv para o
+ * `motor-lock.mjs --conferir`): uma correcao do motor que traga um pacote novo
+ * sem regerar o lock deixaria o runtime de todo mundo "pronto" e a 1a analise
+ * morrendo com ImportError, sem a atualizacao automatica poder consertar.
+ */
+const FORA_DO_LOCK = new Set(['pyside6', 'pyside6-addons', 'pyside6-essentials', 'shiboken6'])
+
+export function conferirLockDoMotor(raiz = ROOT) {
+  const erros = []
+  const normalizar = (s) => s.toLowerCase().replace(/[-_.]+/g, '-')
+  let lock
+  try {
+    lock = JSON.parse(readFileSync(join(raiz, 'motor', 'studio-runtime.json'), 'utf8'))
+  } catch (e) {
+    return [`nao li motor/studio-runtime.json (${e instanceof Error ? e.message : e})`]
+  }
+  const noLock = new Set([
+    ...(lock.pacotes ?? []).map((p) => normalizar(p.nome)),
+    ...Object.values(lock.torch ?? {}).flat().map((r) => normalizar(r.nome)),
+  ])
+  const pedidos = readFileSync(join(raiz, 'motor', 'requirements.txt'), 'utf8')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*/, '').trim())
+    .filter((l) => l && !l.startsWith('-'))
+    .map((l) => normalizar(/^[A-Za-z0-9._-]+/.exec(l)?.[0] ?? l))
+  const faltam = pedidos.filter((n) => !FORA_DO_LOCK.has(n) && !noLock.has(n))
+  if (faltam.length) {
+    erros.push(`motor/studio-runtime.json nao tem ${faltam.join(', ')} (do motor/requirements.txt): rode node scripts/motor-lock.mjs`)
+  }
+  return erros
+}
+
 export function conferirPacote({ raiz = ROOT, versao } = {}) {
   const v = versao ?? JSON.parse(readFileSync(join(raiz, 'package.json'), 'utf8')).version
   const saida = join(raiz, 'release')
@@ -241,6 +276,10 @@ export function conferirPacote({ raiz = ROOT, versao } = {}) {
   } else {
     erros.push('falta o onnxruntime-node desempacotado')
   }
+
+  // --------------------------------------------- o lock do runtime do motor
+  for (const e of conferirLockDoMotor(raiz)) erros.push(e)
+  if (!erros.some((e) => e.startsWith('motor/studio-runtime.json'))) info.push('lock do motor cobre o requirements.txt')
 
   return { erros, info }
 }

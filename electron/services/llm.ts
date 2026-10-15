@@ -990,12 +990,21 @@ async function modeloAutomatico(chave: string, soBons = false): Promise<string |
  * de JSON -- e quando ela falha a chave continua valida: volta como aviso, nao
  * como erro. Erro (lancado, com a nota na mensagem) e so quando nem listar deu.
  */
+/*
+ * O teste roda no PROPRIO campo da chave (Configuracoes ou boas-vindas): o
+ * "Confira em configuracoes (Ctrl+,)" da nota mandava para a tela em que ele
+ * ja estava. Os erros que nascem fora (roteiro, eventos) continuam com ele.
+ */
+function notaDoTeste(nota: string): string {
+  return nota.replace(/\s*Confira em configuracoes \(Ctrl\+,\)\.$/, '')
+}
+
 export async function testarGemini(chave: string, modeloConfigurado: string): Promise<TesteDoGemini> {
   let ids: string[]
   try {
     ids = await listarModelosGemini(chave)
   } catch (err) {
-    throw new Error(err instanceof ErroDeIa ? err.nota : String(err))
+    throw new Error(notaDoTeste(err instanceof ErroDeIa ? err.nota : String(err)))
   }
 
   if (!modeloConfigurado) automatico = { chave, modelo: melhorFlash(ids) || GEMINI_PADRAO }

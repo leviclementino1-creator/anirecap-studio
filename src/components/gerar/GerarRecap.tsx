@@ -21,6 +21,7 @@ import { AndamentoDaAnalise, Indexando } from './AndamentoDaAnalise'
 import { AndamentoDoCorte, corteVivo, textoCurtoDoCorte } from './AndamentoDoCorte'
 import { AreaDeSoltar, CartaoDoEpisodio } from './CartaoDoEpisodio'
 import { AndamentoDaDescoberta } from './EntradaDaDescoberta'
+import { EscolhaDoRecap } from './EscolhaDoRecap'
 import { PassoDasCenas } from './PassoDasCenas'
 import { PassoDaVoz } from './PassoDaVoz'
 import { PassoDoRoteiro } from './PassoDoRoteiro'
@@ -59,8 +60,13 @@ export function GerarRecap() {
   // Reconhecer na mao: o andamento e os grupos chegam com o assistente fechado tambem.
   useEffect(() => escutarDescoberta(), [])
 
-  if (!aberto) return null
-  return <Assistente />
+  return (
+    <>
+      {aberto && <Assistente />}
+      {/* A escolha "Novo recap | Continuar" da porta (abrirOuEscolher): fora do assistente, a paleta tambem abre. */}
+      <EscolhaDoRecap />
+    </>
+  )
 }
 
 function Assistente() {

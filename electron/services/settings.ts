@@ -9,6 +9,7 @@ import {
   preferenciasDaEdicaoRapidaSchema,
   type PreferenciasDaEdicaoRapida,
 } from '@shared/edicao-rapida'
+import { arrumarVelocidadeNativa, VELOCIDADE_NATIVA_PADRAO } from '@shared/voz'
 
 /**
  * Guarda tres campos em um JSON no userData.
@@ -60,6 +61,12 @@ export interface Settings {
    * so tem a da Anthropic (todo usuario antigo) continua como estava.
    */
   iaProvedor: 'gemini' | 'anthropic'
+  /**
+   * "Nao perguntar mais" da tela de boas-vindas: sem chave de IA, o app abre
+   * recomendando a do Gemini; quem marcou isto nao ve mais a tela. O "Depois"
+   * nao grava nada -- vale so para a sessao.
+   */
+  naoPerguntarChave: boolean
   /** Modelo do Gemini. Vazio = automatico, o melhor "flash" que a chave enxerga. */
   geminiModelo: string
   /** Modelo da Anthropic. Antes fixo no planner e no metadata. */
@@ -132,8 +139,9 @@ const DEFAULTS: Settings = {
   geminiApiKey: '',
   elevenlabsApiKey: '',
   fishApiKey: '',
-  vozPadrao: { provedor: '', voiceId: '', modelId: '' },
+  vozPadrao: { provedor: '', voiceId: '', modelId: '', velocidadeNativa: VELOCIDADE_NATIVA_PADRAO },
   iaProvedor: 'gemini',
+  naoPerguntarChave: false,
   geminiModelo: '',
   anthropicModelo: 'claude-sonnet-5',
   whisperModel: 'small',
@@ -204,7 +212,13 @@ export function getSettings(): Settings {
 export function saveSettings(patch: Partial<Settings>): Settings {
   if (!filePath) throw new Error('Settings nao configurado')
 
-  const next = coerce({ ...getSettings(), ...patch })
+  // Gravar so a voz (escolher outra no select) mantem a velocidade nativa que ja estava.
+  const voz = patch.vozPadrao
+  const comVelocidade =
+    voz && voz.velocidadeNativa === undefined
+      ? { ...patch, vozPadrao: { ...voz, velocidadeNativa: getSettings().vozPadrao.velocidadeNativa } }
+      : patch
+  const next = coerce({ ...getSettings(), ...comVelocidade })
   // Chave nova (ou apagada de proposito) substitui a cifrada que nao abria.
   for (const campo of CAMPOS_DE_CHAVE) {
     if (campo in patch) delete ilegiveis[campo]
@@ -372,6 +386,7 @@ export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
   const key = settings.anthropicApiKey
   return {
     iaProvedor: settings.iaProvedor,
+    naoPerguntarChave: settings.naoPerguntarChave,
     geminiModelo: settings.geminiModelo,
     anthropicModelo: settings.anthropicModelo,
     whisperModel: settings.whisperModel,
@@ -422,6 +437,8 @@ function coerce(raw: unknown): Settings {
     fishApiKey: typeof value['fishApiKey'] === 'string' ? value['fishApiKey'].trim() : '',
     vozPadrao: vozSalva(value['vozPadrao']),
     iaProvedor: value['iaProvedor'] === 'anthropic' ? 'anthropic' : 'gemini',
+    // So o true de verdade dispensa a tela: lixo no arquivo volta a perguntar.
+    naoPerguntarChave: value['naoPerguntarChave'] === true,
     geminiModelo: nomeDeModelo(value['geminiModelo'], ''),
     anthropicModelo: nomeDeModelo(value['anthropicModelo'], DEFAULTS.anthropicModelo),
     whisperModel: model === 'base' || model === 'small' || model === 'medium' ? model : 'small',
@@ -514,6 +531,9 @@ function vozSalva(raw: unknown): VozPadrao {
     // Vai num cabecalho/corpo do TTS, nao no caminho, mas a mesma regra dos
     // modelos do Gemini serve: nome curto, sem espaco nem barra.
     modelId: provedor ? nomeDeModelo(value['modelId'], '') : '',
+    // Perfil de antes do campo (ou lixo no arquivo): o padrao 1,2 da decisao de 15/10.
+    velocidadeNativa:
+      typeof value['velocidadeNativa'] === 'number' ? arrumarVelocidadeNativa(value['velocidadeNativa']) : VELOCIDADE_NATIVA_PADRAO,
   }
 }
 

@@ -291,7 +291,11 @@ class Config:
     clip_pretrained: str = "openai"
 
     # GPU
-    use_cuda: bool = True  # falls back to CPU automatically if unavailable
+    # [Studio] ANIRECAP_MOTOR_SEM_CUDA=1: a placa nao roda o torch do runtime
+    # (GTX 10xx no cu128, sm < 7.5): o torch vai para a CPU, mas o ffmpeg segue
+    # com o NVENC/NVDEC da placa. O CUDA_VISIBLE_DEVICES=-1 de antes desligava
+    # os dois.
+    use_cuda: bool = os.environ.get("ANIRECAP_MOTOR_SEM_CUDA", "") != "1"  # falls back to CPU automatically if unavailable
 
     # UI
     language: str = "pt"

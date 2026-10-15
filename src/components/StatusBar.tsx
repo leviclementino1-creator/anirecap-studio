@@ -13,7 +13,9 @@ import {
 } from 'lucide-react'
 import { useProject } from '@/store/project'
 import { useMotorRuntime } from '@/store/motor-runtime'
+import { useGerar } from '@/store/gerar'
 import { AnaliseNaBarra } from '@/components/gerar/AnaliseNaBarra'
+import { corteVivo } from '@/components/gerar/AndamentoDoCorte'
 import { RELEASES_URL } from '@shared/channels'
 import type { PlanOrigin } from '@shared/contract'
 
@@ -169,6 +171,9 @@ function UpdateChip({ appVersion }: { appVersion: string }) {
   // Atualizar fecha o app; no meio da instalacao do motor isso joga fora o
   // andamento da etapa (a retomada guarda o resto, mas o Levi esperaria de novo).
   const motorInstalando = useMotorRuntime((s) => s.estado?.fase === 'instalando')
+  // O corte (ou a analise) do motor tambem: o quitAndInstall mata o processo, e
+  // os ~5 min de corte recomecavam do zero ao reabrir.
+  const motorCortando = useGerar((s) => s.job !== null || corteVivo(s.corte) || corteVivo(s.corteDeOutro?.estado ?? null))
   const [perguntou, setPerguntou] = useState(false)
 
   // A resposta de uma busca manual some sozinha: ela responde a uma pergunta,
@@ -225,14 +230,16 @@ function UpdateChip({ appVersion }: { appVersion: string }) {
     return (
       <button
         type="button"
-        disabled={rendering || motorInstalando}
+        disabled={rendering || motorInstalando || motorCortando}
         onClick={() => void window.dangai.installUpdate()}
         title={
           rendering
             ? 'Termine o render primeiro'
             : motorInstalando
               ? 'Espere o motor terminar de instalar'
-              : `Instala a ${update.version} e reabre o app`
+              : motorCortando
+                ? 'Espere o corte terminar'
+                : `Instala a ${update.version} e reabre o app`
         }
         className="flex shrink-0 items-center gap-1.5 rounded-sm border border-accent bg-accent-dim px-2 py-0.5 text-[11px] text-ink disabled:opacity-40"
       >

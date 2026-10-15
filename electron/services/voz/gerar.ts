@@ -35,6 +35,7 @@ import { palavrasPeloRoteiro, palavrasPeloTexto, palavrasDosCaracteres, type Pal
 import { arquivoDaVoz } from './pastas'
 import { cancelarPedido, comecarPedido, terminarPedido } from './pedidos'
 import { creditosPorCaractere, cumprirPlano, type VozDoProvedor } from './provedor'
+import { aprenderRitmo } from './ritmo'
 import { lerWavDoDisco, wavDoPcm } from './wav'
 
 /**
@@ -49,7 +50,8 @@ import { lerWavDoDisco, wavDoPcm } from './wav'
  *   provedor.ts  cache -> ElevenLabs (eleven.ts) / Fish (fish.ts) -> PCM;
  *   palavras.ts  caracteres -> palavras DO ROTEIRO, e trechos por frase;
  *   alinhamento.ts  Whisper + wav2vec2 do Dangai (Fish, importado, reserva);
- *   pos.ts       corte de pausa (pelo alinhamento) + velocidade, remapeamento exato;
+ *   pos.ts       corte de pausa (pelo alinhamento) + acelerar (atempo), remapeamento exato;
+ *   ritmo.ts     palavras por segundo de cada take (o roteiro seguinte mira o alvo nele);
  *   montar.ts    bruto -> take, e a emenda do "Regravar esta frase";
  *   importado.ts o audio gravado pelo Levi;
  *   wav.ts/ffmpeg.ts  WAV canonico enderecado por conteudo e o ffmpeg do projeto.
@@ -90,13 +92,13 @@ function conferirCusto(aCobrar: number, confirmado: number): void {
 }
 
 /**
- * A frase da etapa 'ajustando': o que o pos faz AGORA ("Velocidade 1,10x",
+ * A frase da etapa 'ajustando': o que o pos faz AGORA ("Acelerando 1,10x",
  * "Cortando pausas"). Com `antes` (o ajuste de um take), so o que mudou. Sem
- * corte e sem velocidade, so o volume e igualado.
+ * corte e sem acelerar, so o volume e igualado.
  */
 function mensagemDoPos(c: Pick<TakeDaVoz['config'], 'velocidade' | 'cortarPausas'>, antes?: Pick<TakeDaVoz['config'], 'velocidade' | 'cortarPausas'>): string {
   const partes: string[] = []
-  const velocidade = `velocidade ${c.velocidade.toFixed(2).replace('.', ',')}x`
+  const velocidade = `acelerando ${c.velocidade.toFixed(2).replace('.', ',')}x`
   if (antes) {
     if (antes.cortarPausas !== c.cortarPausas) partes.push(c.cortarPausas ? 'cortando pausas' : 'devolvendo as pausas')
     if (Math.abs(antes.velocidade - c.velocidade) > 1e-6) partes.push(velocidade)
@@ -130,6 +132,8 @@ function gravarTake(
   const novo = adicionarTake(r, comId, new Date().toISOString(), soNoHistorico)
   gravarRascunho(novo)
   marcarOuvidos(rascunhoId, chavesOuvidas)
+  // O ritmo de verdade desta voz (palavras / segundos do take final): o proximo roteiro mira o alvo nele.
+  aprenderRitmo(comId)
   return { rascunho: novo, take: comId, cobrados: comId.cobrados, soNoHistorico, avisos: comId.avisos }
 }
 
@@ -368,8 +372,9 @@ function mesmaConfig(a: TakeDaVoz['config'], b: TakeDaVoz['config']): boolean {
 }
 
 /**
- * Trocar so o pos (velocidade, corte de pausa): o bruto do take atual, outro
- * pos. 0 caractere. Se ja existe um take com o MESMO bruto e o MESMO ajuste
+ * Trocar so o pos (acelerar, corte de pausa): o bruto do take atual, outro
+ * pos. 0 caractere. A velocidade NATIVA fica a do take (muda-la e gerar de
+ * novo, pago). Se ja existe um take com o MESMO bruto e o MESMO ajuste
  * (1,0 -> 1,1 -> 1,0), volta para ele em vez de duplicar.
  */
 export async function ajustarVoz(

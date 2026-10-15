@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import type { Cue, EpisodeIndex, Exclusao, Plano } from './episodio'
-// So o schema do passo 3: voz.ts importa daqui apenas TIPOS, entao nao ha ciclo de valor.
-import { estadoDaVozSchema } from './voz'
+// O schema do passo 3 (e a situacao da voz, para o passo do resumo): voz.ts
+// importa daqui apenas TIPOS, entao nao ha ciclo de valor.
+import { estadoDaVozSchema, situacaoDaVoz } from './voz'
 // O mesmo para o passo 4: cenas.ts importa daqui apenas TIPOS.
 import { estadoDasCenasSchema } from './cenas'
 
@@ -46,6 +47,11 @@ const versaoDoRascunhoSchema = z.literal([1, 2, RASCUNHO_VERSAO]).transform((): 
 /**
  * Ritmo da narracao falada em PT-BR, medido no AniRecap: ~2,7 palavras por
  * segundo. 60 s ~ 162 palavras, 90 s ~ 243.
+ *
+ * Desde 15/10 o ritmo de verdade e POR VOZ (shared/ritmo.ts: a velocidade
+ * nativa 1,2 fala ~3,8 p/s): faixaDePalavras, duracaoEstimada, validarRoteiro
+ * e frasesPorPapel recebem o `ritmo`. Este 2,7 ficou como o ritmo dos moldes
+ * (FRASES_POR_PAPEL foi pensado nele) e o valor de quem chama sem ritmo.
  */
 export const PALAVRAS_POR_SEGUNDO = 2.7
 
@@ -72,13 +78,14 @@ export type AlvoSec = z.infer<typeof alvoSecSchema>
 export const ALVO_PADRAO: AlvoSec = 60
 
 /**
- * A faixa de palavras aceita para um alvo. `alvo` e o que se pede ao LLM;
- * fora de [min, max] o validarRoteiro avisa (nao bloqueia a aprovacao). O
- * minimo e 92% do alvo (149 em 60 s, 224 em 90 s): com 85% um roteiro de
- * ~51 s passava como "60 s" sem aviso.
+ * A faixa de palavras aceita para um alvo, no `ritmo` da voz (palavras por
+ * segundo do take final, ritmoDaConfig). `alvo` e o que se pede ao LLM; fora
+ * de [min, max] o validarRoteiro avisa (nao bloqueia a aprovacao). O minimo e
+ * 92% do alvo (149 em 60 s a 2,7 p/s; 208 a 3,76): com 85% um roteiro de ~51 s
+ * passava como "60 s" sem aviso.
  */
-export function faixaDePalavras(alvoSec: AlvoSec): { min: number; alvo: number; max: number } {
-  const alvo = Math.round(alvoSec * PALAVRAS_POR_SEGUNDO)
+export function faixaDePalavras(alvoSec: AlvoSec, ritmo: number = PALAVRAS_POR_SEGUNDO): { min: number; alvo: number; max: number } {
+  const alvo = Math.round(alvoSec * ritmo)
   return { min: Math.round(alvo * 0.92), alvo, max: Math.round(alvo * 1.12) }
 }
 
@@ -143,6 +150,34 @@ export const ROTULO_DO_PAPEL: Record<PapelDaSecao, string> = {
 export const FRASES_POR_PAPEL: Record<AlvoSec, Record<PapelDaSecao, number>> = {
   60: { gancho: 2, contexto: 2, desenvolvimento: 7, virada: 2, climax: 3, fechamento: 2 },
   90: { gancho: 2, contexto: 3, desenvolvimento: 11, virada: 3, climax: 4, fechamento: 2 },
+}
+
+/**
+ * As frases por papel no `ritmo` da voz. Os moldes acima sao do 2,7 p/s (~9
+ * palavras por frase); numa voz mais rapida cabem MAIS frases no mesmo alvo
+ * (o modelo segue o numero de frases, nao conta palavras: com o molde do 2,7
+ * a 3,8 p/s ele devolvia ~40 s). Gancho e fechamento ficam (abrem e fecham
+ * curtos); o resto cresce na proporcao do molde, pelo maior resto.
+ */
+export function frasesPorPapel(alvoSec: AlvoSec, ritmo: number = PALAVRAS_POR_SEGUNDO): Record<PapelDaSecao, number> {
+  const molde = FRASES_POR_PAPEL[alvoSec]
+  const fator = ritmo / PALAVRAS_POR_SEGUNDO
+  // Ate ~6% (a voz a 1,0 fala 2,84 p/s): o molde serve, so com frases de ~9,5 palavras.
+  if (Math.abs(fator - 1) < 0.06) return molde
+  const fixos: PapelDaSecao[] = ['gancho', 'fechamento']
+  const variaveis = PAPEIS.filter((p) => !fixos.includes(p))
+  const totalMolde = PAPEIS.reduce((n, p) => n + molde[p], 0)
+  const somaFixos = fixos.reduce((n, p) => n + molde[p], 0)
+  const somaVariaveis = totalMolde - somaFixos
+  const resto = Math.max(variaveis.length, Math.round(totalMolde * fator) - somaFixos)
+  const brutos = variaveis.map((p) => ({ p, x: (resto * molde[p]) / somaVariaveis }))
+  const saida = { ...molde }
+  for (const b of brutos) saida[b.p] = Math.max(1, Math.floor(b.x))
+  let falta = resto - variaveis.reduce((n, p) => n + saida[p], 0)
+  // Maior resto primeiro; empate vai para o desenvolvimento (o papel que mais cresce).
+  const ordem = [...brutos].sort((a, b) => b.x - Math.floor(b.x) - (a.x - Math.floor(a.x)) || molde[b.p] - molde[a.p])
+  for (let i = 0; falta > 0 && ordem.length > 0; i = (i + 1) % ordem.length, falta--) saida[ordem[i]!.p] += 1
+  return saida
 }
 
 /** Uma frase FALADA do roteiro. Um ponto final encerra uma frase (regra do Dangai). */
@@ -313,6 +348,8 @@ export interface ResumoDoRascunho {
   /** Palavras do roteiro atual. null = sem roteiro. */
   palavras: number | null
   aprovado: boolean
+  /** Onde ele reabre (passoDoRascunho): o "Continuar" do Gerar recap mostra "Voz", "Cenas". */
+  passo: 2 | 3 | 4
 }
 
 // ------------------------------------------------------------ modelo reserva
@@ -589,9 +626,9 @@ export function palavrasDoRoteiro(roteiro: Pick<Roteiro, 'secoes'>): number {
   return n
 }
 
-/** Segundos de narracao estimados para N palavras (sem arredondar; a tela arredonda). */
-export function duracaoEstimada(palavras: number): number {
-  return palavras / PALAVRAS_POR_SEGUNDO
+/** Segundos de narracao estimados para N palavras no `ritmo` da voz (sem arredondar; a tela arredonda). */
+export function duracaoEstimada(palavras: number, ritmo: number = PALAVRAS_POR_SEGUNDO): number {
+  return palavras / ritmo
 }
 
 /** 723.4 -> '12:03'. Tempo de tela, para frase e evento. */
@@ -1169,6 +1206,8 @@ export function validarRoteiro(
   roteiro: Pick<Roteiro, 'secoes' | 'alvoSec'>,
   eventos: readonly Evento[],
   indice?: Pick<EpisodeIndex, 'cues'> & Partial<Pick<EpisodeIndex, 'exclusoes' | 'planos'>>,
+  /** Palavras por segundo da voz (ritmoDaConfig): o "Curto/Longo" mede o tempo, nao as palavras. */
+  ritmo: number = PALAVRAS_POR_SEGUNDO,
 ): ProblemaDoRoteiro[] {
   const problemas: ProblemaDoRoteiro[] = []
   const eventoExiste = new Set(eventos.map((e) => e.id))
@@ -1311,7 +1350,7 @@ export function validarRoteiro(
   if (muletas > 1) problemas.push({ nivel: 'aviso', codigo: 'muleta', mensagem: `"Mano"/"cara" abrindo ${muletas} frases` })
 
   const palavras = palavrasDoRoteiro(roteiro)
-  const faixa = faixaDePalavras(roteiro.alvoSec)
+  const faixa = faixaDePalavras(roteiro.alvoSec, ritmo)
   if (roteiro.secoes.length > 0 && (palavras < faixa.min || palavras > faixa.max)) {
     problemas.push({
       nivel: 'aviso',
@@ -1941,6 +1980,19 @@ export function desmarcarAprovado(r: RascunhoDoRecap, agoraIso: string): Rascunh
   return { ...r, aprovado: false, aprovadoEm: null, atualizadoEm: agoraIso }
 }
 
+/**
+ * Onde o rascunho reabre (o "Continuar" do Gerar recap): no 4 quando a voz
+ * esta aprovada e em dia com o roteiro (o mesmo que libera o passo 4); no 3
+ * quando o roteiro aprovado ja tem voz; senao no 2. Mora aqui, e nao so na
+ * tela (passoAoRestaurar, gerar-passos.ts, que usa esta), porque a lista de
+ * rascunhos do main ja sai com o passo de cada um.
+ */
+export function passoDoRascunho(r: Pick<RascunhoDoRecap, 'aprovado' | 'voz' | 'roteiros' | 'atual'>): 2 | 3 | 4 {
+  if (!r.aprovado) return 2
+  if (situacaoDaVoz(r, roteiroAtual(r)) === 'aprovada') return 4
+  return (r.voz?.takes.length ?? 0) > 0 ? 3 : 2
+}
+
 /** A linha da lista de rascunhos. */
 export function resumirRascunho(r: RascunhoDoRecap): ResumoDoRascunho {
   const atual = roteiroAtual(r)
@@ -1953,6 +2005,7 @@ export function resumirRascunho(r: RascunhoDoRecap): ResumoDoRascunho {
     versoes: r.roteiros.length,
     palavras: atual ? palavrasDoRoteiro(atual) : null,
     aprovado: r.aprovado,
+    passo: passoDoRascunho(r),
   }
 }
 

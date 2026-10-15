@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, rename, rm, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RodaDoTorch } from '@shared/motor-runtime'
 import { ehSemEspaco, falha, FalhaDaInstalacao, InstalacaoCancelada } from './erros'
@@ -41,9 +41,19 @@ export interface OpcoesDaDescarga {
   esperas?: number[]
   /** Sem nenhum byte por este tempo, a tentativa cai e retoma. */
   silencioMs?: number
+  /** Quanto recuar do fim de um .part de outra sessao (MARGEM_DA_RETOMADA; os testes encurtam). */
+  margemDaRetomada?: number
 }
 
 const ESPERAS_PADRAO = [2000, 4000, 8000, 16_000, 30_000]
+/**
+ * Ao RETOMAR um .part de outra sessao, recua este tanto antes de pedir o
+ * Range. Queda de luz: o NTFS pode voltar com o .part maior que os dados que
+ * chegaram ao disco (o fim le como zero), e emendar depois dos zeros faria o
+ * sha256 dos 2,7 GB falhar no fim e o download recomecar do zero. 32 MB a
+ * mais por retomada e nada perto disso.
+ */
+export const MARGEM_DA_RETOMADA = 32 * 1024 * 1024
 const SILENCIO_PADRAO = 60_000
 /** Junta os pedacos da rede antes de gravar: menos escritas pequenas. */
 const BLOCO = 4 * 1024 * 1024
@@ -240,6 +250,14 @@ export async function baixarRoda(roda: RodaDoTorch, pasta: string, o: OpcoesDaDe
     await rm(parte, { force: true })
     m = { url: roda.url, sha256: roda.sha256, bytes: roda.bytes, etag: null }
     await writeFile(meta, JSON.stringify(m), 'utf8')
+  }
+
+  // Retomada de outra sessao (o app fechou, a luz caiu): o fim do .part pode nao estar no disco.
+  const deAntes = tamanho(parte) ?? 0
+  if (deAntes > 0 && deAntes <= roda.bytes) {
+    const recuo = Math.max(0, deAntes - (o.margemDaRetomada ?? MARGEM_DA_RETOMADA))
+    await truncate(parte, recuo)
+    o.log(`[baixar] ${roda.arquivo}: retomando de ${recuo} (recuou ${deAntes - recuo} bytes do fim do .part)`)
   }
 
   const esperas = o.esperas ?? ESPERAS_PADRAO

@@ -209,7 +209,9 @@ confere(situacaoDaVoz(r, roteiroAtual(r)) === 'aprovada' && podeIrParaCenas(r, r
 const vel = { ...cfg, velocidade: 1.1 }
 confere(soMudaOPos(cfg, vel), 'so a velocidade mudou: e ajuste (gratis)')
 confere(!soMudaOPos(cfg, { ...cfg, voiceId: 'OutraVoz123' }), 'outra voz: gera de novo')
-confere(soMudaOPos(cfg, JSON.parse(JSON.stringify({ settings: cfg.settings, cortarPausas: false, modelId: cfg.modelId, voiceId: cfg.voiceId, fonte: 'elevenlabs', velocidade: 1 })) as ConfigDaVoz), 'ordem das chaves nao importa')
+confere(soMudaOPos(cfg, JSON.parse(JSON.stringify({ settings: cfg.settings, cortarPausas: false, modelId: cfg.modelId, voiceId: cfg.voiceId, fonte: 'elevenlabs', velocidade: 1, velocidadeNativa: cfg.velocidadeNativa })) as ConfigDaVoz), 'ordem das chaves nao importa')
+// A velocidade NATIVA muda o audio (15/10): trocar e gerar de novo, pago.
+confere(cfg.velocidadeNativa === 1.2 && !soMudaOPos(cfg, { ...cfg, velocidadeNativa: 1 }), 'perfil sem o campo sai a 1,2; outra nativa gera de novo')
 
 const t2 = { ...takeFalso(rot, proximoTakeId(estadoDaVoz(r)), vel, rot.versao), derivadoDe: 't1' }
 confere(t2.id === 't2', 'proximoTakeId = t2')

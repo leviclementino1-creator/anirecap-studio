@@ -112,7 +112,7 @@ import {
   type SondaDoEpisodio,
   type StatusDoMotor,
 } from '@shared/episodio'
-import { analisarEpisodio, cancelarAnalise, statusDoMotor } from './services/motor'
+import { analisarEpisodio, cancelarAnalise, motorRodando, statusDoMotor } from './services/motor'
 import { sondarEpisodio } from './services/episodio/sondar'
 import { procurarEpisodio } from './services/episodio/procurar'
 import { indexarEpisodio, salvarExclusoes } from './services/episodio/indice'
@@ -145,6 +145,7 @@ import { gerarEventos } from './services/gerar/eventos'
 import { cancelarRoteiro, gerarRoteiro } from './services/gerar/roteiro'
 import { miniaturasDasCenas } from './services/gerar/miniaturas'
 import {
+  configDaVozSchema,
   pedidoDeAjusteSchema,
   pedidoDeEstimativaSchema,
   pedidoDeGeracaoSchema,
@@ -163,6 +164,8 @@ import {
 import { estimarVoz } from './services/voz/estimar'
 import { ajustarVoz, cancelarVoz, gerarVoz, importarAudio, regravarFrases } from './services/voz/gerar'
 import { aprovarVoz, audioDoTake, desaprovarVoz, escolherTakeDoRascunho } from './services/voz/takes'
+import { ritmoDe, ritmoPeloId } from './services/voz/ritmo'
+import type { RitmoDaVoz } from '@shared/ritmo'
 import { cancelarCorte, estadoDoCorte, indexarFalas, iniciarCorte } from './services/episodio/corte-fundo'
 import {
   decisaoDaDescobertaSchema,
@@ -209,7 +212,7 @@ import {
 import { escolherMusica, listarMusicas, registrarMusicaUsada } from './services/som/musicas'
 import { planejarSom, sfxDaEdicaoRapida } from './services/som/planejar'
 import { medirSom } from './services/som/medir'
-import { rostosDosPedacos } from './services/montar/rostos-motor'
+import { rostosDosPedacos, rostosRodando } from './services/montar/rostos-motor'
 import { registrarIpcDoMotorRuntime } from './services/motor-runtime/ipc'
 
 /**
@@ -603,6 +606,8 @@ export function registerIpc(): void {
   handle<[], string>(IPC.appVersion, async () => app.getVersion())
 
   handle<[], null>(IPC.installUpdate, async () => {
+    // A barra ja segura o botao no corte; aqui pega o resto (o lote de rostos da Edicao rapida).
+    if (motorRodando() || rostosRodando()) throw new Error('Espere o motor terminar (corte ou rostos).')
     await installUpdate()
     return null
   })
@@ -1039,6 +1044,11 @@ export function registerIpc(): void {
     })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!
   })
+
+  // Com a config: o ritmo DELA (a previsao do passo 3 antes de gerar ou aplicar).
+  handle<[string | null, unknown?], RitmoDaVoz>(IPC.ritmoDaVoz, async (rascunhoId, config) =>
+    config ? ritmoDe(configDaVozSchema.parse(config)) : ritmoPeloId(rascunhoId === null ? null : idDoRascunho(rascunhoId)),
+  )
 
   // ------------------------------- Gerar recap, passo 1 sem esperar o corte
   // Contrato em shared/episodio.ts (estadoDoCorteSchema, anexarPlanos); o main e

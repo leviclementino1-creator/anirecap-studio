@@ -89,9 +89,18 @@ export interface ImpressaoGravada {
   rodas: Record<string, string>
   /** nome -> versao dos pacotes instalados. */
   pacotes: Record<string, string>
-  /** O torch rodou uma conta na GPU na conferencia. false = o motor sobe com CUDA_VISIBLE_DEVICES=-1. */
+  /**
+   * O torch rodou uma conta na GPU na conferencia. false = o motor sobe com
+   * ANIRECAP_MOTOR_SEM_CUDA=1 (o torch na CPU; o NVENC do ffmpeg continua).
+   */
   cudaOk: boolean
   gpu: string | null
+  /**
+   * O driver da NVIDIA quando o cudaOk foi medido. Outro driver (ele atualizou,
+   * como a tela pede) = a conta na GPU e refeita ao abrir o app, sem reinstalar.
+   * Ausente nas gravadas antes disto.
+   */
+  driver?: string | null
   uv: string
   /** Versao do app que instalou. */
   app: string
@@ -175,6 +184,14 @@ export type TipoDeErroDaInstalacao =
   | 'pasta'
   /** resources/uv/uv.exe faltando ou de outra versao: instalador do app quebrado. */
   | 'uv-ausente'
+  /**
+   * O uv (nao assinado) nao rodou, ou um arquivo ficou preso no meio: o
+   * antivirus ou o Smart App Control. Liberar e Continuar; reinstalar o app
+   * nao resolve.
+   */
+  | 'antivirus'
+  /** Uma etapa passou do tempo (a 1a carga do torch com o antivirus examinando ~4 GB): o Continuar refaz so ela. */
+  | 'demorou'
   /** Sistema sem suporte (fora do Windows x64). */
   | 'sistema'
 
@@ -220,12 +237,25 @@ export interface GpuDetectada {
   driver: string | null
   /** Driver abaixo do minimo do CUDA 12.8 (DRIVER_MINIMO_CU128): instala, mas avisa. */
   driverAntigo: boolean
+  /**
+   * A "compute capability" da placa (nvidia-smi compute_cap): 6.1 numa GTX
+   * 1060, 12.0 numa RTX 5080. null = nao deu para ler (nvidia-smi velho, WMI).
+   */
+  computeCap?: number | null
   /** Por onde soube: nvidia-smi, WMI ou nenhum. */
   fonte: 'nvidia-smi' | 'wmi' | 'nenhuma'
 }
 
 /** CUDA 12.8 no Windows pede driver R570 ou mais novo. */
 export const DRIVER_MINIMO_CU128 = 570.65
+
+/**
+ * O torch cu128 do lock so tem kernels de sm_75 para cima (torch.cuda.
+ * get_arch_list() = sm_75..sm_120, medido em 15/10): GTX 10xx, GTX 9xx e
+ * Titan V nao rodam nele. Abaixo disto a sugestao e a cpu (120 MB em vez de
+ * 2,7 GB que rodariam na CPU do mesmo jeito).
+ */
+export const COMPUTE_CAP_MINIMO_CU128 = 7.5
 
 /** Tudo que a tela precisa, sempre inteiro (o evento manda o estado todo). */
 export interface EstadoDoMotorRuntime {
@@ -248,6 +278,14 @@ export interface EstadoDoMotorRuntime {
   livreNoDisco: number | null
   /** Quanto precisa estar livre para chegar ao 'pronto' (o que falta + a folga). 0 = nada. */
   precisaDeLivre: number
+  /** O Remover ainda esta apagando a pasta antiga por tras (o app espera ele ao fechar). */
+  apagando?: boolean
+  /**
+   * O runtime instalado roda o torch na GPU? false = cu128 que nao rodou a
+   * conta (placa sem kernel, driver velho): o motor vai na CPU e a tela diz.
+   * null = nada instalado (ou dev).
+   */
+  cudaOk?: boolean | null
   /** So em 'instalando' (e o ultimo, em 'incompleto'). */
   andamento: AndamentoDaInstalacao | null
   /** O que parou a ultima tentativa. null em 'instalando' e 'pronto'. */
@@ -284,6 +322,13 @@ export const DISCO_DO_TORCH: Record<VarianteDoMotor, number> = {
 
 /** Os pacotes do PyPI ocupam ~4x o que baixam (medido: 170 MB -> 0,65 GB). */
 export const FATOR_DOS_PACOTES = 4
+
+/**
+ * Os modelos que o motor baixa na 1a analise (CLIP ViT-L/14 ~890 MB, YOLO de
+ * rosto e de cabeca, CCIP, SCRFD): no runtime instalado eles moram em
+ * <runtime>/modelos (HF_HOME), entao contam no espaco que a instalacao pede.
+ */
+export const DISCO_DOS_MODELOS = 1.2e9
 
 /**
  * Quanto ocupa instalado: python + venv com os .pyc (medido em 15/10 pelo

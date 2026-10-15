@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path'
 import {
   DISCO_DO_PYTHON,
   DISCO_DO_TORCH,
+  DISCO_DOS_MODELOS,
   ETAPAS_DA_INSTALACAO,
   FATOR_DOS_PACOTES,
   FOLGA_DE_DISCO,
@@ -30,8 +31,8 @@ import {
 } from '@shared/motor-runtime'
 import { pythonDoMotor } from '../python-do-motor'
 import { ambienteDoRuntime } from './ambiente'
-import { baixarRoda, type FetchDoMotor } from './baixar'
-import { ehDeRede, ehSemEspaco, falha, FalhaDaInstalacao } from './erros'
+import { baixarRoda, sha256DoArquivo, type FetchDoMotor } from './baixar'
+import { ehArquivoPreso, ehBloqueio, ehDeRede, ehSemEspaco, falha, FalhaDaInstalacao } from './erros'
 import { discoDa, gb, livreNoDisco, tamanhoDaPasta } from './espaco'
 import { impressaoDoLock, requisitosDoLock, versoesDoLock } from './lock'
 import { CAMINHO_MAXIMO_DA_PASTA, caminhosDoRuntime, VERSAO_DO_UV, type CaminhosDoRuntime } from './pastas'
@@ -74,7 +75,7 @@ export interface OpcoesDoProtocolo {
   dadosDoMotor: string
   versaoDoApp: string
   gpu: GpuDetectada
-  /** Apaga venv/, baixando/, uv-cache/, estado.json e impressao.json antes (o "Recomecar"). */
+  /** Apaga venv/, uv-cache/, estado.json e impressao.json antes (o "Recomecar"). A roda baixada fica. */
   recomecar?: boolean
   /** Atualizacao automatica (so pacotes): vai para o estado.json. */
   automatica?: boolean
@@ -213,6 +214,8 @@ export function planoDaInstalacao(pasta: string, lock: LockDoRuntime, variante: 
   const rodasPorBaixar = rodas.filter((r) => !r.instalada).reduce((s, r) => s + (r.roda.bytes - r.baixada), 0)
   const pacotesPorBaixar = pacotesFaltando.reduce((s, p) => s + p.bytes, 0)
   const torchFalta = rodas.some((r) => !r.instalada)
+  // Os modelos da 1a analise vao para <runtime>/modelos (HF_HOME): contam no espaco da instalacao nova.
+  const modelosFaltam = torchFalta && !existsSync(c.modelos)
   return {
     python: !python,
     venv,
@@ -221,7 +224,11 @@ export function planoDaInstalacao(pasta: string, lock: LockDoRuntime, variante: 
     pacotesSobrando,
     bytesParaBaixar: (python ? 0 : 30e6) + rodasPorBaixar + pacotesPorBaixar,
     discoQueFalta:
-      (python ? 0 : DISCO_DO_PYTHON) + (torchFalta ? DISCO_DO_TORCH[variante] : 0) + rodasPorBaixar + pacotesPorBaixar * FATOR_DOS_PACOTES,
+      (python ? 0 : DISCO_DO_PYTHON) +
+      (torchFalta ? DISCO_DO_TORCH[variante] : 0) +
+      rodasPorBaixar +
+      pacotesPorBaixar * FATOR_DOS_PACOTES +
+      (modelosFaltam ? DISCO_DOS_MODELOS : 0),
   }
 }
 
@@ -329,23 +336,45 @@ function bytesDoUv(numero: string, unidade: string): number {
 const FRASE_DO_UV: Record<string, string> = {
   'uv python install': 'Nao deu para instalar o Python do motor. Veja o log e clique em Continuar.',
   'uv venv': 'Nao deu para criar o ambiente do motor. Veja o log e clique em Continuar.',
-  'uv pip install (torch)': 'A instalacao do torch falhou. Clique em Continuar para baixar de novo.',
+  'uv pip install (torch)': 'A instalacao do torch falhou. Veja o log e clique em Continuar.',
 }
 
-/** O porque de um uv que saiu com erro, pelo texto. */
-function erroDoUv(saida: SaidaDoProcesso, oQue: string): FalhaDaInstalacao {
+/**
+ * As linhas do ERRO do uv: da primeira "error:" em diante (o uv poe a causa
+ * nas "Caused by:" de baixo). Sem elas, a cauda. Procurar "network" no log
+ * inteiro achava o "Downloading networkx" de toda instalacao nova, e qualquer
+ * falha de pacote virava "Sem internet".
+ */
+export function linhasDoErroDoUv(linhas: readonly string[]): string[] {
+  const i = linhas.findIndex((l) => /^\s*(error|erro)\s*:/i.test(l) || /^\s*Caused by:/i.test(l))
+  return i >= 0 ? linhas.slice(i) : linhas.slice(-10)
+}
+
+/** O porque de um uv que saiu com erro, pelo texto do erro (nao pelo log inteiro). */
+export function erroDoUv(saida: SaidaDoProcesso, oQue: string): FalhaDaInstalacao {
   const cauda = saida.linhas.slice(-10).join('\n')
-  const texto = saida.linhas.join('\n')
+  const texto = linhasDoErroDoUv(saida.linhas).join('\n')
+  if (saida.codigo === null && ehBloqueio(texto)) return falha('antivirus', `${oQue}\n${cauda}`)
   if (ehSemEspaco(new Error(texto))) return falha('sem-espaco', cauda)
+  if (ehArquivoPreso(texto)) {
+    return falha('antivirus', `${oQue}\n${cauda}`, 'Um arquivo do motor ficou preso (antivirus?). Clique em Continuar.')
+  }
   if (ehDeRede(new Error(texto))) return falha('sem-internet', cauda)
   return falha('uv', `${oQue} (codigo ${saida.codigo ?? 'nenhum'})\n${cauda}`, FRASE_DO_UV[oQue])
 }
 
-/** O que a conferencia roda no Python do runtime: os imports do motor e uma conta na GPU. */
+/**
+ * O que a conferencia roda no Python do runtime (cwd = o codigo do motor): os
+ * pacotes, os MODULOS do motor que o Studio usa (app.pipeline puxa todo o
+ * reconhecimento; app.rostos, o da Edicao rapida) e uma conta na GPU. Com a
+ * lista fixa so dos pacotes, um import novo no codigo do motor sem o pacote no
+ * lock passava por "pronto" e a 1a analise morria com ImportError.
+ */
 const SCRIPT_DA_CONFERENCIA = [
   'import json, sys',
   'r = {"python": sys.version.split()[0]}',
   'import numpy, cv2, torch, torchvision, open_clip, ultralytics, onnxruntime, scenedetect',
+  'import app.headless, app.pipeline, app.rostos',
   'r["torch"] = torch.__version__',
   'r["cuda"] = torch.version.cuda',
   'r["gpu"] = None',
@@ -360,6 +389,50 @@ const SCRIPT_DA_CONFERENCIA = [
   '        r["erroCuda"] = str(e)[:300]',
   'print("CONFERENCIA " + json.dumps(r), flush=True)',
 ].join('\n')
+
+/** O limite de cada passo da conferencia (a 1a carga do torch). Estourar e 'demorou', nao import que falhou. */
+const LIMITE_DA_CONFERENCIA_MS = 300_000
+
+/** So a conta na GPU (reconferirCuda): o torch e uma soma. */
+const SCRIPT_DA_CUDA = [
+  'import json, torch',
+  'r = {"gpu": None, "cudaOk": False}',
+  'if torch.cuda.is_available():',
+  '    r["gpu"] = torch.cuda.get_device_name(0)',
+  '    try:',
+  '        x = torch.ones(1024, device="cuda") * 2',
+  '        torch.cuda.synchronize()',
+  '        r["cudaOk"] = float(x.sum().item()) == 2048.0',
+  '    except Exception as e:',
+  '        r["erroCuda"] = str(e)[:300]',
+  'print("CUDA " + json.dumps(r), flush=True)',
+].join('\n')
+
+/**
+ * Refaz SO a conta na GPU de um runtime cu128 ja instalado (o driver mudou: a
+ * tela pedia para atualizar, e antes so o Reinstalar, com 3 GB, reavaliava).
+ * null = nao deu para medir (o Python nao rodou): fica o que estava.
+ */
+export async function reconferirCuda(pasta: string, signal: AbortSignal): Promise<{ cudaOk: boolean; gpu: string | null } | null> {
+  const c = caminhosDoRuntime(pasta)
+  if (!existsSync(c.pythonDoVenv)) return null
+  const py = pythonDoMotor(c.pythonDoVenv)
+  const r = await rodar(py.cmd, ['-c', SCRIPT_DA_CUDA], {
+    env: { ...ambienteDoRuntime(process.env, { cudaOk: true, modelos: c.modelos }), ...py.env },
+    cwd: c.pasta,
+    signal,
+    log: () => {},
+    limiteMs: LIMITE_DA_CONFERENCIA_MS,
+  }).catch(() => null)
+  const linha = r?.linhas.find((l) => l.startsWith('CUDA '))
+  if (!r || r.codigo !== 0 || !linha) return null
+  try {
+    const j = JSON.parse(linha.slice('CUDA '.length)) as { cudaOk?: unknown; gpu?: unknown }
+    return { cudaOk: j.cudaOk === true, gpu: typeof j.gpu === 'string' ? j.gpu : null }
+  } catch {
+    return null
+  }
+}
 
 export interface ResultadoDaConferencia {
   python: string
@@ -469,8 +542,33 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
     o.aoAndar({ etapa, fracao: ultimaFracao, mensagem: 'Preparando' })
 
     if (o.recomecar) {
-      escrever('recomecar: apagando venv, baixando, uv-cache, estado e impressao')
-      for (const p of [c.venv, c.baixando, c.uvCache, c.estado, c.impressao]) await rm(p, { recursive: true, force: true })
+      escrever('recomecar: apagando venv, uv-cache, estado e impressao')
+      /*
+       * O venv sai por RENAME primeiro: com o motor rodando (uma .pyd/.dll do
+       * torch carregada) o Windows recusa o rename e nada fica pela metade. O
+       * rm direto apagava o site-packages em ordem alfabetica ate esbarrar no
+       * arquivo preso, e a analise em andamento quebrava no proximo import.
+       * A roda baixada (baixando/) fica: ja foi conferida pelo sha256, e
+       * recomecar nao precisa de mais 2,7 GB.
+       */
+      if (existsSync(c.venv)) {
+        const lixo = `${c.venv}.apagar-${Date.now()}`
+        try {
+          renameSync(c.venv, lixo)
+        } catch (e) {
+          const codigo = (e as { code?: string }).code
+          if (codigo === 'EPERM' || codigo === 'EBUSY' || codigo === 'EACCES') {
+            throw falha('ocupado', `${c.venv}: ${codigo}`, 'O motor esta em uso. Espere a analise terminar e tente de novo.')
+          }
+          throw e
+        }
+        await rm(lixo, { recursive: true, force: true })
+      }
+      for (const p of [c.uvCache, c.estado, c.impressao]) await rm(p, { recursive: true, force: true })
+    }
+    // Restos de um venv de um Recomecar que o app fechou no meio.
+    for (const item of await readdir(c.pasta).catch(() => [] as string[])) {
+      if (item.startsWith('venv.apagar-')) await rm(join(c.pasta, item), { recursive: true, force: true }).catch(() => {})
     }
     // Restos de um uv-cache que ficou para apagar depois (o fim renomeia e apaga por tras).
     for (const item of await readdir(c.pasta).catch(() => [] as string[])) {
@@ -478,10 +576,20 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
     }
 
     if (!existsSync(o.uv)) throw falha('uv-ausente', o.uv)
-    const versao = await uv(['--version'], undefined, 30_000)
+    // 2 min: o antivirus examina o uv.exe (nao assinado) na 1a vez antes de deixar rodar.
+    const versao = await uv(['--version'], undefined, 120_000)
     const versaoDoUv = versao.stdout.trim()
-    if (versao.codigo !== 0 || !versaoDoUv.startsWith(`uv ${VERSAO_DO_UV}`)) {
-      throw falha('uv-ausente', `${o.uv}: ${versaoDoUv || versao.linhas.slice(-3).join(' | ')} (esperado uv ${VERSAO_DO_UV})`)
+    /*
+     * O uv EXISTE mas nao rodou (spawn recusado, tempo estourado, saiu sem
+     * dizer a versao): e o antivirus ou o Smart App Control, nao o app
+     * quebrado. "Reinstale o app" nao resolvia e o erro voltava a cada
+     * reinstalacao.
+     */
+    if (versao.codigo !== 0 || !versaoDoUv) {
+      throw falha('antivirus', `${o.uv}: ${versao.linhas.slice(-3).join(' | ') || `codigo ${versao.codigo ?? 'nenhum'}`}`)
+    }
+    if (!versaoDoUv.startsWith(`uv ${VERSAO_DO_UV}`)) {
+      throw falha('uv-ausente', `${o.uv}: ${versaoDoUv} (esperado uv ${VERSAO_DO_UV})`)
     }
 
     // Partes de rodas que este lock nao usa (outra variante, versao velha) so ocupam disco.
@@ -588,10 +696,26 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
       try {
         const r = await uv(['pip', 'install', '--python', c.pythonDoVenv, '--no-deps', '--no-index', ...arquivos])
         if (r.codigo !== 0) {
-          // Uma roda que o uv nao abre (estragou no disco depois de conferida) travaria o
-          // "Continuar" para sempre: apaga, e a proxima tentativa baixa de novo.
-          if (!o.signal.aborted) for (const a of arquivos) await rm(a, { force: true })
-          throw erroDoUv(r, 'uv pip install (torch)')
+          const erro = erroDoUv(r, 'uv pip install (torch)')
+          /*
+           * Uma roda que o uv nao abre (estragou no disco depois de conferida)
+           * travaria o "Continuar" para sempre. Mas o caso comum e passageiro
+           * (antivirus segurando uma DLL recem-extraida, disco que encheu): ai a
+           * roda de 2,7 GB nao tem culpa. So apaga a roda cujo sha256 nao bate
+           * mais (~10 s por roda), e nunca em disco cheio nem arquivo preso.
+           */
+          if (!o.signal.aborted && erro.tipo !== 'sem-espaco' && erro.tipo !== 'antivirus') {
+            for (const { roda } of rodasFaltando) {
+              const a = join(c.baixando, roda.arquivo)
+              if (!existsSync(a)) continue
+              const hash = await sha256DoArquivo(a, o.signal).catch(() => null)
+              if (hash !== roda.sha256) {
+                escrever(`a roda ${roda.arquivo} nao confere mais (sha256 ${hash ?? '?'}): apagando`)
+                await rm(a, { force: true })
+              }
+            }
+          }
+          throw erro
         }
       } finally {
         parar()
@@ -679,7 +803,7 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
       const py = pythonDoMotor(c.pythonDoVenv)
       const parar = relogio(15, 'Compilando')
       try {
-        const env = { ...ambienteDoRuntime(process.env, { cudaOk: true }), ...py.env }
+        const env = { ...ambienteDoRuntime(process.env, { cudaOk: true, modelos: c.modelos }), ...py.env }
         delete env['PYTHONDONTWRITEBYTECODE']
         escrever(`$ python -m compileall -q -j 0 ${c.sitePackages}`)
         const r = await rodar(py.cmd, ['-W', 'ignore', '-m', 'compileall', '-q', '-j', '0', c.sitePackages], {
@@ -703,7 +827,7 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
     terminar('conferir')
 
     // ------------------------------------------------------------------ fim
-    const bytesNoDisco = (await tamanhoDaPasta(c.python)) + (await tamanhoDaPasta(c.venv))
+    const bytesNoDisco = (await tamanhoDaPasta(c.python)) + (await tamanhoDaPasta(c.venv)) + (await tamanhoDaPasta(c.modelos))
     const gravada: ImpressaoGravada = {
       formato: 1,
       impressao: alvo,
@@ -712,6 +836,7 @@ export async function instalarRuntime(o: OpcoesDoProtocolo): Promise<ImpressaoGr
       ...versoesDoLock(o.lock, o.variante),
       cudaOk: conferencia.cudaOk,
       gpu: conferencia.gpu,
+      driver: o.gpu.driver,
       uv: versaoDoUv.replace(/^uv\s+/, '').split(/\s/)[0] ?? VERSAO_DO_UV,
       app: o.versaoDoApp,
       instaladoEm: new Date().toISOString(),
@@ -769,12 +894,13 @@ async function conferir(c: CaminhosDoRuntime, o: OpcoesDoProtocolo, escrever: (l
   const py = pythonDoMotor(c.pythonDoVenv)
   const base: NodeJS.ProcessEnv = { ...process.env, ANIRECAP_MOTOR_DADOS: o.dadosDoMotor }
   escrever(`$ ${py.cmd} -c <conferencia>`)
+  // cwd = o codigo do motor: o script importa app.pipeline e app.rostos (PYTHONDONTWRITEBYTECODE: nada gravado la).
   const r = await rodar(py.cmd, ['-c', SCRIPT_DA_CONFERENCIA], {
-    env: { ...ambienteDoRuntime(base, { cudaOk: true }), ...py.env },
-    cwd: c.pasta,
+    env: { ...ambienteDoRuntime(base, { cudaOk: true, modelos: c.modelos }), ...py.env },
+    cwd: o.codigoDoMotor,
     signal: o.signal,
     log: (l) => escrever(`  ${l}`),
-    limiteMs: 180_000,
+    limiteMs: LIMITE_DA_CONFERENCIA_MS,
   })
   const linha = r.linhas.find((l) => l.startsWith('CONFERENCIA '))
   let j: ResultadoDaConferencia | null = null
@@ -783,17 +909,26 @@ async function conferir(c: CaminhosDoRuntime, o: OpcoesDoProtocolo, escrever: (l
   } catch {
     j = null
   }
+  /*
+   * Tempo estourado NAO e import que falhou: a 1a carga do torch cu128 com o
+   * antivirus examinando ~4 GB de DLLs passa de minutos num HD. O Continuar
+   * (que refaz so a conferencia) resolve; o Recomecar baixaria 3 GB de novo
+   * para esbarrar no mesmo tempo.
+   */
+  if (r.codigo === null && r.linhas.some((l) => /^nao terminou em \d+ s$/.test(l))) {
+    throw falha('demorou', `a conferencia passou de ${LIMITE_DA_CONFERENCIA_MS / 1000} s\n${r.linhas.slice(-8).join('\n')}`)
+  }
   if (r.codigo !== 0 || !j) throw falha('conferencia', `o Python do motor nao importou os pacotes (codigo ${r.codigo ?? 'nenhum'})\n${r.linhas.slice(-8).join('\n')}`)
   const cudaOk = o.variante === 'cu128' && j.cudaOk === true
   if (o.variante === 'cu128' && !cudaOk) escrever(`AVISO: a GPU nao rodou a conta (${j.erroCuda ?? 'cuda indisponivel'}); o motor vai rodar na CPU`)
 
   escrever(`$ ${py.cmd} -m app.headless probe (cwd ${o.codigoDoMotor})`)
   const p = await rodar(py.cmd, ['-m', 'app.headless', 'probe'], {
-    env: { ...ambienteDoRuntime(base, { cudaOk }), ...py.env },
+    env: { ...ambienteDoRuntime(base, { cudaOk, modelos: c.modelos }), ...py.env },
     cwd: o.codigoDoMotor,
     signal: o.signal,
     log: (l) => escrever(`  ${l}`),
-    limiteMs: 180_000,
+    limiteMs: LIMITE_DA_CONFERENCIA_MS,
   })
   let probe: Record<string, unknown> | null = null
   for (const l of p.linhas) {
@@ -803,6 +938,9 @@ async function conferir(c: CaminhosDoRuntime, o: OpcoesDoProtocolo, escrever: (l
     } catch {
       // linha de log
     }
+  }
+  if (!probe && p.codigo === null && p.linhas.some((l) => /^nao terminou em \d+ s$/.test(l))) {
+    throw falha('demorou', `o probe passou de ${LIMITE_DA_CONFERENCIA_MS / 1000} s\n${p.linhas.slice(-8).join('\n')}`)
   }
   if (!probe) throw falha('conferencia', `o motor nao respondeu ao probe (codigo ${p.codigo ?? 'nenhum'})\n${p.linhas.slice(-8).join('\n')}`)
   if (probe['ffmpeg'] !== true) throw falha('conferencia', 'o motor nao achou o ffmpeg', 'O motor instalou, mas nao achou o ffmpeg. Reinstale o AniRecap Studio.')

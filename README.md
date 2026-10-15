@@ -1,145 +1,126 @@
-# AniRecap Studio
+<p align="center">
+  <img src="docs/icone.png" width="120" alt="Ícone do AniRecap Studio">
+</p>
 
-Recap de anime com IA, do episódio ao short editável. Você solta o episódio, a IA
-escreve o roteiro, gera a narração e escolhe as cenas do próprio episódio; o
-resultado abre num editor de verdade, onde tudo pode ser ajustado à mão antes do
-render.
+<h1 align="center">AniRecap Studio</h1>
 
-O app junta dois projetos:
+<p align="center">
+  Recap de anime com IA: do episódio ao short 9:16, com roteiro, narração e as cenas do próprio episódio, pronto para editar.
+</p>
 
-- o **AniRecap**, que transforma um `.mkv` num short 9:16 com narração e
-  legendas, mas entrega um vídeo fechado;
-- o **Dangai** (faahpla/Kintay), a máquina de shorts de recap com editor,
-  timeline, legendas karaokê e render em Remotion.
+<p align="center">
+  <a href="https://github.com/leviclementino1-creator/anirecap-studio/releases/latest">
+    <img src="https://img.shields.io/badge/Baixar-Windows%2010%20%2F%2011-ff3d81?style=for-the-badge" alt="Baixar para Windows">
+  </a>
+</p>
 
-O Studio nasce de uma cópia do Dangai v1.65.0 e vai ganhando a geração do
-AniRecap por cima. O fluxo manual do Dangai continua igual.
+<p align="center">
+  <img src="docs/prints/01-inicio.png" width="860" alt="Tela inicial">
+</p>
 
-## Estado: F0, base separada e ainda sem geração
+## Em 4 passos
 
-Hoje o app é o Dangai v1.65.0 com identidade própria. Todas as funções do Dangai
-continuam funcionando. O que muda:
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <b>1. Episódio</b><br>
+      <b>Gerar recap</b> e solte o <code>.mkv</code>. Ou continue de onde parou.<br><br>
+      <img src="docs/prints/02-novo-ou-continuar.png" alt="Novo recap ou continuar">
+    </td>
+    <td width="50%" valign="top">
+      <b>2. Roteiro</b><br>
+      A IA escreve para ~60 s. Edite frase a frase ou cole o seu.<br><br>
+      <img src="docs/prints/03-roteiro.png" alt="Roteiro">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>3. Voz</b><br>
+      ElevenLabs, Fish Audio ou o seu áudio. Velocidade e pausas no ajuste.<br><br>
+      <img src="docs/prints/04-voz.png" alt="Voz">
+    </td>
+    <td width="50%" valign="top">
+      <b>4. Cenas</b><br>
+      As cenas do episódio, casadas com cada frase no tempo da fala.<br><br>
+      <img src="docs/prints/05-cenas.png" alt="Cenas">
+    </td>
+  </tr>
+</table>
 
-- **Nome e ícone:** AniRecap Studio (`com.leviclementino.anirecapstudio`).
-- **Dados em `%APPDATA%/AniRecap Studio`**, separados dos do Dangai: chaves,
-  autosave, modelo do Whisper, caches e o Chrome do render. Os dois apps podem
-  ficar instalados na mesma máquina sem um mexer no outro.
-- **Projeto `.anirecap`.** O Studio também abre `.dangai`, que é o mesmo formato
-  (versão 1). Salvar um projeto do Dangai abre o "Salvar como" na mesma pasta,
-  já em `.anirecap`, e o `.dangai` original fica intacto.
-- **Atualização automática ligada** desde a primeira release (ver
-  `ATUALIZACAO_LIGADA` em `electron/services/updater.ts`).
+## Edição rápida
 
-A geração a partir do episódio entra na F1. O plano completo, com as fases e as
-decisões, está em `G:/ClaudeEditor/fusao/PLANO.md`.
+**Abrir no editor** já monta o vídeo com sons, música com ducking, rosto
+centralizado no 9:16, legenda e cor. Tudo continua editável, e um Ctrl+Z
+desfaz.
 
-## Instalar
+<p align="center">
+  <img src="docs/prints/06-editor-edicao-rapida.png" width="860" alt="Editor depois da Edição rápida">
+</p>
 
-Baixe `AniRecap-Studio-Setup-<versão>.exe` na
-[última release](https://github.com/leviclementino1-creator/anirecap-studio/releases/latest)
-e abra. Ele instala só para o seu usuário, sem pedir administrador, em
-`%LOCALAPPDATA%\Programs\anirecap-studio`, com atalho na área de trabalho e no
-menu Iniciar.
+## Requisitos
 
-O instalador não é assinado, então o SmartScreen avisa na primeira execução:
-**Mais informações → Executar assim mesmo**. Se o Smart App Control barrar o
-instalador, a mesma release tem `AniRecap-Studio-<versão>-win-x64.zip`: extraia
-por cima de `%LOCALAPPDATA%\Programs\anirecap-studio` com o app fechado.
+- Windows 10 ou 11, 64 bits.
+- Placa NVIDIA recomendada para o motor de personagens. Sem ela, o motor roda
+  na CPU, mais devagar.
+- ~6 GB livres para o motor. A instalação dele pede ~11 GB livres por alguns
+  minutos.
 
-**O motor de personagens (cortar cenas e reconhecer personagens) é instalado
-no primeiro uso.** Ele precisa de Python e PyTorch (~5 GB no disco), que não
-cabem no instalador. Na primeira vez que precisar, o app oferece **Instalar
-motor de personagens**: baixa ~3 GB com placa NVIDIA (ou ~320 MB sem ela, e o
-motor roda na CPU) das fontes oficiais, para
-`%LOCALAPPDATA%\AniRecap Studio\motor-runtime`. Dá para cancelar e continuar
-depois, e ele não pergunta de novo. Desinstalar o app pergunta se apaga o motor
-também (o padrão é manter).
+## Primeiro uso
 
-As atualizações do app chegam sozinhas: ele procura 8 s depois de abrir e a
-cada 6 h, baixa em segundo plano e mostra **Atualizar para X** na barra de
-baixo. A troca só acontece quando você clica. Seus dados
-(`%APPDATA%\AniRecap Studio`) e o motor ficam.
+- **Chave do Gemini, grátis.** A tela de boas-vindas leva até
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey) e testa a
+  chave antes de salvar.
+- **Aviso do SmartScreen.** O instalador não é assinado. Clique em
+  **Mais informações > Executar assim mesmo**.
+- **Motor de personagens, opcional.** Corta as cenas e reconhece os
+  personagens. Instala com um clique (~3 GB, uma vez só) e fica fora da pasta
+  do app.
+- **Chaves cifradas no PC.** As chaves de IA e de voz ficam só nesta máquina,
+  cifradas pelo Windows.
 
-## Rodar do código
+<table>
+  <tr>
+    <td width="50%"><img src="docs/prints/08-boas-vindas.png" alt="Boas-vindas"></td>
+    <td width="50%"><img src="docs/prints/07-instalar-motor.png" alt="Instalar o motor de personagens"></td>
+  </tr>
+</table>
+
+Instala só para o seu usuário, sem pedir administrador. Se o Smart App Control
+barrar o instalador, a release também traz `AniRecap-Studio-<versão>-win-x64.zip`:
+extraia por cima de `%LOCALAPPDATA%\Programs\anirecap-studio` com o app fechado.
+
+## Atualização automática
+
+O app procura versão nova ao abrir e a cada 6 h, baixa em segundo plano e
+mostra **Atualizar para X** na barra de baixo. A troca só acontece no seu
+clique. Seus projetos, as chaves e o motor ficam.
+
+## Créditos
+
+- **[Dangai](https://github.com/faahpla/dangai)**, de faahpla: a base inteira
+  do app (editor, timeline, legendas e render).
+- **[AnCut HUB](https://github.com/faahpla/ancut-hub-engine)**, de faahpla: o
+  motor de personagens, que nasceu do **Corte Cenas**, de Levi Clementino.
+- **[AniRecap](https://github.com/leviclementino1-creator/anirecap)**, de Levi
+  Clementino: a geração do episódio ao short.
+- Real-ESRGAN, lbpcascade_animeface, fonte Komika Axis e Remotion. Licenças e
+  detalhes em [NOTICE](NOTICE).
+
+## Desenvolvimento
 
 Precisa de Node 24 e npm 11.
 
 ```bash
-npm ci
-npm run dev
+npm ci          # se o Electron nao baixar: node node_modules/electron/install.js
+npm run dev     # app com recarga automatica
+npm run build   # typecheck + bundles do Electron e do Remotion
+npm run dist    # instalador em release/ (nunca publica)
 ```
 
-Se o `postinstall` do Electron for bloqueado (rede, antivírus ou política de
-scripts do npm), o binário não chega a ser baixado e o `npm run dev` reclama que
-o Electron não foi instalado. Baixe à mão:
+**Motor em dev:** o app usa `motor/.venv` (Python 3.12 + torch, detalhes em
+[motor/STUDIO.md](motor/STUDIO.md)). Com `ANIRECAP_MOTOR_RUNTIME=1`, o dev usa
+o runtime instalado pela tela, como o app instalado.
 
-```bash
-node node_modules/electron/install.js
-```
-
-| comando | o que faz |
-| --- | --- |
-| `npm run dev` | abre o app com recarga automática |
-| `npm run typecheck` | TypeScript nos três processos |
-| `npm run build` | typecheck + bundles do Electron e do Remotion |
-| `npm run uv` | baixa e confere o `uv.exe` que vai no instalador (`build/uv`, fora do git) |
-| `npm run motor:lock` | regera `motor/studio-runtime.json` a partir do `motor/.venv` |
-| `npm run dist` | gera o instalador em `release/` (nunca publica) |
-| `node scripts/conferir-pacote.mjs` | confere `release/`: `.exe`, `latest.yml` e `resources/` |
-| `npm run icon -- caminho/logo.png` | regenera `build/icon.ico` e `build/icon.png` |
-| `npm run sfx` | sintetiza os SFX de exemplo |
-
-## Publicar uma versão
-
-O repositório é público desde o começo
-([leviclementino1-creator/anirecap-studio](https://github.com/leviclementino1-creator/anirecap-studio)):
-o updater lê as releases sem token, e um repositório privado obrigaria a
-embutir um token no instalador.
-
-```bash
-npm version minor        # patch, se for só correção
-git push
-git push origin vX.Y.Z
-npm run release          # ou deixe o workflow "release" do GitHub fazer
-```
-
-O push vem **antes** do release, e o script recusa publicar sem isso.
-`npm run release -- --dry-run` monta e confere sem publicar (no ensaio, a
-árvore suja e a tag ausente só avisam). O `scripts/release.mjs` explica por
-que não se usa `electron-builder --publish always` e o que ele confere antes de
-subir qualquer arquivo (tag no remoto, `latest.yml` da versão certa com o nome,
-o tamanho e o sha512 do `.exe`, o `.exe` abaixo de 1,9 GiB, o uv conferido e o
-código do motor igual ao do repositório).
-
-O que sobe: `AniRecap-Studio-Setup-<versão>.exe`, o `.blockmap` e o
-`latest.yml` (que o updater lê), e o zip em pasta pelo workflow.
-
-## Onde as coisas ficam
-
-```
-electron/     processo main: whisper, ffmpeg, render, arquivos
-shared/       o que main e renderer precisam concordar (planos, legendas, alinhamento)
-src/          interface React
-src/remotion/ a composição do vídeo, a mesma no preview e no render
-```
-
-`shared/` existe porque o preview e o render precisam chegar exatamente ao mesmo
-plano. Se divergirem, o preview mente.
-
-## Privacidade
-
-Na F0 vale o mesmo do Dangai: o áudio é transcrito localmente, as imagens nunca
-são enviadas e, com a IA ligada, só o texto da transcrição vai para a API.
-Isso muda quando a geração entrar: as legendas do episódio, o roteiro e os
-quadros das cenas candidatas vão para o provedor de IA escolhido (Gemini por
-padrão), e o texto da narração vai para o serviço de voz.
-
-## Créditos
-
-- **Dangai**, de faahpla (Kintay): a base inteira deste app.
-  [github.com/faahpla/dangai](https://github.com/faahpla/dangai), commit `7ceaedd` (v1.65.0).
-- **AnCut HUB**, de faahpla: o formato de biblioteca de episódios que o Studio lê.
-- **AniRecap** e **Corte Cenas**, de Levi Clementino.
-- Real-ESRGAN (BSD-3), lbpcascade_animeface (MIT), fonte Komika Axis e Remotion.
-
-Os detalhes e as licenças estão em [NOTICE](NOTICE).
+**Publicar:** commit, `git push`, `git push origin vX.Y.Z` e o workflow
+`release` do GitHub publica (ou `npm run release`; `-- --dry-run` ensaia sem
+subir nada). O `scripts/release.mjs` explica o que ele confere antes.

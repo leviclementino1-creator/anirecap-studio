@@ -36,13 +36,15 @@
  * fica lá parecendo o novo. Por isso ele é conferido linha a linha.
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { conferirPacote, nomeDoExe } from './conferir-pacote.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DRY = process.argv.includes('--dry-run')
+/** Subir de novo os arquivos de uma versao JA publicada (so de proposito). */
+const REPUBLICAR = process.argv.includes('--republicar')
 
 const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const TAG = `v${version}`
@@ -168,6 +170,66 @@ if (!local) {
   log('tag conferida no remoto')
 }
 
+/*
+ * O LOCK DO MOTOR acompanha o motor/.venv? Uma correcao do motor que volte por
+ * copia com um import novo, ou um pacote instalado no venv e usado no codigo,
+ * sem regerar o lock: a release sairia, e o runtime de todo mundo continuaria
+ * "pronto" (a impressao nao muda) com a 1a analise morrendo em ImportError.
+ * Sem motor/.venv (o runner do GitHub) vale a conferencia do conferir-pacote
+ * (todo o requirements.txt no lock).
+ */
+if (existsSync(join(ROOT, 'motor', '.venv'))) {
+  try {
+    run(process.execPath, ['scripts/motor-lock.mjs', '--conferir'], { quiet: true })
+    log('lock do motor conferido com o motor/.venv')
+  } catch (e) {
+    const saida = `${e?.stderr ?? ''}${e?.stdout ?? ''}`.trim()
+    recusa(`motor/studio-runtime.json nao confere com o motor/.venv. Rode node scripts/motor-lock.mjs e commite.\n  ${saida.split('\n').at(-1) ?? ''}`)
+  }
+}
+
+/*
+ * VERSAO REPETIDA. A recusa pela tag nao basta: com a tag no HEAD, rodar de
+ * novo (workflow_dispatch, ou o npm run release duas vezes) subia tudo por
+ * cima com --clobber. Reempacotar gera um .exe com outros bytes, quem ja esta
+ * na versao nao recebe nada, e na janela entre apagar e subir quem baixa a
+ * atualizacao recusa pelo sha512 ou nao acha o latest.yml. E a versao precisa
+ * ser MAIOR que a que o updater ve como a mais recente.
+ */
+const maior = (a, b) => {
+  const pa = a.split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0)
+  const pb = b.split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
+  }
+  return false
+}
+try {
+  const ja = JSON.parse(run('gh', ['release', 'view', TAG, '--repo', REPO, '--json', 'assets'], { quiet: true }))
+  const nomes = (ja.assets ?? []).map((a) => a.name)
+  if (nomes.includes(EXE) && nomes.includes('latest.yml') && !REPUBLICAR) {
+    recusa(`versao ${version} ja publicada: suba a versao (ou rode com --republicar, de proposito).`)
+  }
+} catch (e) {
+  const texto = `${e?.stderr ?? ''}${e instanceof Error ? e.message : e}`
+  // "release not found" e o normal de uma versao nova; o resto e nao conseguir perguntar.
+  if (!/not found|nao encontr/i.test(texto)) recusa(`nao consegui consultar a release ${TAG} no GitHub (${texto.split('\n')[0]}).`)
+}
+try {
+  const ultima = JSON.parse(run('gh', ['api', `repos/${REPO}/releases/latest`], { quiet: true }))
+  const v = String(ultima.tag_name ?? '').replace(/^v/, '')
+  if (v && v !== version && !maior(version, v)) {
+    recusa(`a versao ${version} nao e maior que a publicada como a mais recente (${v}): os apps nao atualizariam.`)
+  } else if (v) {
+    log(`mais recente no GitHub: ${v}`)
+  }
+} catch (e) {
+  const texto = `${e?.stderr ?? ''}${e instanceof Error ? e.message : e}`
+  // Sem release nenhuma ainda o endpoint responde 404: qualquer versao serve.
+  if (!/404|not found/i.test(texto)) recusa(`nao consegui consultar a release mais recente no GitHub (${texto.split('\n')[0]}).`)
+  else log('nenhuma release publicada ainda')
+}
+
 // ------------------------------------------------------------------ empacota
 
 log('empacotando (alguns minutos)...')
@@ -236,7 +298,8 @@ const jaExiste = (() => {
 })()
 
 if (jaExiste) {
-  log(`release ${TAG} já existe, subindo os arquivos nela`)
+  // Chega aqui so com a release sem os arquivos (um upload que caiu) ou com --republicar.
+  log(`release ${TAG} já existe, subindo os arquivos nela${REPUBLICAR ? ' (--republicar)' : ''}`)
 } else {
   log(`criando a release ${TAG}`)
   run('gh', ['release', 'create', TAG, '--title', version, '--notes', `AniRecap Studio ${version}`])

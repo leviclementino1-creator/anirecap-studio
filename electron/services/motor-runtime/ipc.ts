@@ -1,13 +1,15 @@
 import { BrowserWindow, dialog, ipcMain, net } from 'electron'
 import { IPC, type IpcResult } from '@shared/channels'
 import { pedidoDeInstalacaoSchema, type EstadoDoMotorRuntime } from '@shared/motor-runtime'
-import { esquecerSondaDoMotor } from '../motor'
+import { esquecerSondaDoMotor, motorRodando } from '../motor'
+import { rostosRodando } from '../montar/rostos-motor'
 import type { FetchDoMotor } from './baixar'
 import {
   cancelarMotorRuntime,
   definirAoMudarORuntime,
   definirAvisoDoMotorRuntime,
   definirFetchDoMotorRuntime,
+  definirMotorEmUso,
   estadoDoMotorRuntime,
   instalarMotorRuntime,
   removerMotorRuntime,
@@ -49,6 +51,8 @@ export function registrarIpcDoMotorRuntime(): void {
   })
   definirFetchDoMotorRuntime(((url, init) => net.fetch(url, init)) as FetchDoMotor)
   definirAoMudarORuntime(() => esquecerSondaDoMotor())
+  // Reinstalar ou Recomecar com a analise rodando apagavam o venv debaixo dela.
+  definirMotorEmUso(() => motorRodando() || rostosRodando())
 
   handle<[], EstadoDoMotorRuntime>(IPC.estadoDoMotorRuntime, () => estadoDoMotorRuntime())
   handle<[unknown], EstadoDoMotorRuntime>(IPC.instalarMotorRuntime, (pedido) =>

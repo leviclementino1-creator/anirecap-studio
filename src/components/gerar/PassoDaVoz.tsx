@@ -1,15 +1,21 @@
 import { useEffect, useRef } from 'react'
 import { ArrowLeft, AudioLines, FileAudio, Fish, Loader2, RotateCcw, Settings2, TriangleAlert, Upload, WandSparkles } from 'lucide-react'
 import type { ProvedorDeVoz } from '@shared/channels'
-import { roteiroAtual, type RascunhoDoRecap, type Roteiro } from '@shared/roteiro'
+import { palavrasDoRoteiro, roteiroAtual, type RascunhoDoRecap, type Roteiro } from '@shared/roteiro'
 import {
   MODELOS_ELEVEN,
   ROTULO_DA_ETAPA_DA_VOZ,
   ROTULO_DA_FONTE,
   VELOCIDADE_MAX,
   VELOCIDADE_MIN,
+  VELOCIDADE_NATIVA_MAX,
+  VELOCIDADE_NATIVA_MIN,
+  VELOCIDADE_NATIVA_PADRAO,
+  VELOCIDADE_NATIVA_PASSO,
   VELOCIDADE_PASSO,
+  avisoDoAlvo,
   frasesMudadas,
+  modeloEleven,
   situacaoDaVoz,
   takeAtual,
   textoDaEstimativa,
@@ -31,6 +37,7 @@ import {
   type PedidoDaVoz,
 } from '@/store/gerar-voz'
 import { useProject } from '@/store/project'
+import { useRitmoDaConfig } from '@/store/ritmo'
 import { Deslizante } from '@/components/painel'
 import { Barra, useRelogio } from './AndamentoDaAnalise'
 import { CartaoDoEpisodio } from './CartaoDoEpisodio'
@@ -210,11 +217,35 @@ function Narracao({ rascunho, take }: { rascunho: RascunhoDoRecap; take: TakeDaV
         <CamposDaVoz travado={travado} />
       )}
       {pergunta ? (
-        <PerguntaDeCusto pergunta={pergunta} />
+        <PerguntaDeCusto
+          pergunta={pergunta}
+          extra={pergunta.config ? <PrevisaoDaDuracao rascunho={rascunho} config={pergunta.config} take={take} exata={false} /> : null}
+        />
       ) : (
         <LinhaDaAcao acao={acao} rascunho={rascunho} take={take} />
       )}
+      {take && <AbaixoDoAlvo duracao={take.duracao} rascunho={rascunho} />}
     </Secao>
+  )
+}
+
+/**
+ * O take ficou abaixo do alvo do roteiro ("52 s - abaixo de 1 min"): o Levi
+ * nao quer video abaixo de 1 min. Fica aqui, junto da velocidade e do
+ * acelerar, que e onde se mexe.
+ */
+function AbaixoDoAlvo({ duracao, rascunho }: { duracao: number; rascunho: RascunhoDoRecap }) {
+  const alvo = roteiroAtual(rascunho)?.alvoSec
+  const aviso = alvo ? avisoDoAlvo(duracao, alvo) : null
+  if (!aviso) return null
+  return (
+    <p
+      className={`flex min-w-0 items-center gap-1.5 text-[12px] ${COR_DE_AVISO}`}
+      title="Mais frases no roteiro (Outra versao) ou menos acelerar"
+    >
+      <TriangleAlert size={12} strokeWidth={1.75} className="shrink-0" />
+      <span className="tnum min-w-0 truncate">{aviso}</span>
+    </p>
   )
 }
 
@@ -312,7 +343,7 @@ function Campo({
   )
 }
 
-/** Voz e modelo da fonte paga, e o pos. As vozes sao as da conta (o "Testar", que nao gasta). */
+/** Voz, modelo e velocidade nativa da fonte paga, e o pos. As vozes sao as da conta (o "Testar", que nao gasta). */
 function CamposDaVoz({ travado }: { travado: boolean }) {
   const form = useVoz((s) => s.form)
   const vozes = useVoz((s) => s.vozes)
@@ -384,6 +415,7 @@ function CamposDaVoz({ travado }: { travado: boolean }) {
             ))}
           </select>
         </Campo>
+        <VelocidadeNativa travado={travado} />
         <Pos travado={travado} />
       </div>
       {erro && (
@@ -403,17 +435,53 @@ function CamposDaVoz({ travado }: { travado: boolean }) {
   )
 }
 
-/** Velocidade e corte de pausas: o pos, que vale para as tres fontes e nao gasta nada. */
+/**
+ * A velocidade NATIVA (so ElevenLabs e Fish): a voz ja e gerada nesse ritmo,
+ * pausas inclusive (o 1,2 encurta ~1,3x). Muda o audio, entao trocar e gerar
+ * de novo, com a pergunta de custo. O eleven_v4 nao tem speed: fica desligada.
+ */
+function VelocidadeNativa({ travado }: { travado: boolean }) {
+  const nativa = useVoz((s) => s.form.nativa)
+  const fonte = useVoz((s) => s.form.fonte)
+  const modelId = useVoz((s) => s.form.eleven.modelId)
+  const mudarForm = useVoz((s) => s.mudarForm)
+  const semSpeed = fonte === 'elevenlabs' && !modeloEleven(modelId).estilo
+  const desligada = travado || semSpeed
+  return (
+    <Campo rotulo="Velocidade" className="w-[180px]">
+      <div
+        className={['flex h-8 items-center gap-2', desligada ? 'pointer-events-none opacity-40' : ''].join(' ')}
+        aria-disabled={desligada}
+        title={semSpeed ? 'Este modelo nao tem velocidade' : 'Gerada pela voz. Trocar gera de novo (pago).'}
+      >
+        <Deslizante
+          // Sem speed no modelo a voz sai a 1,0: a bolinha mostra isso, nao a do perfil.
+          valor={semSpeed ? 1 : nativa}
+          min={VELOCIDADE_NATIVA_MIN}
+          max={VELOCIDADE_NATIVA_MAX}
+          step={VELOCIDADE_NATIVA_PASSO}
+          onChange={(v) => mudarForm((f) => ({ ...f, nativa: v }))}
+          texto={textoDaVelocidade(semSpeed ? 1 : nativa)}
+          padrao={VELOCIDADE_NATIVA_PADRAO}
+          dica={semSpeed ? 'Este modelo nao tem velocidade' : `Gerada pela voz (pago). Duplo clique: ${textoDaVelocidade(VELOCIDADE_NATIVA_PADRAO)}`}
+        />
+      </div>
+    </Campo>
+  )
+}
+
+/** Acelerar e corte de pausas: o pos, que vale para as tres fontes e nao gasta nada. */
 function Pos({ travado }: { travado: boolean }) {
   const velocidade = useVoz((s) => s.form.velocidade)
   const cortarPausas = useVoz((s) => s.form.cortarPausas)
   const mudarForm = useVoz((s) => s.mudarForm)
   return (
     <>
-      <Campo rotulo="Velocidade" className="w-[200px]">
+      <Campo rotulo="Acelerar" className="w-[180px]">
         <div
           className={['flex h-8 items-center gap-2', travado ? 'pointer-events-none opacity-40' : ''].join(' ')}
           aria-disabled={travado}
+          title="Depois de gerar, de graca"
         >
           <Deslizante
             valor={velocidade}
@@ -423,6 +491,7 @@ function Pos({ travado }: { travado: boolean }) {
             onChange={(v) => mudarForm((f) => ({ ...f, velocidade: v }))}
             texto={textoDaVelocidade(velocidade)}
             padrao={1}
+            dica={`Depois de gerar, de graca. Duplo clique: ${textoDaVelocidade(1)}`}
           />
         </div>
       </Campo>
@@ -524,13 +593,18 @@ function LinhaDaAcao({
       )
       break
     case 'aplicar':
-      esquerda = <span className="text-[12px] text-ink-3">Sem custo</span>
+      esquerda = (
+        <>
+          <span className="shrink-0 text-[12px] text-ink-3">Sem custo</span>
+          <PrevisaoDaDuracao rascunho={rascunho} config={acao.config} take={take} exata />
+        </>
+      )
       botao = (
         <Botao
           foco="aplicar-voz"
           onClick={() => void aplicarAjuste()}
           disabled={travado}
-          title="Take novo com esta velocidade e corte, a partir do audio do take atual. Nao gasta."
+          title="Take novo com este acelerar e corte, a partir do audio do take atual. Nao gasta."
         >
           Aplicar
         </Botao>
@@ -541,7 +615,12 @@ function LinhaDaAcao({
       const chave = chaveDaEstimativa(rascunho, acao.config)
       const valor = estimativa?.chave === chave ? estimativa.valor : null
       const semSaldo = valor?.suficiente === false
-      esquerda = <Estimativa rascunho={rascunho} config={acao.config} />
+      esquerda = (
+        <>
+          <Estimativa rascunho={rascunho} config={acao.config} />
+          <PrevisaoDaDuracao rascunho={rascunho} config={acao.config} take={take} exata={false} />
+        </>
+      )
       const deNovo = acao.tipo === 'de-novo'
       botao = (
         <Botao
@@ -592,6 +671,45 @@ function LinhaDaAcao({
       )}
       {botao}
     </div>
+  )
+}
+
+/**
+ * A DURACAO PREVISTA do take que o Gerar ou o Aplicar vao fazer, ANTES de
+ * gastar ou de aplicar ("~48 s - abaixo de 1 min" em laranja). O aviso do take
+ * pronto (AbaixoDoAlvo) so chegava depois de pago.
+ * - Aplicar so o acelerar (o corte de pausas igual): exato, o take atual
+ *   reescalado (o atempo sai com N/v amostras).
+ * - O resto: as palavras do roteiro no ritmo da config do formulario (o mesmo
+ *   ritmo aprendido do passo 2).
+ */
+function PrevisaoDaDuracao({
+  rascunho,
+  config,
+  take,
+  exata,
+}: {
+  rascunho: RascunhoDoRecap
+  config: ConfigDaVoz
+  take: TakeDaVoz | null
+  exata: boolean
+}) {
+  const roteiro = roteiroAtual(rascunho)
+  const reescalado =
+    exata && take && take.config.cortarPausas === config.cortarPausas ? (take.duracao * take.config.velocidade) / config.velocidade : null
+  const ritmo = useRitmoDaConfig(reescalado === null ? config : null, take?.id ?? null)
+  if (!roteiro) return null
+  const segundos = reescalado ?? (ritmo ? palavrasDoRoteiro(roteiro) / ritmo : null)
+  if (segundos === null || !(segundos > 0)) return null
+  const aviso = avisoDoAlvo(segundos, roteiro.alvoSec)
+  return (
+    <span
+      className={['tnum flex min-w-0 shrink items-center gap-1 text-[12px]', aviso ? COR_DE_AVISO : 'text-ink-3'].join(' ')}
+      title={reescalado !== null ? 'Duracao do take com este acelerar' : 'Duracao prevista no ritmo desta voz'}
+    >
+      {aviso && <TriangleAlert size={11} strokeWidth={1.75} className="shrink-0" />}
+      <span className="truncate">~{aviso ?? `${Math.round(segundos)} s`}</span>
+    </span>
   )
 }
 

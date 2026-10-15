@@ -38,6 +38,8 @@ export function tamanhoCurto(bytes: number): string {
 export function textoDaPlaca(e: EstadoDoMotorRuntime): string {
   if (!e.gpu) return 'Procurando a placa...'
   const variante: VarianteDoMotor = e.variante ?? e.varianteSugerida
+  // Instalado e a placa nao rodou a conta (sem kernel no cu128, driver velho): o motor vai na CPU.
+  if (variante === 'cu128' && e.cudaOk === false) return e.gpu.nome ? `${gpuCurta(e.gpu.nome)}: CPU` : 'CPU'
   if (variante === 'cu128') return e.gpu.nome ? gpuCurta(e.gpu.nome) : 'NVIDIA'
   return e.gpu.nome ? 'CPU (sem CUDA)' : 'Sem NVIDIA: CPU, mais lento'
 }
@@ -73,7 +75,9 @@ export function InstalarMotor() {
       <AvisoDoMotor />
       {aberta && estado &&
         createPortal(
-          <div className="fixed inset-0 z-[46] grid place-items-center bg-black/45" onPointerDown={() => useMotorRuntime.getState().fechar()}>
+          // z-55: POR CIMA das Configuracoes (z-50). O "Instalar motor" e o "Reinstalar" de la abrem
+          // esta tela; com z-46 ela nascia atras do painel e o clique parecia nao fazer nada.
+          <div className="fixed inset-0 z-[55] grid place-items-center bg-black/45" onPointerDown={() => useMotorRuntime.getState().fechar()}>
             <div
               role="dialog"
               aria-label="Motor de personagens"

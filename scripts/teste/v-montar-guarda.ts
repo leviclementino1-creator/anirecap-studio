@@ -14,7 +14,7 @@
  *   5. toProjectFile leva o `studio` e passa no zod; openProject traz de volta;
  *   6. narracao nova no ingest desliga a guarda (vozAlinhada false) e o
  *      analyze do Dangai roda;
- *   8. tirar TODAS as cenas (o painel "Montar recap" aparece) e montar: o
+ *   8. tirar TODAS as cenas (o painel "Montar sozinho" aparece) e montar: o
  *      pedido leva o transcript do take, e o do estado continua o mesmo.
  * Projeto do Dangai (sem `studio`): removeImage e setScript chamam o analyze
  * como sempre, e o arquivo sai sem o campo.
@@ -199,7 +199,7 @@ async function main(): Promise<void> {
   await s().setScript(ROTEIRO)
   confere(quantas('analyze') === 1, 'Studio sem voz alinhada: analyze normal')
 
-  console.log('8. tirar todas as cenas e "Montar recap" (Studio)')
+  console.log('8. tirar todas as cenas e "Montar sozinho" > Recap (Studio)')
   abrirProjeto(ORIGEM)
   for (const img of [...s().images]) s().removeImage(img.id)
   confere(s().images.length === 0 && s().plan === null && s().transcript === DA_VOZ, 'sem cenas: plano null, transcript da voz intacto')

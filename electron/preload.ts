@@ -54,6 +54,7 @@ import type {
   RoteiroReligado,
 } from '@shared/roteiro'
 import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
+import type { RitmoDaVoz } from '@shared/ritmo'
 import type { EstadoDaDescoberta, EventoDaDescoberta, ResultadoDaDescoberta } from '@shared/descoberta'
 import type { EstadoDoMotorRuntime } from '@shared/motor-runtime'
 import type { CandidatosDaFrase, CenasGravadas, EtapaDaMontagem, ProjetoMontado } from '@shared/cenas'
@@ -394,6 +395,7 @@ const bridge: DangaiBridge = {
   urlDoAudio: (rascunhoId, takeId) =>
     ipcRenderer.invoke(IPC.urlDoAudio, rascunhoId, takeId) as Promise<IpcResult<AudioDoTake>>,
   escolherNarracao: () => ipcRenderer.invoke(IPC.escolherNarracao) as Promise<IpcResult<string | null>>,
+  ritmoDaVoz: (rascunhoId, config) => ipcRenderer.invoke(IPC.ritmoDaVoz, rascunhoId, config ?? null) as Promise<IpcResult<RitmoDaVoz>>,
   onVozProgresso: (listener) => {
     const handler = (_event: unknown, progresso: ProgressoDaVoz): void => listener(progresso)
     ipcRenderer.on(IPC.vozProgresso, handler)

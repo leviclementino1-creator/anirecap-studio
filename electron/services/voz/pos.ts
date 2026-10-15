@@ -6,7 +6,7 @@ import { rodarFfmpeg, SAIDA_WAV } from './ffmpeg'
 import { lerWav, type Pcm } from './wav'
 
 /**
- * O POS da narracao: bruto -> narracao. Corte de pausa e velocidade.
+ * O POS da narracao: bruto -> narracao. Corte de pausa e o "acelerar".
  *
  * O que o AniRecap fazia (core/audio_post.py) e os defeitos que isto corrige:
  *   - o silencio era achado pelo silencedetect (-42 dB) e cortado pelo
@@ -22,19 +22,28 @@ import { lerWav, type Pcm } from './wav'
  *      O corte tira o MEIO do vao e deixa PAUSA_CURTA_SEC (metade de cada
  *      lado): nunca encosta em palavra;
  *   2. os cortes viram atrim (por AMOSTRA, start_sample/end_sample) + concat, e
- *      a velocidade vira rubberband (atempo de reserva), num filtro so do
- *      ffmpeg, em WAV PCM. Medido em 14/10 (tons de 0,15-0,25 s por 60 s): o
- *      rubberband da a duracao EXATA (N/v amostras) e o inicio de cada som com
- *      desvio constante de 3-8 ms, sem deriva; o atempo encurta 17-28 ms e
- *      adianta o ataque 16-25 ms (o overlap-add dele "espalha" o comeco). Os
- *      dois estao abaixo de um quadro de video, mas so o rubberband deixa a
- *      conta t/v valer ate a ultima amostra. O ffmpeg-static do projeto (build
- *      do gyan) traz o librubberband; sem ele, atempo;
+ *      o "acelerar" vira ATEMPO, num filtro so do ffmpeg, em WAV PCM. O atempo
+ *      e o do App Resumo, o som que o Levi conhece; o rubberband (14/10) a 1,5
+ *      soou robotico para ele (15/10). Medido em 15/10 (tons de 0,06-0,45 s por
+ *      60 s, 24 e 44,1 kHz, 0,9-1,25x): o fim de cada som cai na conta, mas o
+ *      overlap-add (janela de 1/24 s) "espalha" o ataque para tras, o conteudo
+ *      sai ~8 ms ADIANTADO (o centro de cada som), sem deriva, e o arquivo sai
+ *      17-28 ms mais curto que N/v. Entao o filtro atrasa a saida
+ *      ATRASO_DO_ATEMPO_SEC (centra o som na conta t/v) e acerta o arquivo em
+ *      EXATAS N/v amostras (apad + atrim): a conta vale ate a ultima amostra;
  *   3. o tempo de cada palavra e remapeado pela conta exata dos cortes:
  *        t' = (t - cortado_antes_de_t) / velocidade
  *      A duracao final sai da contagem de amostras do WAV gerado; a diferenca
  *      para a conta vira aviso acima de TOLERANCIA_SEC. Nada de escala pela
  *      duracao do arquivo.
+ *
+ * O preco do atempo nos testes (v-voz-motor, registrado na v0.1.0): com
+ * acelerar != 1, a palavra contra o tom vale ate 25 ms (meio quadro a 23,976),
+ * com deriva <= 3 ms; com o rubberband eram 15 ms. O overlap-add espalha o
+ * ataque de cada palavra em ate ~20 ms (mediana ~10) e o atraso acima ja
+ * centra o som: so com atempo nao da para ficar em 15 ms em toda palavra.
+ * Duracao exata (N/v amostras), conferirTake (5 ms) e os caminhos sem
+ * acelerar (2 ms) continuam como eram.
  */
 
 /** Um pedaco que sai, em amostras [de, ate). */
@@ -400,28 +409,34 @@ export function pedacosMantidos(cortes: readonly Corte[], amostras: number): Cor
   return mantidos
 }
 
-let rubberband: Promise<boolean> | null = null
+/**
+ * Quanto o atempo ADIANTA o conteudo (o centro de cada som), medido em 15/10:
+ * 7,5-9,3 ms de 1,05 a 1,25x, nas duas taxas, sem deriva (12-13 ms a 0,9x).
+ */
+export const ATRASO_DO_ATEMPO_SEC = 0.008
 
-/** O ffmpeg tem o filtro rubberband? (pergunta uma vez por sessao) */
-export function temRubberband(): Promise<boolean> {
-  rubberband ??= rodarFfmpeg(['-filters'])
-    .then((saida) => /\srubberband\s/.test(saida.toString()))
-    .catch(() => false)
-  return rubberband
+/** Amostras da narracao depois do pos: o que sobra do corte, na velocidade. E a conta t' = t/v ate o fim. */
+export function amostrasDoPos(amostras: number, cortadas: number, velocidade: number): number {
+  return Math.round((amostras - cortadas) / velocidade)
 }
 
-/** O filtro da velocidade: rubberband (duracao exata) ou atempo (0,9-1,2 cabe num estagio so). */
-export function filtroDeVelocidade(velocidade: number, comRubberband: boolean): string {
+/**
+ * O filtro do "acelerar": atempo (0,9-1,25 cabe num estagio so), o atraso que
+ * centra o som na conta e o arquivo em EXATAS `saida` amostras (o atempo
+ * devolve 17-28 ms a menos: o apad completa com silencio no fim, que e a
+ * cauda calada do take, e o atrim corta o que o atraso empurrou para fora).
+ */
+export function filtroDeVelocidade(velocidade: number, taxa: number, saida: number): string {
   if (velocidade === 1) return 'anull'
-  const v = velocidade.toFixed(4)
-  return comRubberband ? `rubberband=tempo=${v}` : `atempo=${v}`
+  const atraso = Math.round(ATRASO_DO_ATEMPO_SEC * taxa)
+  return `atempo=${velocidade.toFixed(4)},adelay=delays=${atraso}S:all=1,apad=whole_len=${saida},atrim=end_sample=${saida}`
 }
 
 /**
  * O filtro do ffmpeg: atrim de cada pedaco mantido (por amostra), rampa de
- * RAMPA_SEC nas pontas que viraram emenda, concat, e a velocidade.
+ * RAMPA_SEC nas pontas que viraram emenda, concat, e o "acelerar".
  */
-export function filtroDoPos(cortes: readonly Corte[], amostras: number, taxa: number, velocidade: number, comRubberband = true): string {
+export function filtroDoPos(cortes: readonly Corte[], amostras: number, taxa: number, velocidade: number): string {
   const mantidos = pedacosMantidos(cortes, amostras)
   const rampa = Math.round(RAMPA_SEC * taxa)
   const linhas: string[] = []
@@ -436,7 +451,8 @@ export function filtroDoPos(cortes: readonly Corte[], amostras: number, taxa: nu
     }
     linhas.push(`[s${i}]${cadeia.join(',')}[k${i}]`)
   }
-  const tempo = filtroDeVelocidade(velocidade, comRubberband)
+  const cortadas = cortes.reduce((s, c) => s + c.ate - c.de, 0)
+  const tempo = filtroDeVelocidade(velocidade, taxa, amostrasDoPos(amostras, cortadas, velocidade))
   linhas.push(`${mantidos.map((_, i) => `[k${i}]`).join('')}concat=n=${mantidos.length}:v=0:a=1,${tempo}[saida]`)
   return linhas.join(';\n')
 }
@@ -480,8 +496,7 @@ export async function aplicarPos(
   const pasta = mkdtempSync(join(tmpdir(), 'anirecap-pos-'))
   try {
     const script = join(pasta, 'filtro.txt')
-    const comRubberband = opcoes.velocidade !== 1 && (await temRubberband())
-    writeFileSync(script, filtroDoPos(cortes, amostras, bruto.taxa, opcoes.velocidade, comRubberband), 'utf8')
+    writeFileSync(script, filtroDoPos(cortes, amostras, bruto.taxa, opcoes.velocidade), 'utf8')
     const saida = await rodarFfmpeg(
       ['-i', caminhoDoBruto, '-filter_complex_script', script, '-map', '[saida]', '-ar', String(bruto.taxa), ...SAIDA_WAV],
       signal,
@@ -492,7 +507,7 @@ export async function aplicarPos(
     const esperado = (amostras - cortado * bruto.taxa) / opcoes.velocidade
     const diferenca = Math.abs(pcm.amostras.length - esperado) / bruto.taxa
     if (diferenca > TOLERANCIA_SEC) {
-      avisos.push(`A narracao saiu ${(diferenca * 1000).toFixed(0)} ms diferente da conta (${comRubberband ? 'rubberband' : 'atempo'}).`)
+      avisos.push(`A narracao saiu ${(diferenca * 1000).toFixed(0)} ms diferente da conta (atempo).`)
     }
     return { pcm, cortes, cortado, avisos }
   } finally {

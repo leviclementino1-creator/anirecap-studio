@@ -16,7 +16,7 @@
  *   1. o corte de pausa: depois dele, cada palavra do take bate com o tom no
  *      audio novo (<= 2 ms), nenhuma pausa longa sobra, nenhum tom encolhe, o
  *      rabo da consoante fica inteiro, e nenhum corte cai em som;
- *   2. velocidade: o tempo das palavras contra o audio do atempo;
+ *   2. acelerar (o pos): o tempo das palavras contra o audio do atempo;
  *   3. regravar uma frase: as anteriores ficam iguais, as seguintes andam pela
  *      diferenca EXATA, e o audio novo bate com os tempos;
  *   4. cache: o mesmo pedido nao chama o provedor de novo (outro rascunho,
@@ -24,7 +24,9 @@
  *   5. normalizado, recusa do wav_44100, cancelar antes/depois de pagar,
  *      custo que mudou, importado sem "regravar";
  *   6. Fish e importado: o tempo das palavras depois do corte, medido de novo
- *      com o alinhador no audio novo.
+ *      com o alinhador no audio novo;
+ *   7. velocidade NATIVA 1,2 (15/10): o speed vai no corpo, a chave muda, o
+ *      regravar usa a do take, o acelerar fica de graca e o ritmo e aprendido.
  *
  * O rascunho e uma COPIA do S4-37 aprovado, numa pasta temporaria. O Whisper e
  * o wav2vec2 sao lidos (so leitura) do %APPDATA%/AniRecap Studio.
@@ -70,6 +72,8 @@ import { arquivoDaVoz, pastaDoCacheDaVoz } from '../../electron/services/voz/pas
 import { palavrasDosCaracteres, palavrasPeloTexto, tokensComFaixa, type AlinhamentoDeCaracteres } from '../../electron/services/voz/palavras'
 import { lerWavDoDisco, sha256, wavDoPcm, type Pcm } from '../../electron/services/voz/wav'
 import { aprovarVoz } from '../../electron/services/voz/takes'
+import { lerMedidas, ritmoDoRascunho } from '../../electron/services/voz/ritmo'
+import { chaveDoRitmo } from '../../shared/ritmo'
 
 // ------------------------------------------------------------------ conferir
 let falhas = 0
@@ -421,6 +425,29 @@ function guardar(nome: string, id: string, take: TakeDaVoz): void {
   )
 }
 
+/**
+ * A DERIVA entre as palavras do take e os tons: a media do erro do ataque no
+ * primeiro terco contra a do ultimo. O remapeamento exato (t' = t/v) nao
+ * deriva; um erro que cresce com o tempo seria escala errada.
+ */
+function deriva(palavras: readonly PalavraComTempo[], tons: readonly Regiao[]): number {
+  if (palavras.length !== tons.length || palavras.length < 6) return Infinity
+  const d = palavras.map((p, i) => tons[i]!.ini - p.start)
+  const terco = Math.floor(d.length / 3)
+  const media = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length
+  return Math.abs(media(d.slice(0, terco)) - media(d.slice(-terco)))
+}
+
+/**
+ * O ATEMPO (o "acelerar" desde 15/10, pos.ts): o overlap-add dele (janela de
+ * 1/24 s) espalha o ataque para tras e o fim para frente conforme a fase da
+ * janela -- ate ~20 ms numa palavra, ~10 de mediana, constante e sem deriva:
+ * metade de um quadro de 23,976. O rubberband (14/10) dava 7 ms, mas soou
+ * robotico para o Levi. A tolerancia de 2 ms dos caminhos sem acelerar fica.
+ */
+const FOLGA_DO_ATEMPO_SEC = 0.025
+const DERIVA_MAX_SEC = 0.003
+
 /** Mediana, p90 e maximo de |a - b| (e onde esta o maximo). */
 function erros(a: readonly number[], b: readonly number[]): { med: number; p90: number; max: number; onde: number } {
   const brutos = a.map((x, i) => Math.abs(x - b[i]!))
@@ -520,7 +547,8 @@ async function testes(): Promise<void> {
   const nPalavras = narrar.frases.reduce((s, f) => s + f.palavras.length, 0)
   console.log(`rascunho: ${narrar.frases.length} frases, ${nPalavras} palavras, ${narrar.texto.length} caracteres`)
 
-  const eleven: ConfigDaVoz = configPadrao({ provedor: 'elevenlabs', voiceId: 'VozFalsa0000000000AA', modelId: 'eleven_multilingual_v2' })!
+  // A 1,0: o caminho de antes da velocidade nativa (o do cache pago antigo). A 1,2 tem a secao dela (5b).
+  const eleven: ConfigDaVoz = configPadrao({ provedor: 'elevenlabs', voiceId: 'VozFalsa0000000000AA', modelId: 'eleven_multilingual_v2', velocidadeNativa: 1 })!
 
   // ------------------------------------------------ 0. puras
   console.log('\n0. caracteres -> palavras')
@@ -630,12 +658,17 @@ async function testes(): Promise<void> {
   const tons2 = regioesDeTom(pcmDoTake(ID, t2), t2.volume?.ganho ?? 0)
   const c2 = compararComTons(t2.palavras, tons2)
   const e12 = erros(t2.palavras.map((p) => p.start), tons2.map((r) => r.ini))
-  // O rubberband atrasa o ataque uns 7 ms, constante (medido; sem deriva): menos de 1/5 de quadro.
-  ok('velocidade 1,2: palavras = tons do WAV novo (<= 15 ms, sem deriva)', c2.n && c2.ini <= 0.015 && c2.fim <= 0.015, `ini mediana ${ms(e12.med)} max ${ms(c2.ini)}; fim max ${ms(c2.fim)}`)
+  // O atempo (com o atraso que centra o som, pos.ts): ~10 ms de mediana, ate ~20, sem deriva (FOLGA_DO_ATEMPO_SEC).
+  const d2 = deriva(t2.palavras, tons2)
+  ok('velocidade 1,2: palavras = tons do WAV novo (<= 25 ms, meio quadro), sem deriva', c2.n && c2.ini <= FOLGA_DO_ATEMPO_SEC && c2.fim <= FOLGA_DO_ATEMPO_SEC && d2 <= DERIVA_MAX_SEC,
+    `ini mediana ${ms(e12.med)} max ${ms(c2.ini)}; fim max ${ms(c2.fim)}; deriva ${ms(d2)}`)
   ok('duracao = t1/1,2 (amostra)', Math.abs(t2.duracao - t1.duracao / 1.2) < 0.001 && t2.avisos.length === 0, `${t2.duracao.toFixed(4)} vs ${(t1.duracao / 1.2).toFixed(4)}`)
   const a09 = await ajustarVoz(ID, { velocidade: 0.9, cortarPausas: false, pedidoId: pid() }, progresso)
-  const c09 = compararComTons(a09.take.palavras, regioesDeTom(pcmDoTake(ID, a09.take), a09.take.volume?.ganho ?? 0))
-  ok('velocidade 0,9 sem corte: palavras = tons (<= 15 ms)', c09.n && c09.ini <= 0.015 && c09.fim <= 0.015, `ini max ${ms(c09.ini)} fim max ${ms(c09.fim)}`)
+  const tons09 = regioesDeTom(pcmDoTake(ID, a09.take), a09.take.volume?.ganho ?? 0)
+  const c09 = compararComTons(a09.take.palavras, tons09)
+  const d09 = deriva(a09.take.palavras, tons09)
+  ok('velocidade 0,9 sem corte: palavras = tons (<= 25 ms), sem deriva', c09.n && c09.ini <= FOLGA_DO_ATEMPO_SEC && c09.fim <= FOLGA_DO_ATEMPO_SEC && d09 <= DERIVA_MAX_SEC,
+    `ini max ${ms(c09.ini)} fim max ${ms(c09.fim)}; deriva ${ms(d09)}`)
   conferirInvariantes(ID, a09.take, 't3')
   const volta = await ajustarVoz(ID, { velocidade: 1, cortarPausas: true, pedidoId: pid() }, progresso)
   ok('voltar ao ajuste de t1 reusa t1 (sem take novo)', volta.take.id === 't1' && estadoDaVoz(volta.rascunho).takes.length === 3 && volta.rascunho.voz?.atual === 't1')
@@ -746,6 +779,52 @@ async function testes(): Promise<void> {
   const e5d = await estimar(ID3, { tipo: 'tudo', config: veloc })
   ok('rascunho novo com velocidade 1,1: le do cache, sem custo', e5d.aCobrar === 0)
 
+  // ------------------------------------------------ 5b. velocidade NATIVA 1,2
+  console.log('\n5b. velocidade nativa 1,2 (o padrao novo do perfil)')
+  {
+    const padrao = configPadrao({ provedor: 'elevenlabs', voiceId: 'VozFalsa0000000000AA', modelId: 'eleven_multilingual_v2' })!
+    ok('perfil sem o campo: a voz nova sai a 1,2', padrao.fonte === 'elevenlabs' && padrao.velocidadeNativa === 1.2)
+    const ID4 = 'rc_25d63d4babd6_nativa12'
+    const copia4 = JSON.parse(original) as Record<string, unknown>
+    copia4['id'] = ID4
+    writeFileSync(join(USER, 'recaps', `${ID4}.json`), JSON.stringify(copia4))
+    ok('a 1,2 e outra chave: a leitura a 1,0 nao serve (cobra)', chaveDoCache(ped(padrao), 'wav_44100', 0) !== chaveDoCache(ped(eleven), 'wav_44100', 0))
+    const e5n = await estimar(ID4, { tipo: 'tudo', config: padrao })
+    ok('estimativa a 1,2: cobra o roteiro inteiro (pergunta de custo)', e5n.aCobrar === 1034 && !e5n.doCache)
+    const antes5n = pagas().length
+    const g5n = await gerar(ID4, padrao)
+    const c5n = pagas().at(-1)!
+    ok('1 chamada paga, voice_settings com speed 1,2', pagas().length === antes5n + 1 &&
+      JSON.stringify(c5n.corpo?.['voice_settings']) === JSON.stringify({ stability: 0.32, similarity_boost: 0.3, use_speaker_boost: true, style: 0, speed: 1.2 }),
+      JSON.stringify(c5n.corpo?.['voice_settings']))
+    ok('take com a nativa 1,2 e o alinhamento do provedor', g5n.take.config.fonte === 'elevenlabs' && g5n.take.config.velocidadeNativa === 1.2 && g5n.take.origemDoAlinhamento === 'provedor')
+    conferirInvariantes(ID4, g5n.take, 'nativa-1.2')
+    const e5r = await estimar(ID4, { tipo: 'frases', fraseIds: ['f03'] })
+    const g5r = await regravarFrases(ID4, { fraseIds: ['f03'], pedidoId: pid(), confirmado: e5r.aCobrar }, progresso)
+    const c5r = pagas().at(-1)!
+    ok('regravar frase usa a velocidade do take (speed 1,2 + contexto)', (c5r.corpo?.['voice_settings'] as Record<string, unknown> | undefined)?.['speed'] === 1.2 &&
+      typeof c5r.corpo?.['previous_text'] === 'string' && g5r.take.config.fonte === 'elevenlabs' && g5r.take.config.velocidadeNativa === 1.2)
+    conferirInvariantes(ID4, g5r.take, 'nativa-1.2-regravado')
+    const antesAj = pagas().length
+    const a5 = await ajustarVoz(ID4, { velocidade: 1.25, cortarPausas: true, pedidoId: pid() }, progresso)
+    ok('acelerar 1,25 sobre a 1,2: gratis, a nativa fica', pagas().length === antesAj && a5.take.config.fonte === 'elevenlabs' && a5.take.config.velocidadeNativa === 1.2 && a5.take.cobrados === 0)
+    ok('acelerar 1,25: duracao = take/1,25 (amostra), sem aviso', Math.abs(a5.take.duracao - g5r.take.duracao / 1.25) < 0.001 && a5.take.avisos.length === 0,
+      `${a5.take.duracao.toFixed(4)} vs ${(g5r.take.duracao / 1.25).toFixed(4)}`)
+    conferirInvariantes(ID4, a5.take, 'nativa-1.2-acelerar-1.25')
+    const tons5 = regioesDeTom(pcmDoTake(ID4, a5.take), a5.take.volume?.ganho ?? 0)
+    const c5 = compararComTons(a5.take.palavras, tons5)
+    const d5 = deriva(a5.take.palavras, tons5)
+    ok('acelerar 1,25: palavras = tons do WAV novo (<= 25 ms), sem deriva', c5.n && c5.ini <= FOLGA_DO_ATEMPO_SEC && c5.fim <= FOLGA_DO_ATEMPO_SEC && d5 <= DERIVA_MAX_SEC,
+      `ini max ${ms(c5.ini)} fim max ${ms(c5.fim)}; deriva ${ms(d5)}`)
+    // O ritmo aprendido: cada take com corte virou medida, na chave da config dele.
+    const medidas = lerMedidas()
+    const doTake = medidas.find((m) => m.arquivo === a5.take.arquivo)
+    ok('ritmo aprendido do take (palavras / duracao final)', doTake !== undefined && doTake.chave === chaveDoRitmo(a5.take.config) && doTake.palavras === nPalavras && Math.abs(doTake.duracao - a5.take.duracao) < 1e-9,
+      `${medidas.length} medidas`)
+    const rr = ritmoDoRascunho(lerRascunhoDoDisco(ID4))
+    ok('ritmoDoRascunho = o take atual medido', rr.origem === 'medido' && Math.abs(rr.ritmo - nPalavras / a5.take.duracao) < 1e-6, `${rr.ritmo.toFixed(3)} p/s`)
+  }
+
   // ------------------------------------------------ 6. normalizado e recusa do 44,1 kHz
   console.log('\n6. normalized_alignment ("Dr." -> "Doutor") e wav_44100 recusado')
   modo.normalizado = true
@@ -845,6 +924,7 @@ async function testes(): Promise<void> {
   const c8c = pagas().at(-1)!
   ok('Fish: Bearer, cabecalho model, reference_id, wav', c8c.host === 'api.fish.audio' && c8c.cabecalhos['Authorization']?.startsWith('Bearer ') === true &&
     c8c.cabecalhos['model'] === 's2.1-pro' && c8c.corpo?.['reference_id'] === 'fishvozfalsa01' && c8c.corpo?.['format'] === 'wav')
+  ok('Fish: prosody.speed = a nativa do perfil (1,2)', (c8c.corpo?.['prosody'] as Record<string, unknown> | undefined)?.['speed'] === 1.2)
   ok('Fish: origem alinhador, score', t8.origemDoAlinhamento === 'alinhador' && (t8.qualidade?.score ?? 0) >= 0.35, `score ${t8.qualidade?.score?.toFixed(2)} em ${((Date.now() - t0) / 1000).toFixed(1)} s`)
   conferirInvariantes(id8, t8, 'fish')
   guardar('fish-windows-corte', id8, t8)

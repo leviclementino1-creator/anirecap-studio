@@ -84,6 +84,9 @@ function roda(extra: Partial<RodaDoTorch> = {}): RodaDoTorch {
   return { nome: 'torch', versao: '9.9.9+teste', arquivo: 'torch-teste.whl', url, sha256: sha, bytes: TAM, ...extra }
 }
 
+/** O recuo da retomada no teste (o real e 32 MB, maior que a roda falsa). */
+const MARGEM = 64 * 1024
+
 async function baixar(pasta: string, r: RodaDoTorch, signal = new AbortController().signal, esperas = [50, 50, 50]) {
   const andamento: number[] = []
   const caminho = await baixarRoda(r, pasta, {
@@ -92,6 +95,7 @@ async function baixar(pasta: string, r: RodaDoTorch, signal = new AbortControlle
     log: () => {},
     esperas,
     silencioMs: 3000,
+    margemDaRetomada: MARGEM,
     aoAndar: (n) => andamento.push(n),
   })
   return { caminho, andamento }
@@ -193,9 +197,28 @@ try {
   modo = 'normal'
   zerar()
   r = await baixar(pasta, roda())
-  assert.equal(pedidos[0]!.range, `bytes=${parcial}-`)
+  // A retomada de outra sessao recua MARGEM do fim do .part (queda de luz: o fim pode nao estar no disco).
+  const recuo = Math.max(0, parcial - MARGEM)
+  assert.equal(pedidos[0]!.range, recuo > 0 ? `bytes=${recuo}-` : undefined)
   assert.equal(readFileSync(r.caminho).equals(dados), true)
-  console.log(`ok cancelar e continuar (parou em ${parcial} de ${TAM})`)
+  console.log(`ok cancelar e continuar (parou em ${parcial} de ${TAM}, retomou de ${recuo})`)
+
+  // 8b. queda de luz: o .part voltou com o fim em ZEROS (o NTFS nao gravou o ultimo trecho).
+  // Recuando a margem, os zeros saem e o sha256 fecha, sem baixar tudo de novo.
+  modo = 'normal'
+  pasta = join(temp, '8b')
+  rmSync(pasta, { recursive: true, force: true })
+  await baixar(pasta, roda()).then((x) => rmSync(x.caminho))
+  const p8 = join(pasta, 'torch-teste.whl.part')
+  const bons = 2 * 1024 * 1024
+  writeFileSync(p8, Buffer.concat([dados.subarray(0, bons), Buffer.alloc(MARGEM / 2, 0)]))
+  writeFileSync(`${p8}.json`, JSON.stringify({ url, sha256: sha, bytes: TAM, etag: '"v1"' }))
+  zerar()
+  r = await baixar(pasta, roda())
+  assert.equal(readFileSync(r.caminho).equals(dados), true, 'o fim zerado saiu no recuo')
+  assert.equal(pedidos.length, 1, 'um pedido so, do meio')
+  assert.equal(pedidos[0]!.range, `bytes=${bons + MARGEM / 2 - MARGEM}-`)
+  console.log('ok queda de luz (fim do .part em zeros)')
 
   // 9. servidor fora do ar: tenta e desiste com sem-internet
   await new Promise<void>((res) => servidor.close(() => res()))

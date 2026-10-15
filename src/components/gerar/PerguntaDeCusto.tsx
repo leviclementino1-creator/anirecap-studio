@@ -26,7 +26,16 @@ export function focoDaPergunta(onde: string): string {
  * quando ela entra); `pequeno` nos cartoes de botoes pequenos (a linha da
  * frase, o "roteiro mudou"), para nao misturar dois tamanhos no mesmo cartao.
  */
-export function PerguntaDeCusto({ pergunta, pequeno = false }: { pergunta: Pergunta; pequeno?: boolean }) {
+export function PerguntaDeCusto({
+  pergunta,
+  pequeno = false,
+  extra = null,
+}: {
+  pergunta: Pergunta
+  pequeno?: boolean
+  /** Ao lado do custo (o passo 3 poe a duracao prevista do take). */
+  extra?: React.ReactNode
+}) {
   const confirmar = useVoz((s) => s.confirmar)
   const desistir = useVoz((s) => s.desistir)
   const e = pergunta.estimativa
@@ -75,6 +84,7 @@ export function PerguntaDeCusto({ pergunta, pequeno = false }: { pergunta: Pergu
         <Coins size={12} strokeWidth={1.5} className="shrink-0 text-accent" />
         <span className="tnum min-w-0 truncate">{texto}</span>
       </p>
+      {extra}
       {e.aviso && (
         <span title={e.aviso} className={`flex min-w-0 max-w-[260px] items-center gap-1 text-[11px] ${COR_DE_AVISO}`}>
           <TriangleAlert size={11} strokeWidth={1.75} className="shrink-0" />

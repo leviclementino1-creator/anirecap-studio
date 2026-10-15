@@ -29,6 +29,7 @@ import { Library } from '@/components/Library'
 import { Queue } from '@/components/Queue'
 import { GerarRecap } from '@/components/gerar/GerarRecap'
 import { InstalarMotor } from '@/components/motor-runtime/InstalarMotor'
+import { BoasVindas } from '@/components/BoasVindas'
 import { useGerar } from '@/store/gerar'
 import { VIDEO_FPS } from '@shared/contract'
 import { semExtensaoDeProjeto } from '@shared/project-file'
@@ -473,6 +474,8 @@ export function App() {
       <Script />
       <GerarRecap />
       <InstalarMotor />
+      {/* Sem chave de IA: recomenda a do Gemini, so na tela inicial (ver @/store/boas-vindas). */}
+      <BoasVindas />
       <Library />
       <CommandPalette />
       <ConsoleFx />

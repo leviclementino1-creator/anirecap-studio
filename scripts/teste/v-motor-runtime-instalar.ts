@@ -29,6 +29,7 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { EstadoDoMotorRuntime, LockDoRuntime } from '../../shared/motor-runtime'
+import { MARGEM_DA_RETOMADA } from '../../electron/services/motor-runtime/baixar'
 import type { FimDaAnalise } from '../../shared/episodio'
 import {
   backendDoRuntime,
@@ -203,7 +204,11 @@ async function modoCpu(): Promise<void> {
     }
     e = await instalarAteOFim()
     aoEstado = null
-    confere(primeiroBaixados >= tamParte, `retomou de ${(primeiroBaixados / 1e6).toFixed(0)} MB (parte tinha ${(tamParte / 1e6).toFixed(0)})`)
+    // A retomada de outra sessao recua MARGEM_DA_RETOMADA do fim do .part (queda de luz), nunca do zero.
+    confere(
+      primeiroBaixados >= Math.max(0, tamParte - MARGEM_DA_RETOMADA) && primeiroBaixados <= tamParte,
+      `retomou de ${(primeiroBaixados / 1e6).toFixed(0)} MB (parte tinha ${(tamParte / 1e6).toFixed(0)}, recuo de ate ${MARGEM_DA_RETOMADA / 1024 / 1024} MiB)`,
+    )
   }
   confere(e.fase === 'pronto', `fase ${e.fase}`)
   const imp = JSON.parse(readFileSync(c.impressao, 'utf8')) as Record<string, unknown>

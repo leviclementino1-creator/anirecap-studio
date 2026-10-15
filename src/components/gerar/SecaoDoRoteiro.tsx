@@ -18,6 +18,7 @@ import {
   type Secao,
 } from '@shared/roteiro'
 import { useRoteiro, type GeracaoEmCurso } from '@/store/gerar-roteiro'
+import { useRitmoDaVoz } from '@/store/ritmo'
 import { Linha } from '@/components/painel'
 import { AndamentoDoRoteiro } from './AndamentoDoRoteiro'
 import { PerguntaDoReserva } from './PerguntaDoReserva'
@@ -72,11 +73,13 @@ export function SecaoDoRoteiro({
   // O "Refazer" desta parte parou antes do modelo reserva: a pergunta fica aqui, onde o olho esta.
   const reserva = useRoteiro((s) => (s.reserva?.secaoId === secao.id ? s.reserva : null))
   const [instrucao, setInstrucao] = useState<string | null>(null)
+  // O ritmo da voz que vai narrar: o mesmo "~Xs" da contagem do roteiro.
+  const ritmo = useRitmoDaVoz()
 
   const travado = geracao !== null
   const refazendo = geracao !== null && geracao.secaoId === secao.id
   const palavras = palavrasDoRoteiro({ secoes: [secao] })
-  const segundos = Math.round(duracaoEstimada(palavras))
+  const segundos = Math.round(duracaoEstimada(palavras, ritmo))
   const daParte = problemas.filter((p) => !p.fraseId)
   const erroDaParte = daParte.find((p) => p.nivel === 'erro')
   const avisoDaParte = daParte.find((p) => p.nivel === 'aviso')

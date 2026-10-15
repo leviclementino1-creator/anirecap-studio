@@ -27,8 +27,10 @@ import { configDoRuntime } from './pastas'
  *   pasta inteira). O site-packages do runtime ja vem compilado da instalacao
  *   (uv --compile-bytecode), entao o import do torch nao fica mais lento.
  * - cudaOk false (a GPU nao rodou a conta da conferencia: placa sem suporte no
- *   torch cu128): CUDA_VISIBLE_DEVICES=-1, e o motor roda na CPU em vez de
- *   quebrar no primeiro kernel.
+ *   torch cu128): ANIRECAP_MOTOR_SEM_CUDA=1, e o motor poe o torch na CPU
+ *   (motor/app/config.py, [Studio]) em vez de quebrar no primeiro kernel. O
+ *   CUDA_VISIBLE_DEVICES=-1 de antes escondia a placa tambem do ffmpeg, e o
+ *   corte perdia o NVENC/NVDEC que uma GTX 10xx tem (cuInit = NO_DEVICE).
  */
 
 /** Variaveis do usuario que mudariam qual Python/pacote o runtime carrega. */
@@ -64,7 +66,7 @@ export function pastaDoFfprobe(): string | null {
  * O ambiente do motor no runtime, a partir do ambiente base (o process.env, ou
  * o que o motor.ts ja montou com ANIRECAP_MOTOR_DADOS). Nao muda o `base`.
  */
-export function ambienteDoRuntime(base: NodeJS.ProcessEnv, opcoes: { cudaOk: boolean }): NodeJS.ProcessEnv {
+export function ambienteDoRuntime(base: NodeJS.ProcessEnv, opcoes: { cudaOk: boolean; modelos?: string }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base }
   for (const chave of Object.keys(env)) {
     if (FORA_DO_AMBIENTE.includes(chave.toUpperCase())) delete env[chave]
@@ -73,7 +75,10 @@ export function ambienteDoRuntime(base: NodeJS.ProcessEnv, opcoes: { cudaOk: boo
   env['PYTHONDONTWRITEBYTECODE'] = '1'
   env['PYTHONNOUSERSITE'] = '1'
   env['YOLO_AUTOINSTALL'] = 'false'
-  if (!opcoes.cudaOk) env['CUDA_VISIBLE_DEVICES'] = '-1'
+  if (opcoes.cudaOk) delete env['ANIRECAP_MOTOR_SEM_CUDA']
+  else env['ANIRECAP_MOTOR_SEM_CUDA'] = '1'
+  // Os modelos da 1a analise dentro do runtime (CaminhosDoRuntime.modelos).
+  if (opcoes.modelos) env['HF_HOME'] = opcoes.modelos
 
   // No Windows a chave e 'Path'. Criar 'PATH' ao lado deixaria duas, e qual
   // vale fica por conta da ordem (a mesma licao do motor.ts).

@@ -7,6 +7,7 @@ import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
 import { AjustesDeVoz } from "./gerar/AjustesDeVoz";
 import { AjustesDaEdicaoRapida } from "./gerar/AjustesDaEdicaoRapida";
 import { VersaoDoApp } from "./VersaoDoApp";
+import { ChaveDoGemini, LINK_DA_CHAVE_DO_GEMINI } from "./ChaveDoGemini";
 import { useGerar } from "@/store/gerar";
 
 /**
@@ -27,23 +28,17 @@ export function Settings() {
 
   const [settings, setSettings] = useState<PublicSettings | null>(null);
   const [keyInput, setKeyInput] = useState("");
-  const [geminiInput, setGeminiInput] = useState("");
   const [saving, setSaving] = useState(false);
   // A lista vem do "Testar": o main so conhece os modelos depois de falar com
   // o Google usando a chave.
   const [modelos, setModelos] = useState<string[]>([]);
-  const [testando, setTestando] = useState(false);
-  const [teste, setTeste] = useState<{
-    tipo: "ok" | "aviso" | "erro";
-    texto: string;
-  } | null>(null);
   const [aba, setAba] = useState<"geral" | "atalhos">("geral");
 
   useEffect(() => {
     if (!open) return;
+    // O campo e o teste do Gemini moram no ChaveDoGemini, que desmonta junto
+    // com o modal: reabrir ja os traz vazios.
     setKeyInput("");
-    setGeminiInput("");
-    setTeste(null);
     // "Trocar pasta" do Gerar recap: a Biblioteca do Studio fica na aba Geral.
     if (useGerar.getState().ajustesPedidos) setAba("geral");
     void window.dangai.getSettings().then((result) => {
@@ -94,35 +89,6 @@ export function Settings() {
       // Com chave nova, refaz o plano: o usuario acabou de habilitar a IA.
       void analyze();
     }
-  };
-
-  const saveGeminiKey = async () => {
-    const trimmed = geminiInput.trim();
-    if (trimmed.length === 0) return;
-    if (await save({ geminiApiKey: trimmed })) {
-      setGeminiInput("");
-      setTeste(null);
-      // Mesmo motivo da chave da Anthropic: a IA acabou de ser habilitada.
-      void analyze();
-    }
-  };
-
-  // Testa a chave digitada, se houver; senao a salva, que fica no main.
-  const testarGemini = async () => {
-    setTestando(true);
-    setTeste(null);
-    const result = await window.dangai.testarGemini(geminiInput.trim() || null);
-    setTestando(false);
-    if (!result.ok) {
-      setTeste({ tipo: "erro", texto: result.error });
-      return;
-    }
-    setModelos(result.value.modelos);
-    setTeste(
-      result.value.aviso
-        ? { tipo: "aviso", texto: `A chave vale, mas: ${result.value.aviso}` }
-        : { tipo: "ok", texto: `Funcionando com ${result.value.modelo}.` },
-    );
   };
 
   // Quem atende de verdade: a preferida so se tiver chave, como no main.
@@ -235,7 +201,7 @@ export function Settings() {
                 </label>
                 <span className="flex-1" />
                 <a
-                  href="https://aistudio.google.com/apikey"
+                  href={LINK_DA_CHAVE_DO_GEMINI}
                   target="_blank"
                   rel="noreferrer"
                   className="text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
@@ -243,52 +209,14 @@ export function Settings() {
                   Pegar uma chave gratis
                 </a>
               </div>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={geminiInput}
-                  onChange={(event) => setGeminiInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void saveGeminiKey();
-                    event.stopPropagation();
-                  }}
-                  placeholder={
-                    settings?.hasGeminiKey ? settings.geminiKeyHint : "AIza..."
-                  }
-                  spellCheck={false}
-                  autoComplete="off"
-                  className="min-w-0 flex-1 select-text rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-3 focus:border-line-strong focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => void saveGeminiKey()}
-                  disabled={saving || geminiInput.trim().length === 0}
-                  className="lift shrink-0 rounded-sm border border-line bg-elevated px-3 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void testarGemini()}
-                  disabled={
-                    testando ||
-                    (geminiInput.trim().length === 0 && !settings?.hasGeminiKey)
-                  }
-                  className="lift shrink-0 rounded-sm border border-line bg-elevated px-3 py-1.5 text-[13px] font-medium text-ink disabled:opacity-40"
-                >
-                  {testando ? "Testando..." : "Testar"}
-                </button>
-              </div>
-              {teste && (
-                <p
-                  className={[
-                    "mt-2 select-text text-[11px] leading-relaxed",
-                    teste.tipo === "ok" ? "text-ink-2" : "text-danger",
-                  ].join(" ")}
-                >
-                  {teste.texto}
-                </p>
-              )}
+              {/* O mesmo campo da tela de boas-vindas. Chave nova refaz o plano:
+                  o usuario acabou de habilitar a IA, como na da Anthropic. */}
+              <ChaveDoGemini
+                settings={settings}
+                onSettings={setSettings}
+                onModelos={setModelos}
+                aoSalvar={() => void analyze()}
+              />
 
               <label className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">
                 Modelo do Gemini

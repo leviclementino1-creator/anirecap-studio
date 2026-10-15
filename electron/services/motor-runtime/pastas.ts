@@ -135,6 +135,12 @@ export function caminhosDoRuntime(pasta: string) {
     sitePackages: join(pasta, 'venv', 'Lib', 'site-packages'),
     baixando: join(pasta, 'baixando'),
     uvCache: join(pasta, 'uv-cache'),
+    /**
+     * HF_HOME do motor no runtime: os modelos da 1a analise (~1,1 GB) ficam
+     * AQUI, e nao no %USERPROFILE%\.cache\huggingface: entram no disco
+     * escolhido, no Remover e no desinstalador.
+     */
+    modelos: join(pasta, 'modelos'),
     requisitos: join(pasta, 'req', 'pacotes.txt'),
     log: join(pasta, 'logs', 'instalar.log'),
     estado: join(pasta, 'estado.json'),

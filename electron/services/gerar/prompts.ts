@@ -6,7 +6,7 @@ import {
   EVENTOS_MIN,
   faixaDePalavras,
   formatarTempo,
-  FRASES_POR_PAPEL,
+  frasesPorPapel,
   PAPEIS,
   palavrasDoRoteiro,
   type AlvoSec,
@@ -295,19 +295,25 @@ const PAPEL_NO_PROMPT: Record<PapelDaSecao, string> = {
   fechamento: 'fechamento',
 }
 
-/** Total de frases pedidas para o alvo (soma de FRASES_POR_PAPEL). */
-export function frasesDoAlvo(alvoSec: AlvoSec): number {
-  return PAPEIS.reduce((n, p) => n + FRASES_POR_PAPEL[alvoSec][p], 0)
+/**
+ * Total de frases pedidas para o alvo no ritmo da voz (soma de frasesPorPapel).
+ * `ritmo` = palavras por segundo do take final (shared/ritmo.ts): a voz nativa
+ * a 1,2 fala ~3,8 p/s, e o mesmo minuto pede mais frases.
+ */
+export function frasesDoAlvo(alvoSec: AlvoSec, ritmo?: number): number {
+  const porPapel = frasesPorPapel(alvoSec, ritmo)
+  return PAPEIS.reduce((n, p) => n + porPapel[p], 0)
 }
 
-function linhaDoTamanho(alvoSec: AlvoSec): string {
-  const f = faixaDePalavras(alvoSec)
-  const frases = frasesDoAlvo(alvoSec)
+function linhaDoTamanho(alvoSec: AlvoSec, ritmo?: number): string {
+  const f = faixaDePalavras(alvoSec, ritmo)
+  const frases = frasesDoAlvo(alvoSec, ritmo)
   return `DURAÇÃO DO SHORT: ${alvoSec} s → ALVO de ${f.alvo} palavras faladas no total (mínimo ${f.min}, máximo ${f.max}), em umas ${frases} frases de ~${Math.round(f.alvo / frases)} palavras. Você não precisa contar palavras: siga o NÚMERO DE FRASES da divisão abaixo.`
 }
 
-function linhaDaDivisao(alvoSec: AlvoSec): string {
-  const partes = PAPEIS.map((p) => `${PAPEL_NO_PROMPT[p]} ${FRASES_POR_PAPEL[alvoSec][p]}`)
+function linhaDaDivisao(alvoSec: AlvoSec, ritmo?: number): string {
+  const porPapel = frasesPorPapel(alvoSec, ritmo)
+  const partes = PAPEIS.map((p) => `${PAPEL_NO_PROMPT[p]} ${porPapel[p]}`)
   return `DIVISÃO (frases por seção): ${partes.join(', ')}. Sem virada clara, as frases dela vão para o desenvolvimento.`
 }
 
@@ -397,6 +403,8 @@ export interface EntradaDoRoteiro {
   indice: IndiceDoPrompt
   eventos: readonly Evento[]
   alvoSec: AlvoSec
+  /** Palavras por segundo da voz que vai narrar (ritmoDoRascunho). Ausente = o 2,7 de antes. */
+  ritmo?: number
   elenco: Elenco
   instrucao?: string | null
   /** A primeira frase das versoes anteriores: a versao nova tem que sair diferente. */
@@ -411,8 +419,8 @@ export interface EntradaDoRoteiro {
 export function promptDoRoteiro(e: EntradaDoRoteiro): string {
   const linhas = [
     `EPISÓDIO: ${tituloDoEpisodio(e.indice)}`,
-    linhaDoTamanho(e.alvoSec),
-    linhaDaDivisao(e.alvoSec),
+    linhaDoTamanho(e.alvoSec, e.ritmo),
+    linhaDaDivisao(e.alvoSec, e.ritmo),
     `ELENCO (grafia da legenda): ${linhaDoElenco(e.elenco)}`,
     '',
     'ACONTECIMENTOS (id [início-fim] peso | personagens: resumo; embaixo, quem está em cena e as falas do trecho):',
@@ -444,6 +452,8 @@ export interface EntradaDaSecao {
   indice: IndiceDoPrompt
   eventos: readonly Evento[]
   alvoSec: AlvoSec
+  /** Palavras por segundo da voz que vai narrar. Ausente = o 2,7 de antes. */
+  ritmo?: number
   elenco: Elenco
   roteiro: Pick<Roteiro, 'secoes'>
   secaoId: string
@@ -466,7 +476,7 @@ export function promptDaSecao(e: EntradaDaSecao): string {
   const frases = Math.max(1, Math.round(e.palavrasDaSecao / 9.5))
   const linhas = [
     `EPISÓDIO: ${tituloDoEpisodio(e.indice)}`,
-    linhaDoTamanho(e.alvoSec),
+    linhaDoTamanho(e.alvoSec, e.ritmo),
     `ELENCO (grafia da legenda): ${linhaDoElenco(e.elenco)}`,
     '',
     'ACONTECIMENTOS (id [início-fim] peso | personagens: resumo; embaixo, quem está em cena e as falas do trecho):',

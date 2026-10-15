@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import {
   DISCO_POR_VARIANTE,
@@ -29,7 +29,7 @@ import {
   pastaPadraoDoRuntime,
   usaRuntime,
 } from './pastas'
-import { gravarEstadoGravado, instalarRuntime, lerEstadoGravado, planoDaInstalacao, travaDeOutro } from './protocolo'
+import { gravarEstadoGravado, instalarRuntime, lerEstadoGravado, planoDaInstalacao, reconferirCuda, travaDeOutro } from './protocolo'
 import { matarTodos } from './uv'
 
 export { configurarMotorRuntime, usaRuntime } from './pastas'
@@ -73,6 +73,31 @@ export function definirAoMudarORuntime(fn: () => void): void {
   aoMudar = fn
 }
 
+/**
+ * Ha um processo do motor vivo (a analise do motor.ts, um lote de rostos)?
+ * Ligado pelo ./ipc.ts. Instalar por cima (Reinstalar, Recomecar, Atualizar)
+ * mexe no venv que esse python esta usando: recusa antes de comecar.
+ */
+let motorEmUso: (() => boolean) | null = null
+
+export function definirMotorEmUso(fn: () => boolean): void {
+  motorEmUso = fn
+}
+
+const FRASE_DO_MOTOR_EM_USO = 'O motor esta em uso. Espere a analise terminar.'
+
+/**
+ * O Remover apagando a pasta antiga por tras. O app espera ele ao fechar
+ * (esperarRemocao, no before-quit): cortado no meio, sobravam ate 5 GB num
+ * motor-runtime.apagar-* que so o app limpava.
+ */
+let apagando: Promise<void> | null = null
+
+/** null = nada a esperar. */
+export function remocaoEmAndamento(): Promise<void> | null {
+  return apagando
+}
+
 /** A instalacao em andamento NESTE processo. */
 interface Execucao {
   variante: VarianteDoMotor
@@ -99,8 +124,10 @@ export interface BackendDoRuntime {
   python: string
   /** resources/motor (cwd do processo: `-m app.headless` acha o pacote app/ aqui). */
   cwd: string
-  /** false = CUDA_VISIBLE_DEVICES=-1 (ambienteDoRuntime). */
+  /** false = ANIRECAP_MOTOR_SEM_CUDA=1 (ambienteDoRuntime): o torch na CPU, o NVENC continua. */
   cudaOk: boolean
+  /** HF_HOME: os modelos da 1a analise dentro do runtime. */
+  modelos: string
 }
 
 /**
@@ -129,7 +156,7 @@ export function backendDoRuntime(): BackendDoRuntime | { erro: string; fase: Fas
   if (impressaoDoLock(lock, gravada.variante) !== gravada.impressao) {
     return { erro: 'O motor de personagens precisa de uma atualizacao.', fase: 'desatualizado' }
   }
-  return { python: c.pythonDoVenv, cwd: pastaDoCodigoDoMotor(), cudaOk: gravada.cudaOk }
+  return { python: c.pythonDoVenv, cwd: pastaDoCodigoDoMotor(), cudaOk: gravada.cudaOk, modelos: c.modelos }
 }
 
 // ------------------------------------------------------------------ estado
@@ -157,6 +184,7 @@ export async function estadoDoMotorRuntime(): Promise<EstadoDoMotorRuntime> {
     mudancas: null,
     aviso,
     log: existsSync(c.log) ? c.log : null,
+    ...(apagando ? { apagando: true } : {}),
   }
   if (!usaRuntime()) return base
 
@@ -201,8 +229,10 @@ export async function estadoDoMotorRuntime(): Promise<EstadoDoMotorRuntime> {
     }
   }
   if (!gravada || !existsSync(c.pythonDoVenv)) return { ...comum, fase: 'ausente', erro: ultimoErro }
-  if (!mudancas) return { ...comum, fase: 'pronto', bytesParaBaixar: 0, precisaDeLivre: 0, erro: null }
-  return { ...comum, fase: 'desatualizado', mudancas, erro: ultimoErro }
+  // cu128 que nao rodou a conta na GPU: a tela diz "CPU" em vez do nome da placa.
+  const cudaOk = gravada.variante === 'cu128' ? gravada.cudaOk : null
+  if (!mudancas) return { ...comum, fase: 'pronto', bytesParaBaixar: 0, precisaDeLivre: 0, erro: null, cudaOk }
+  return { ...comum, fase: 'desatualizado', mudancas, erro: ultimoErro, cudaOk }
 }
 
 /** Numero de ordem dos estados enviados: um montado antes nao chega depois de um mais novo. */
@@ -329,6 +359,8 @@ export async function instalarMotorRuntime(pedido: PedidoDeInstalacao): Promise<
   if (encerrando) throw new Error('O app esta fechando.')
   if (execucao) throw new Error('O motor ja esta sendo instalado.')
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error(FRASE_DO_ERRO.sistema)
+  // O motor so roda com o runtime pronto: com ele vivo, qualquer instalacao mexe no venv dele.
+  if (motorEmUso?.()) throw new Error(FRASE_DO_MOTOR_EM_USO)
   const lock = lerLock()
   const c = caminhosDoRuntime(pastaDoRuntime().pasta)
   const outro = travaDeOutro(c)
@@ -406,7 +438,17 @@ export async function removerMotorRuntime(): Promise<EstadoDoMotorRuntime> {
     } catch {
       throw new Error('O motor esta em uso. Espere a analise terminar e tente de novo.')
     }
-    void rm(lixo, { recursive: true, force: true }).catch((e: unknown) => console.error('[motor-runtime] remover:', e))
+    // Por tras, mas o app espera ao fechar (remocaoEmAndamento, no before-quit do main).
+    const anterior = apagando
+    const esta: Promise<void> = (async () => {
+      await anterior?.catch(() => {})
+      await rm(lixo, { recursive: true, force: true }).catch((e: unknown) => console.error('[motor-runtime] remover:', e))
+    })().finally(() => {
+      if (apagando === esta) apagando = null
+      guardado = null
+      emitir(true)
+    })
+    apagando = esta
   }
   ultimoErro = null
   aviso = null
@@ -444,12 +486,14 @@ export function iniciarMotorRuntime(): void {
   } catch {
     // pasta ainda nao existe
   }
+  // A conta na GPU de um cu128 que rodava na CPU, refeita quando o driver muda (dev tambem: so le e mede).
+  setTimeout(() => void reconferirCudaSeODriverMudou(), 6000)
   // A atualizacao sozinha so no app instalado: no dev (ANIRECAP_MOTOR_RUNTIME=1) quem testa pede.
   if (!configDoRuntime().empacotado) return
   setTimeout(() => {
     void (async () => {
       try {
-        if (execucao || encerrando) return
+        if (execucao || encerrando || motorEmUso?.()) return
         const e = await estadoDoMotorRuntime()
         if (e.fase !== 'desatualizado' || !e.mudancas?.automatica || !e.variante) return
         comecar(e.variante, { automatica: true, mudancas: e.mudancas })
@@ -458,6 +502,46 @@ export function iniciarMotorRuntime(): void {
       }
     })()
   }, 10_000)
+}
+
+/**
+ * cu128 instalado com cudaOk false (placa sem kernel, driver velho): a tela
+ * pedia para atualizar o driver, mas o cudaOk ficava congelado no
+ * impressao.json, e so o Reinstalar (3 GB) reavaliava. Com OUTRO driver que o
+ * da medida, refaz so a conta na GPU (~10 s, sem rede) e regrava o cudaOk.
+ * Nunca lanca; sem motor vivo nem instalacao.
+ */
+export async function reconferirCudaSeODriverMudou(): Promise<boolean | null> {
+  try {
+    if (!usaRuntime() || execucao || encerrando || motorEmUso?.()) return null
+    const { pasta } = pastaDoRuntime()
+    const c = caminhosDoRuntime(pasta)
+    if (existsSync(c.estado)) return null
+    const gravada = lerImpressaoGravada(c.impressao)
+    if (!gravada || gravada.variante !== 'cu128' || gravada.cudaOk) return null
+    const gpu = await detectarGpu()
+    if (!gpu.driver || gpu.driver === gravada.driver) return null
+    const medida = await reconferirCuda(pasta, new AbortController().signal)
+    if (!medida) return null
+    // Pode ter comecado uma instalacao (ou o Remover) enquanto media.
+    if (execucao || !existsSync(c.impressao)) return null
+    const nova = { ...gravada, cudaOk: medida.cudaOk, gpu: medida.gpu ?? gravada.gpu, driver: gpu.driver }
+    const tmp = `${c.impressao}.tmp`
+    await writeFile(tmp, `${JSON.stringify(nova, null, 2)}\n`, 'utf8')
+    await rename(tmp, c.impressao)
+    console.log(`[motor-runtime] driver ${gravada.driver ?? '?'} -> ${gpu.driver}: cudaOk ${medida.cudaOk}`)
+    guardado = null
+    try {
+      aoMudar?.()
+    } catch {
+      // idem
+    }
+    emitir(true)
+    return medida.cudaOk
+  } catch (e) {
+    console.error('[motor-runtime] reconferir a GPU:', e)
+    return null
+  }
 }
 
 /** before-quit: mata o uv e a descarga e grava a retomada. Sincrono, nunca lanca. */

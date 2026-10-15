@@ -25,6 +25,27 @@ export function ascii(texto: string): string {
     .replace(/→/g, '->')
 }
 
+/**
+ * O ERRO do motor que tem frase clara (o `failed`, nao o andamento). null = o
+ * de sempre ("O motor parou com erro: ...").
+ *
+ * Os modelos (CLIP, YOLO de rosto, CCIP) baixam do HuggingFace na 1a analise.
+ * Sem rede, o YOLO falha e o detector cai na reserva do upstream, o
+ * cv2.CascadeClassifier, que o OpenCV 5 do lock nem tem: o erro saia como
+ * "module 'cv2' has no attribute 'CascadeClassifier'".
+ */
+export function fraseDoErroDoMotor(mensagem: string, detalhe = ''): string | null {
+  const tudo = `${mensagem}\n${detalhe}`
+  const rede =
+    /LocalEntryNotFound|huggingface\.co|hf_hub|ConnectTimeout|ConnectionError|NameResolution|getaddrinfo|Max retries|offline mode|Cannot reach|Network is unreachable/i
+  if (/CascadeClassifier/.test(tudo) || (/hf_hub_download|huggingface/i.test(tudo) && rede.test(tudo))) {
+    return rede.test(tudo)
+      ? 'Sem internet para baixar os modelos do motor (~1 GB, so na 1a vez). Confira a conexao e tente de novo.'
+      : 'O detector de rostos do motor nao carregou. Veja o log da analise.'
+  }
+  return null
+}
+
 /** Uma regra: o padrao (sobre o texto ja em ASCII) e a frase da tela. */
 type Regra = [RegExp, (m: RegExpExecArray) => string]
 

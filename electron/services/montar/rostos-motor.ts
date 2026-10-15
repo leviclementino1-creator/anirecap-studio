@@ -10,6 +10,7 @@ import { ffmpegPath } from '../ffmpeg-path'
 import { configDoMotor, pastaDeDadosDoMotor } from '../motor'
 import { focoNoQuadro, focosDosPedacos, instantesDoTrecho } from './foco'
 import { chaveDoPedaco } from './projeto'
+import { pythonDoMotor } from '../python-do-motor'
 
 /**
  * O ROSTO PELO MOTOR (Edicao rapida, agente B, 14/10).
@@ -454,7 +455,9 @@ export function rodarMotorDeRostos(
     env[chavePath] = [env[chavePath], dirname(ffmpegPath)].filter(Boolean).join(delimiter)
 
     try {
-      filho = spawn(b.python, ['-m', 'app.headless', 'rostos'], { cwd: b.cwd, windowsHide: true, env })
+      // Direto no Python base, sem o lancador do venv (python-do-motor.ts).
+      const py = pythonDoMotor(b.python)
+      filho = spawn(py.cmd, ['-m', 'app.headless', 'rostos'], { cwd: b.cwd, windowsHide: true, env: { ...env, ...py.env } })
     } catch (e) {
       resolver({ ...resposta, falha: e instanceof Error ? e.message : String(e), ms: Date.now() - inicio })
       return

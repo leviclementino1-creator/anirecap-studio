@@ -21,6 +21,7 @@ import { fotosDoElenco, idDaPastaDeRefs, reservarElenco, type ReservaDoElenco } 
 import { ffmpegPath } from './ffmpeg-path'
 import { ascii, fraseDoMotor } from './frase-do-motor'
 import { pastaDaBibliotecaStudio, pastaDeDocumentos } from './settings'
+import { pythonDoMotor } from './python-do-motor'
 
 /**
  * O MOTOR: corta o episodio em cenas e reconhece os personagens pelo rosto,
@@ -90,6 +91,8 @@ interface Backend {
   cmd: string
   args: string[]
   cwd: string
+  /** Variaveis a mais para o processo (o __PYVENV_LAUNCHER__ do motor do Studio). */
+  env?: Record<string, string>
 }
 
 /**
@@ -116,7 +119,9 @@ function backendDoStudio(): Backend | { erro: string } {
   if (!existsSync(python)) {
     return { erro: `O motor de personagens nao esta instalado: falta o Python dele em ${python}.` }
   }
-  return { cmd: python, args: ['-m', 'app.headless'], cwd: pasta }
+  // Direto no Python base, sem o lancador do venv (python-do-motor.ts).
+  const { cmd, env } = pythonDoMotor(python)
+  return { cmd, args: ['-m', 'app.headless'], cwd: pasta, env }
 }
 
 /**
@@ -285,7 +290,7 @@ function rodarCurto(backend: Backend, motor: Motor, args: string[], limiteMs: nu
       filho = spawn(backend.cmd, [...backend.args, ...args], {
         cwd: backend.cwd,
         windowsHide: true,
-        env: ambiente(motor),
+        env: { ...ambiente(motor), ...backend.env },
       })
     } catch (e) {
       resolver({ eventos, stderr, falha: e instanceof Error ? e.message : String(e) })
@@ -736,7 +741,7 @@ function iniciar(job: Job, repeticao: boolean): void {
     filho = spawn(backend.cmd, [...backend.args, 'run'], {
       cwd: backend.cwd,
       windowsHide: true,
-      env: ambiente(job.motor),
+      env: { ...ambiente(job.motor), ...backend.env },
     })
   } catch (e) {
     entregar(job, falhou(job, `Nao deu para iniciar o motor: ${e instanceof Error ? e.message : String(e)}`))

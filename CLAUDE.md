@@ -43,7 +43,12 @@ leitura; sem repetir, histórico em `<userData>/som` com UMA entrada por
 projeto, gravada ao salvar/renderizar, nunca ao aplicar) com ducking pelas
 palavras igual no preview e no render, o rosto pelo motor (`motor/app/rostos.py`,
 modo `rostos` em lote; sem motor, o detector antigo; no editor o recorte 9:16
-do clipe é refeito na hora) e a legenda no estilo salvo dele. O projeto montado
+do clipe é refeito na hora), a legenda no estilo salvo dele e (15/10) a **cor**:
+uma camada de ajuste do Dangai no vídeo inteiro (`papel: 'cor'` e `corOriginal`;
+rodar de novo troca só ela e só se ele não mexeu: valores, intensidade, fade,
+corte, cópia ou pedaços ficam, e o resumo diz "mantida") com o look "Anime vivo" (vibrance +28, contraste +10, realces −5,
+nitidez 10, medido nos quadros do S4-37) ou o preset de cor escolhido em
+Configurações ("Cor da Edicao rapida"). O projeto montado
 já nasce com o estilo salvo e com `studio.secoes`. A barra do editor se mede e
 aperta (`aperto-da-barra.ts`) até caber na janela mínima. Alvos medidos: voz
 −14 LUFS, whoosh ~14 LU e impacto ~13 LU abaixo (e ≥ ~12 LU abaixo da voz ali),
@@ -99,8 +104,8 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto), `loudness.ts` (BS.1770 em JS) e `descoberta.ts` (Reconhecer na mao: protocolo cru do motor, decisao, juntar/ignorar, `paraOMotor`) |
-| `electron/services/descoberta/` | o main do Reconhecer na mao: uma rodada por vez segurando o motor (`index.ts`), recortes copiados por job e elenco (`recortes.ts`), o indice pelo caminho do fim de corte (`aplicar.ts`), o erro do motor em frase curta (`erro.ts`) e o aviso "Confira" quando o reconhecimento seguinte dependeu das fotos do batismo (`refs.ts`); a tela e `ReconhecerNaMao.tsx`, `GrupoDeRostos.tsx`, `EntradaDaDescoberta.tsx` e `src/store/gerar-descoberta.ts` |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto, camada de cor), `loudness.ts` (BS.1770 em JS) e `descoberta.ts` (Reconhecer na mao: protocolo cru do motor, decisao, juntar/ignorar, `paraOMotor`) |
+| `electron/services/descoberta/` | o main do Reconhecer na mao: uma rodada por vez segurando o motor (`index.ts`), recortes copiados por job e elenco (`recortes.ts`), o indice pelo caminho do fim de corte (`aplicar.ts`), o erro do motor em frase curta (`erro.ts`) e o aviso "Confira" quando o reconhecimento seguinte dependeu das fotos do batismo (`refs.ts`) ou quando um reconhecido so tinha UMA arte do elenco, o retrato do MAL e o da AniList em dois recortes (`arte-unica.ts`, ORB do OpenCV em WASM, depois do `done`); a tela e `ReconhecerNaMao.tsx`, `GrupoDeRostos.tsx`, `EntradaDaDescoberta.tsx` e `src/store/gerar-descoberta.ts` |
 | `electron/services/som/` | a Edição rápida no main: `medir.ts` (loudness com cache), `musicas.ts` (pasta e histórico), `planejar.ts` (SFX e música) e `mix.ts` (envelope e limitador do render) |
 | `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 (índice, `falas.ts`, `corte-fundo.ts`) e passo 2 (prompts, cache de IA, rascunho, `religar.ts` + `prompt-religar.ts`) |
 | `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`; `edicao-rapida.ts` e `rostos-motor.ts` para a Edição rápida) |

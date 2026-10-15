@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Columns2, Lock, LockOpen, Magnet, Minus, Plus, SlidersHorizontal, SquareDashedMousePointer, Volume2, X } from 'lucide-react'
 import { classifyFile, isVisual } from '@shared/channels'
 import { AJUSTE_DE_COR_PADRAO, SFX_GAIN_MAX, SFX_GAIN_MIN, VIDEO_FPS, duracaoDoTrecho } from '@shared/contract'
+import { rotuloDaSobreposicao } from '@shared/edicao-rapida'
 import { clipesEscolhidos, idsEscolhidos, useProject, formatTimecode } from '@/store/project'
 import { alturaDaFaixa, useAlturas, useFerramenta, useIma, usePresetsDeVolume } from '@/store/layout'
 import { useShallow } from 'zustand/react/shallow'
@@ -876,7 +877,8 @@ export function Timeline() {
                 faixa: o.faixa,
                 at: o.at,
                 toca: o.usarSec ?? o.durationSec - o.inicioSec,
-                nome: o.fileName,
+                // A camada de cor da Edicao rapida mexida: "Cor (editada)".
+                nome: rotuloDaSobreposicao(o),
                 imagem: o.tipo === 'image' ? o.url : undefined,
                 ajuste: o.tipo === 'ajuste',
                 fadeInSec: o.fadeInSec ?? 0,

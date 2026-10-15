@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { ajusteDeCorSchema, type AjusteDeCor } from '@shared/contract'
+import { presetsDeCorConferidos } from '@shared/edicao-rapida'
 import { exportarPreset, importarPreset, nomeLivre } from './arquivo-de-preset'
 
 /**
@@ -12,18 +13,17 @@ export interface PresetDeCor {
   cor: AjusteDeCor
 }
 
-function conferir(bruto: readonly Record<string, unknown>[]): PresetDeCor[] {
-  const ok: PresetDeCor[] = []
-  for (const r of bruto) {
-    if (typeof r['nome'] !== 'string' || !r['nome'].trim()) continue
-    const cor = ajusteDeCorSchema.safeParse(r['cor'])
-    if (cor.success) ok.push({ nome: r['nome'].trim().slice(0, 40), cor: cor.data })
-  }
-  return ok
-}
+// A mesma conferencia que a Edicao rapida usa para achar o look escolhido.
+const conferir = presetsDeCorConferidos
 
 export const usePresetsDeCor = create<{
   lista: PresetDeCor[]
+  /**
+   * A lista ja veio das settings. Antes disso ela e vazia, e quem confere "o
+   * preset escolhido sumiu" (as Configuracoes da Edicao rapida) acusaria um
+   * apagado que nao foi.
+   */
+  carregado: boolean
   carregar: () => Promise<void>
   salvar: (nome: string, cor: AjusteDeCor) => Promise<void>
   remover: (nome: string) => Promise<void>
@@ -37,9 +37,10 @@ export const usePresetsDeCor = create<{
   }
   return {
     lista: [],
+    carregado: false,
     carregar: async () => {
       const r = await window.dangai.getSettings()
-      if (r.ok) set({ lista: conferir(r.value.presetsDeCor) })
+      if (r.ok) set({ lista: conferir(r.value.presetsDeCor), carregado: true })
     },
     // Mesmo nome substitui: e o jeito de atualizar um preset que ele refinou.
     salvar: (nome, cor) =>

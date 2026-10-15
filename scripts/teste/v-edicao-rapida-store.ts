@@ -268,11 +268,11 @@ async function main(): Promise<void> {
   // ----------------------------------------- 5b. nada muda = nenhum passo
   secao('5b. Rodar de novo sem mudar nada')
   await esperar(500)
-  await useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: true })
+  await useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: true, cor: false })
   await esperar(500)
   const passoAntes = podeDesfazer()
   const fotoAntes = useProject.getState()
-  const r5b = await useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: true })
+  const r5b = await useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: true, cor: false })
   await esperar(500)
   const s5b = useProject.getState()
   confere(r5b?.aplicou === false && s5b.images === fotoAntes.images && s5b.captionShadow === fotoAntes.captionShadow, 'rosto e legenda iguais: o patch sai vazio e nada muda')
@@ -303,7 +303,7 @@ async function main(): Promise<void> {
   secao('6. Foco mexido a mao enquanto a Edicao rapida roda')
   pararUndo()
   carregar()
-  const rodando = useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: false })
+  const rodando = useProject.getState().edicaoRapida({ sfx: false, musica: false, rosto: true, legenda: false, cor: false })
   useProject.getState().setImageFocus('img-1', 0.1, 0.9)
   await rodando
   const s6 = useProject.getState()
@@ -332,7 +332,7 @@ async function main(): Promise<void> {
     chamadas.filter((c) => c.metodo === 'saveSettings' && (c.args[0] as { captionStyle?: unknown })?.captionStyle !== undefined).map((c) => c.args[0] as { captionStyle?: { color?: string } })
   const g0 = gravouEstilo().length
   const a8 = useProject.getState()
-  await a8.edicaoRapida({ sfx: false, musica: false, rosto: false, legenda: true })
+  await a8.edicaoRapida({ sfx: false, musica: false, rosto: false, legenda: true, cor: false })
   confere(useProject.getState().captionColor === ESTILO.color, 'a Edicao rapida pos o estilo salvo')
   await esperar(500)
   desfazer()

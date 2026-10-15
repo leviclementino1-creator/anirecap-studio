@@ -1,12 +1,16 @@
 import { z } from 'zod'
 import {
+  ajusteDeCorSchema,
   duckingSchema,
   duracaoDoTrecho,
   DUCKING_PADRAO,
   FORMATOS,
+  MOTION_CURVE_DEFAULT,
+  type AjusteDeCor,
   type CaptionStyle,
   type Ducking,
   type PapelDaTrilha,
+  type SobreposicaoSalva,
   type TrechoDeAudioSalvo,
 } from './contract'
 // So TIPOS daqui para baixo: cenas.ts importa VALORES deste arquivo, e
@@ -20,7 +24,8 @@ import type { TakeDaVoz } from './voz'
 /**
  * A EDICAO RAPIDA (pedido do Levi em 14/10): um botao que faz sozinho o que
  * hoje e manual -- efeitos sonoros no estilo dele, musica de fundo com ducking,
- * enquadramento no rosto pelo detector do motor e a legenda com o estilo salvo.
+ * enquadramento no rosto pelo detector do motor, a legenda com o estilo salvo
+ * e (15/10) a COR: uma camada de ajuste no video inteiro com o look dele.
  * Fica no editor (RenderBar) e vem ligada por padrao no "Abrir no editor" do
  * passo 4, para o projeto ja chegar pronto. Tudo continua editavel, e no editor
  * a Edicao rapida inteira e UM passo de Ctrl+Z.
@@ -60,6 +65,12 @@ export const configDaEdicaoRapidaSchema = z.object({
   rosto: z.boolean().catch(true).default(true),
   /** A legenda com o estilo salvo dele (settings.captionStyle). */
   legenda: z.boolean().catch(true).default(true),
+  /**
+   * A cor: uma camada de ajuste no video inteiro, com o "Anime vivo" ou o
+   * preset de cor escolhido (preferencias.corPreset). Ligada por padrao: o
+   * settings.json de antes (sem o campo) passa a ter a cor.
+   */
+  cor: z.boolean().catch(true).default(true),
 })
 export type ConfigDaEdicaoRapida = z.infer<typeof configDaEdicaoRapidaSchema>
 
@@ -68,6 +79,7 @@ export const CONFIG_DA_EDICAO_RAPIDA_PADRAO: ConfigDaEdicaoRapida = {
   musica: true,
   rosto: true,
   legenda: true,
+  cor: true,
 }
 
 /**
@@ -79,12 +91,20 @@ export const preferenciasDaEdicaoRapidaSchema = z.object({
   /** A opcao "Edicao rapida" do "Abrir no editor" (passo 4) nasce ligada. */
   aoAbrirNoEditor: z.boolean().catch(true).default(true),
   config: configDaEdicaoRapidaSchema.catch(CONFIG_DA_EDICAO_RAPIDA_PADRAO).default(CONFIG_DA_EDICAO_RAPIDA_PADRAO),
+  /**
+   * O look da parte "cor": null = o "Anime vivo" (ANIME_VIVO); um nome = o
+   * preset de cor salvo dele com esse nome (settings.presetsDeCor, os mesmos
+   * do inspetor da camada de ajuste). Preset que sumiu: entra o Anime vivo,
+   * e o resumo diz (lookDaCor).
+   */
+  corPreset: z.string().trim().min(1).max(40).nullable().catch(null).default(null),
 })
 export type PreferenciasDaEdicaoRapida = z.infer<typeof preferenciasDaEdicaoRapidaSchema>
 
 export const PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO: PreferenciasDaEdicaoRapida = {
   aoAbrirNoEditor: true,
   config: CONFIG_DA_EDICAO_RAPIDA_PADRAO,
+  corPreset: null,
 }
 
 /**
@@ -1194,6 +1214,256 @@ export function aplicarEstiloNoProjeto(file: ProjectFile, estilo: CaptionStyle):
   }
 }
 
+// ======================================================================== cor
+
+/**
+ * "ANIME VIVO", o look padrao da parte "cor" (pedido do Levi em 15/10: "com
+ * VIBRANCE mais alta"). Vibrance e o que puxa: satura mais o que tem pouca cor
+ * e quase nao mexe no que ja e saturado; contraste leve, os realces um pouco
+ * para baixo (o contraste empurra o claro para cima) e um toque de nitidez.
+ * Na escala do inspetor: Vibrance +28, Contraste +10, Realces -5, Nitidez 10.
+ *
+ * MEDIDO nos quadros do Dr. Stone S4-37 (38 quadros, um a cada 8 planos:
+ * pele, ceu, verde, explosao amarela, espaco escuro), com o filtro do
+ * src/remotion/Ajuste.tsx simulado em 8 bits sRGB primitiva por primitiva:
+ * croma x1,25 em media; pele S x1,24 (pior quadro x1,30, sem ficar laranja);
+ * ceu S x1,18; canal novo em 255 em 0,07% dos pixels, todo da nitidez na
+ * borda do traco (sem ela, 0,01%); banding nenhum (rampa suave de pele, ceu,
+ * verde e sombra: degrau maximo de 3 codigos e nenhum trecho plano novo).
+ * Vibrance +30 ja deixava a pele x1,28; nitidez 25 dava halo em 0,6%.
+ * Conferido no app (preview e MP4 do render, com e sem a camada): croma
+ * x1,22 a x1,31 e no maximo 0,28% de canal novo em 255.
+ */
+export const NOME_DO_ANIME_VIVO = 'Anime vivo'
+export const ANIME_VIVO: AjusteDeCor = ajusteDeCorSchema.parse({ vibrance: 0.28, contraste: 0.1, realces: -0.05, nitidez: 0.1 })
+
+/** Um preset de cor salvo (o mesmo PresetDeCor de src/store/presets-de-cor.ts). */
+export interface PresetDeCorSalvo {
+  nome: string
+  cor: AjusteDeCor
+}
+
+/**
+ * Os presets de cor CRUS das settings (presetsDeCor), conferidos: nome nao
+ * vazio (ate 40) e cor pelo ajusteDeCorSchema. O que nao se le fica de fora.
+ */
+export function presetsDeCorConferidos(bruto: readonly unknown[]): PresetDeCorSalvo[] {
+  const ok: PresetDeCorSalvo[] = []
+  for (const r of bruto) {
+    if (!r || typeof r !== 'object') continue
+    const nome = (r as Record<string, unknown>)['nome']
+    if (typeof nome !== 'string' || !nome.trim()) continue
+    const cor = ajusteDeCorSchema.safeParse((r as Record<string, unknown>)['cor'])
+    if (cor.success) ok.push({ nome: nome.trim().slice(0, 40), cor: cor.data })
+  }
+  return ok
+}
+
+/**
+ * O look da parte "cor": o preset salvo pelo nome, ou o Anime vivo (null, ou o
+ * preset sumiu). `sumiu` = o nome do preset escolhido que nao existe mais: o
+ * resumo diz na linha da Cor (um aviso solto ficava escondido atras do "+1").
+ */
+export function lookDaCor(
+  corPreset: string | null,
+  presets: readonly PresetDeCorSalvo[],
+): { nome: string; cor: AjusteDeCor; sumiu: string | null } {
+  if (corPreset === null) return { nome: NOME_DO_ANIME_VIVO, cor: ANIME_VIVO, sumiu: null }
+  const achado = presets.find((p) => p.nome === corPreset)
+  if (achado) return { nome: achado.nome, cor: achado.cor, sumiu: null }
+  return { nome: NOME_DO_ANIME_VIVO, cor: ANIME_VIVO, sumiu: corPreset }
+}
+
+type ClipeNaFaixa = Pick<SobreposicaoSalva, 'faixa' | 'at' | 'durationSec' | 'inicioSec' | 'usarSec' | 'papel'>
+
+/**
+ * A faixa de video da camada de cor. Ela cobre o video INTEIRO, entao a faixa
+ * precisa estar livre de clipe dele em todo [0, duracao]:
+ * - a faixa em que a camada da Edicao rapida ja estava (ele pode ter arrastado
+ *   para baixo ou para cima dos clipes dele), se continua livre;
+ * - senao a MAIS BAIXA livre e nao muda: a camada corrige o que esta embaixo
+ *   (cenas e faixas de numero menor), e quanto mais baixa, menos clipe dele
+ *   (meme, texto) ela tinge.
+ */
+export function faixaDaCamadaDeCor(
+  sobreposicoes: readonly ClipeNaFaixa[],
+  duracaoSec: number,
+  mudas: readonly number[] = [],
+): number {
+  const dele = sobreposicoes.filter((o) => o.papel !== 'cor')
+  const ocupada = (f: number): boolean =>
+    dele.some((o) => o.faixa === f && o.at < duracaoSec - 1e-3 && o.at + (o.usarSec ?? o.durationSec - o.inicioSec) > 1e-3)
+  const antes = sobreposicoes.filter((o) => o.papel === 'cor').map((o) => o.faixa)
+  if (antes.length > 0) {
+    const faixa = maisComum(antes)
+    if (!ocupada(faixa)) return faixa
+  }
+  let f = 0
+  while (ocupada(f) || mudas.includes(f)) f++
+  return f
+}
+
+/**
+ * A camada de ajuste da Edicao rapida: a MESMA do "Camada de ajuste" do
+ * editor (addCamadaDeAjuste), cobrindo o video inteiro, sem fade, com
+ * `papel: 'cor'` e o nome do look no clipe ("Cor: Anime vivo"). Ele edita
+ * depois no inspetor como qualquer outra. Sem `url` (quem poe no store poe
+ * url vazia, como a camada do editor).
+ */
+export function camadaDeCor(e: { cor: AjusteDeCor; nome: string; duracaoSec: number; faixa: number; id: string }): SobreposicaoSalva {
+  const usar = Math.max(arredondar(e.duracaoSec), 0.2)
+  return {
+    id: e.id,
+    path: '',
+    fileName: `Cor: ${e.nome}`.slice(0, 60),
+    tipo: 'ajuste',
+    faixa: e.faixa,
+    at: 0,
+    // O "arquivo" da camada de ajuste e livre: 3600 s como o do editor (ele
+    // estica a vontade), ou o video, se for maior.
+    durationSec: Math.max(3600, usar),
+    inicioSec: 0,
+    usarSec: usar,
+    x: 0,
+    y: 0,
+    escala: 1,
+    opacidade: 1,
+    aspecto: 16 / 9,
+    rotacao: 0,
+    efeito: 'nenhum',
+    intensidade: 0.1,
+    curva: MOTION_CURVE_DEFAULT,
+    pontosDaCurva: null,
+    cor: e.cor,
+    espelhar: false,
+    fadeInSec: 0,
+    fadeOutSec: 0,
+    papel: 'cor',
+    // O que ela pos: se `cor` sair disto, ele mexeu (camadaDeCorIntacta).
+    corOriginal: e.cor,
+  }
+}
+
+/** O prefixo do nome no clipe ("Cor: Anime vivo"). */
+const PREFIXO_DA_CAMADA = 'Cor: '
+
+/**
+ * O look que a Edicao rapida pos numa camada dela: o guardado nela
+ * (`corOriginal`) ou, na camada de antes do campo existir, o do nome no clipe
+ * ("Cor: <nome>", como o lookDaCor). null = nao da para saber.
+ */
+export function lookDeOrigem(
+  o: Pick<SobreposicaoSalva, 'corOriginal' | 'fileName'>,
+  presets: readonly PresetDeCorSalvo[],
+): AjusteDeCor | null {
+  if (o.corOriginal) return o.corOriginal
+  if (!o.fileName.startsWith(PREFIXO_DA_CAMADA)) return null
+  const nome = o.fileName.slice(PREFIXO_DA_CAMADA.length)
+  if (nome === NOME_DO_ANIME_VIVO) return ANIME_VIVO
+  return presets.find((p) => p.nome === nome)?.cor ?? null
+}
+
+/** Dois valores iguais por conteudo (a ordem das chaves nao importa; ausente = undefined). */
+function mesmoValor(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const ra = a as Record<string, unknown>
+  const rb = b as Record<string, unknown>
+  for (const k of new Set([...Object.keys(ra), ...Object.keys(rb)])) if (!mesmoValor(ra[k], rb[k])) return false
+  return true
+}
+
+/**
+ * O que pode mudar sem a camada deixar de ser "a da Edicao rapida": a faixa
+ * (ele arrastou para cima ou para baixo), o nome, o tamanho do "arquivo" e o
+ * quanto ela toca (conferido a parte: cobre o video todo).
+ */
+const LIVRES_NA_CAMADA = new Set(['id', 'faixa', 'fileName', 'durationSec', 'usarSec', 'corOriginal', 'url'])
+
+/**
+ * A camada de cor esta EXATAMENTE como a Edicao rapida pos: o mesmo look, do
+ * 0 ao fim do video (ou alem), sem fade, sem transicao, nada mexido -- so a
+ * faixa pode ter mudado. So uma camada assim e trocada ao rodar de novo:
+ * valores, intensidade, fades e o corte do comeco ou do fim sao trabalho dele.
+ */
+export function camadaDeCorIntacta(
+  o: SobreposicaoSalva,
+  duracaoSec: number,
+  presets: readonly PresetDeCorSalvo[],
+): boolean {
+  if (o.papel !== 'cor' || o.tipo !== 'ajuste') return false
+  const origem = lookDeOrigem(o, presets)
+  if (!origem) return false
+  const toca = o.usarSec ?? o.durationSec - o.inicioSec
+  // Meio quadro de folga: o usarSec e a duracao arredondada a 1 ms.
+  if (o.at + toca < duracaoSec - 0.5 / 30) return false
+  const molde: Record<string, unknown> = camadaDeCor({ cor: origem, nome: '', duracaoSec: toca, faixa: o.faixa, id: o.id })
+  const dela: Record<string, unknown> = o
+  for (const k of new Set([...Object.keys(molde), ...Object.keys(dela)])) {
+    if (LIVRES_NA_CAMADA.has(k)) continue
+    if (!mesmoValor(dela[k], molde[k])) return false
+  }
+  return true
+}
+
+/**
+ * O rotulo do clipe na linha do tempo: a camada da Edicao rapida com a cor
+ * mexida diz "Cor (editada)" -- o nome do look ja nao descreve o que ela faz
+ * (ele aplicou outro preset no inspetor, ou mudou os valores).
+ */
+export function rotuloDaSobreposicao(o: Pick<SobreposicaoSalva, 'fileName' | 'papel' | 'cor' | 'corOriginal'>): string {
+  if (o.papel === 'cor' && o.corOriginal && !mesmoValor(o.cor, o.corOriginal)) return 'Cor (editada)'
+  return o.fileName
+}
+
+/** O que a rodada fez com a cor (vai para o resumo). */
+export type CorDaRodada =
+  /** Posta ou trocada (ou ja igual). `faixaMuda` = a faixa dela esta silenciada: nao aparece. */
+  | { acao: 'posta'; nome: string; faixaMuda: number | null }
+  /** Ele mexeu na camada ('editada') ou ela virou varias ('varias': cortada ou copiada): ficou tudo como esta. */
+  | { acao: 'mantida'; motivo: 'editada' | 'varias' }
+
+/**
+ * A faixa de video com a camada de cor da Edicao rapida (pura; o store chama
+ * com o estado ATUAL). Nunca apaga trabalho dele:
+ * - nenhuma camada com papel 'cor': poe uma, na mais baixa livre e nao muda;
+ * - UMA, intacta (camadaDeCorIntacta): troca pelo look de agora com o mesmo
+ *   id, no mesmo lugar da lista (o inspetor aberto nela continua aberto, e o
+ *   mesmo look nao vira passo de Ctrl+Z) e na faixa em que ela estava;
+ * - uma mexida, ou varias (ele cortou ou copiou: os pedacos e as copias levam
+ *   o papel junto): fica TUDO como esta, e o resumo diz.
+ */
+export function trocaDaCamadaDeCor<T extends SobreposicaoSalva>(
+  sobreposicoes: readonly T[],
+  e: {
+    look: { nome: string; cor: AjusteDeCor }
+    duracaoSec: number
+    mudas: readonly number[]
+    presets: readonly PresetDeCorSalvo[]
+    /** O id da camada nova (a trocada fica com o dela). */
+    id: string
+    /** O que a camada leva alem do SobreposicaoSalva (no store, `url: ''`). */
+    extra: Omit<T, keyof SobreposicaoSalva>
+  },
+): { sobreposicoes: T[]; rodada: CorDaRodada } {
+  const marcadas = sobreposicoes.filter((o) => o.papel === 'cor')
+  if (marcadas.length > 1) return { sobreposicoes: [...sobreposicoes], rodada: { acao: 'mantida', motivo: 'varias' } }
+  const antiga = marcadas[0]
+  if (antiga && !camadaDeCorIntacta(antiga, e.duracaoSec, e.presets)) {
+    return { sobreposicoes: [...sobreposicoes], rodada: { acao: 'mantida', motivo: 'editada' } }
+  }
+  const faixa = faixaDaCamadaDeCor(sobreposicoes, e.duracaoSec, e.mudas)
+  const nova = {
+    ...camadaDeCor({ cor: e.look.cor, nome: e.look.nome, duracaoSec: e.duracaoSec, faixa, id: antiga?.id ?? e.id }),
+    ...e.extra,
+  } as T
+  // A faixa dela foi silenciada (ele compara com e sem cor): fica la, e o resumo diz.
+  const rodada: CorDaRodada = { acao: 'posta', nome: e.look.nome, faixaMuda: e.mudas.includes(faixa) ? faixa : null }
+  if (!antiga) return { sobreposicoes: [...sobreposicoes, nova], rodada }
+  return { sobreposicoes: sobreposicoes.map((o) => (o === antiga ? nova : o)), rodada }
+}
+
 // ====================================================================== rosto
 
 /**
@@ -1289,6 +1559,14 @@ export interface ResumoDaEdicaoRapida {
   rostos: { comRosto: number; total: number; fonte: RostosDoLote['fonte'] } | null
   /** O estilo salvo foi aplicado na legenda. */
   legenda: boolean
+  /** O look da camada de cor posta ("Anime vivo" ou o nome do preset). null/ausente = sem cor. */
+  cor?: string | null
+  /** A camada que estava ficou como esta: ele mexeu nela ('editada') ou ela virou varias ('varias'). */
+  corMantida?: 'editada' | 'varias' | null
+  /** O preset de cor escolhido que nao existe mais (entrou o Anime vivo). */
+  corPresetSumiu?: string | null
+  /** A faixa da camada posta esta silenciada (0 = V1): no preview e no render, sem cor. */
+  corFaixaMuda?: number | null
   avisos: string[]
   /**
    * A rodada MUDOU o projeto (criou um passo de Ctrl+Z). false = nada mudou: o
@@ -1302,12 +1580,12 @@ export interface ResumoDaEdicaoRapida {
 
 /** Nenhuma parte ligada: o botao nao tem o que fazer. */
 export function nadaLigado(c: ConfigDaEdicaoRapida): boolean {
-  return !c.sfx && !c.musica && !c.rosto && !c.legenda
+  return !c.sfx && !c.musica && !c.rosto && !c.legenda && !c.cor
 }
 
 /** As partes ligadas em ASCII curto ("sons, musica e rosto"), para dicas e titulos. */
 export function partesLigadas(c: ConfigDaEdicaoRapida): string {
-  const nomes = [c.sfx && 'sons', c.musica && 'musica', c.rosto && 'rosto', c.legenda && 'legenda'].filter(
+  const nomes = [c.sfx && 'sons', c.musica && 'musica', c.rosto && 'rosto', c.legenda && 'legenda', c.cor && 'cor'].filter(
     (x): x is string => typeof x === 'string',
   )
   if (nomes.length <= 1) return nomes[0] ?? ''
@@ -1342,4 +1620,12 @@ export function partesLigadas(c: ConfigDaEdicaoRapida): string {
  *     opcao no passo 4), electron/services/montar/index.ts e projeto.ts
  *     (montagem com Edicao rapida, studio.secoes, estilo salvo), a action
  *     `edicaoRapida` em src/store/project.ts (codigo em src/store/edicao-rapida.ts).
+ * (D) COR (15/10) -- este arquivo (ANIME_VIVO, lookDaCor, camadaDeCor,
+ *     faixaDaCamadaDeCor, camadaDeCorIntacta, trocaDaCamadaDeCor), contract.ts
+ *     (`papel` e `corOriginal` na sobreposicao), o rotulo "Cor (editada)" na
+ *     linha do tempo (rotuloDaSobreposicao em Timeline.tsx), a camada no
+ *     store (prepararCor em src/store/edicao-rapida.ts) e na montagem
+ *     (corDaMontagem em electron/services/montar/edicao-rapida.ts), e o look
+ *     nas Configuracoes (AjustesDaEdicaoRapida.tsx). O filtro e o do Dangai
+ *     (src/remotion/Ajuste.tsx), sem mudanca. Teste: v-edicao-rapida-cor.ts.
  */

@@ -2,19 +2,22 @@ import { useEffect, useRef, useState } from 'react'
 import { FolderOpen } from 'lucide-react'
 import type { PublicSettings } from '@shared/channels'
 import {
+  NOME_DO_ANIME_VIVO,
   PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO,
   type ConfigDaEdicaoRapida,
   type MusicaDaPasta,
   type PreferenciasDaEdicaoRapida,
 } from '@shared/edicao-rapida'
 import { useEdicaoRapida } from '@/store/edicao-rapida'
-import { Caixinha, Link, meioDoCaminho } from './pecas'
+import { usePresetsDeCor } from '@/store/presets-de-cor'
+import { Caixinha, CAMPO_NORMAL, CLASSE_DO_CAMPO, Link, meioDoCaminho } from './pecas'
 
 /**
  * A EDICAO RAPIDA nas Configuracoes: o que ela faz (sons, musica, rosto,
- * legenda), se vem ligada no "Abrir no editor" do passo 4, e a PASTA DE
- * MUSICAS -- so leitura: o app lista e toca, nunca grava la (o historico de
- * "ja usada" mora no userData).
+ * legenda, cor), o look da cor (o Anime vivo ou um preset de cor salvo no
+ * inspetor da camada de ajuste), se vem ligada no "Abrir no editor" do passo
+ * 4, e a PASTA DE MUSICAS -- so leitura: o app lista e toca, nunca grava la (o
+ * historico de "ja usada" mora no userData).
  *
  * Mora aqui, e nao no Settings.tsx, para o arquivo herdado do Dangai ganhar so
  * uma linha (o mesmo do AjustesDoStudio). Mesmo desenho das outras secoes:
@@ -26,6 +29,7 @@ const PARTES: readonly { campo: keyof ConfigDaEdicaoRapida; nome: string; dica: 
   { campo: 'musica', nome: 'Musica', dica: 'Uma da pasta, sem repetir entre videos, abaixando quando a voz fala' },
   { campo: 'rosto', nome: 'Rosto', dica: 'Cada bloco centralizado no rosto (de quem a frase cita, se der)' },
   { campo: 'legenda', nome: 'Legenda', dica: 'A legenda no seu estilo salvo' },
+  { campo: 'cor', nome: 'Cor', dica: 'Uma camada de ajuste no video inteiro, com o look escolhido abaixo' },
 ]
 
 /** Quantas musicas a lista curta mostra. */
@@ -57,6 +61,16 @@ export function AjustesDaEdicaoRapida({
   const raiz = useRef<HTMLDivElement>(null)
   const rolarAte = useEdicaoRapida((s) => s.rolarAteAjustes)
   const pedirRolar = useEdicaoRapida((s) => s.pedirRolarAteAjustes)
+  // Os presets de cor sao os do inspetor da camada de ajuste (mesma lista).
+  const presetsDeCor = usePresetsDeCor((s) => s.lista)
+  const presetsCarregados = usePresetsDeCor((s) => s.carregado)
+  const carregarPresetsDeCor = usePresetsDeCor((s) => s.carregar)
+  useEffect(() => void carregarPresetsDeCor(), [carregarPresetsDeCor])
+  // O preset escolhido que sumiu (apagado no inspetor) aparece como tal, e a
+  // Edicao rapida usa o Anime vivo ate ele escolher outro. So depois de a
+  // lista chegar: antes ela e vazia, e todo preset pareceria apagado.
+  const presetSumiu =
+    presetsCarregados && prefs.corPreset !== null && !presetsDeCor.some((p) => p.nome === prefs.corPreset)
 
   // O passo 4 e o botao do editor leem o mesmo padrao: as settings que chegam
   // aqui atualizam a lembranca deles.
@@ -152,6 +166,34 @@ export function AjustesDaEdicaoRapida({
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
         O botao Edicao rapida do editor faz tudo de uma vez. Continua editavel, e Ctrl+Z desfaz.
+      </p>
+      <label htmlFor="cor-da-edicao-rapida" className="mt-4 mb-1.5 block text-[11px] font-medium text-ink-2">
+        Cor da Edicao rapida
+      </label>
+      <select
+        id="cor-da-edicao-rapida"
+        value={prefs.corPreset ?? ''}
+        disabled={!prefs.config.cor}
+        onChange={(e) => void gravarPrefs({ ...atuais(), corPreset: e.target.value || null })}
+        title={prefs.config.cor ? 'O look da camada de cor: o Anime vivo ou um preset de cor seu' : 'Ligue a Cor acima'}
+        className={`${CLASSE_DO_CAMPO} ${CAMPO_NORMAL} w-full text-ellipsis pr-7`}
+      >
+        <option value="">{NOME_DO_ANIME_VIVO}</option>
+        {presetsDeCor.map((p) => (
+          <option key={p.nome} value={p.nome}>
+            {p.nome}
+          </option>
+        ))}
+        {/* Escolhido e ainda nao na lista (sumiu, ou a lista nao chegou): a
+            opcao existe para o select mostrar o nome, e nao o Anime vivo. */}
+        {prefs.corPreset && !presetsDeCor.some((p) => p.nome === prefs.corPreset) && (
+          <option value={prefs.corPreset}>
+            {presetSumiu ? `${prefs.corPreset} (apagado)` : prefs.corPreset}
+          </option>
+        )}
+      </select>
+      <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+        {presetSumiu ? 'Esse preset foi apagado: entra o Anime vivo.' : 'Camada de ajuste no video todo; os presets sao os do inspetor de cor.'}
       </p>
 
       <div className="mt-4 mb-1.5 flex items-baseline gap-2">

@@ -18,6 +18,7 @@ import { arquivoDaVoz } from '../voz/pastas'
 import { secoesDoTake, type RostosDoLote } from '@shared/edicao-rapida'
 import { aquecerMiniaturas } from './abertura'
 import {
+  corDaMontagem,
   estiloSalvo,
   personagensDosPedacos,
   registrarAMusica,
@@ -46,8 +47,9 @@ import { montarArquivoDoProjeto, pedacosDaMontagem, type FocoDoPedaco } from './
  *   liga a guarda de reanalise do store). Validado pelo zod e gravado atomico
  *   pelo saveProjectFile do Dangai (o mesmo `rel` de um Ctrl+S). Nunca escreve
  *   em biblioteca externa (./pasta.ts). A legenda nasce no estilo salvo dele;
- *   com `pedido.edicaoRapida`, o projeto ja chega com som, musica e o rosto
- *   pelo motor (./edicao-rapida.ts), e o resumo volta em `edicaoRapida`.
+ *   com `pedido.edicaoRapida`, o projeto ja chega com som, musica, o rosto
+ *   pelo motor e a camada de cor (./edicao-rapida.ts), e o resumo volta em
+ *   `edicaoRapida`.
  *
  * Mesma regra do rascunho.ts: ler -> aplicar -> gravar SEM await no meio. A
  * montagem trabalha sobre o que foi lido e encaixado; a parte lenta (rostos)
@@ -224,8 +226,11 @@ export async function montarProjeto(
   if (som) avisosDaEdicao.push(...som.avisos)
 
   // 6. O .anirecap: zod + gravacao atomica do Dangai. O estilo salvo da
-  // legenda entra com ou sem a Edicao rapida (e o padrao de projeto novo).
+  // legenda entra com ou sem a Edicao rapida (e o padrao de projeto novo); a
+  // camada de cor, so com a parte "cor" ligada.
   const estilo = estiloSalvo()
+  const cor = config?.cor ? corDaMontagem(take.duracao) : null
+  if (cor) avisosDaEdicao.push(...cor.avisos)
   const { file, avisos } = montarArquivoDoProjeto({
     rascunho: r,
     roteiro,
@@ -238,6 +243,7 @@ export async function montarProjeto(
     eventos: r.eventos,
     estilo,
     trilhas: som?.trilhas ?? [],
+    sobreposicoes: cor?.camada ? [cor.camada] : [],
   })
   const projetoPath = arquivoDoProjeto(pasta, nome)
   saveProjectFile(projetoPath, file)
@@ -258,6 +264,8 @@ export async function montarProjeto(
       pedacos: previa.pedacos,
       rostoRodou: config.rosto && opcoes.rostos !== false,
       legenda: estilo !== null,
+      cor: cor?.camada ? cor.nome : null,
+      corPresetSumiu: cor?.sumiu ?? null,
       avisos: avisosDaEdicao,
     }),
   }

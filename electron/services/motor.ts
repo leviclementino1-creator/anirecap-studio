@@ -13,7 +13,8 @@ import {
   type ProgressoDaAnalise,
   type StatusDoMotor,
 } from '@shared/episodio'
-import { ORIGEM_DO_BATISMO, type ComandoCommitDiscovery } from '@shared/descoberta'
+import { ORIGEM_DO_BATISMO, origemDeUmaArte, type ComandoCommitDiscovery } from '@shared/descoberta'
+import { soUmaArte } from './descoberta/arte-unica'
 import { dependeDoBatismo } from './descoberta/refs'
 import { desarmarCorteDeOutroArquivo, pastaLembradaPeloMotor } from './episodio/corte-de-outro-arquivo'
 import { impressaoLembrada } from './episodio/impressao'
@@ -462,6 +463,12 @@ interface Job {
   fotos: ReservaDoElenco | null
   /** Reconhecer na mao: o discovery-ready chegou e o processo espera UMA linha de nomes. */
   esperandoNomes: boolean
+  /**
+   * O done ja chegou e o fim espera a conferencia das fotos do elenco
+   * (arte-unica.ts, ate ~15 s). O close do processo nao entrega por cima, e
+   * o cancelar e no-op: o trabalho do motor ja acabou.
+   */
+  conferindo: boolean
 }
 
 /** O job da vez. Um por vez: o motor ocupa a GPU inteira. */
@@ -572,7 +579,7 @@ function tratarEvento(job: Job, ev: Evento): void {
         doBatismo = dependeDoBatismo(typeof r['refsDir'] === 'string' ? r['refsDir'] : null, nomes)
         job.log?.write(`[studio] fotos do elenco: ${fotos ? `${fotos.origem} (${fotos.de})` : 'busca online'}${doBatismo ? ' + Reconhecer na mao' : ''}\n`)
       }
-      entregar(job, {
+      const fim: FimDaAnalise = {
         jobId: job.id,
         ok: true,
         motor: job.motor,
@@ -582,7 +589,26 @@ function tratarEvento(job: Job, ev: Evento): void {
         segundos: segundosDesde(job.inicio),
         // A tela diz "Fotos: Corte Cenas" quando o elenco veio da reserva.
         fotosDoElenco: doBatismo ? ORIGEM_DO_BATISMO : (fotos?.origem ?? null),
-      })
+      }
+      // Reconhecido com UMA arte contada duas vezes (o retrato do MAL e o da
+      // AniList em dois recortes): a tela pede para conferir, com os nomes.
+      // Fora do Reconhecer na mao, em que os nomes sao os do Levi.
+      if (job.motor === 'studio' && job.reconhecer && !doBatismo && job.requisicao['discovery'] !== true && nomes.length > 0) {
+        job.conferindo = true
+        const inicio = Date.now()
+        void soUmaArte(typeof r['refsDir'] === 'string' ? r['refsDir'] : null, nomes)
+          .then((umaArte) => {
+            job.log?.write(`[studio] uma arte so: ${umaArte.length ? umaArte.join('; ') : 'ninguem'} (${Date.now() - inicio} ms)\n`)
+            if (umaArte.length && fim.ok) fim.fotosDoElenco = origemDeUmaArte(umaArte)
+          })
+          .catch(() => {})
+          .finally(() => {
+            job.conferindo = false
+            entregar(job, fim)
+          })
+        return
+      }
+      entregar(job, fim)
       return
     }
     case 'needs-input': {
@@ -817,6 +843,14 @@ function iniciar(job: Job, repeticao: boolean): void {
   filho.on('close', (codigo) => {
     leitor.flush()
     leitorErro.flush()
+    if (job.conferindo && !job.entregue) {
+      // O done ja chegou e o fim sai quando a conferencia acabar; com o
+      // filho null, o entregar de la solta a vaga.
+      job.filho = null
+      if (job.relogio) clearTimeout(job.relogio)
+      job.relogio = null
+      return
+    }
     if (job.fimPendente && !job.entregue) {
       // Sem fotos do elenco (needs-input seguro): o processo saiu, a vaga
       // continua do job enquanto a reserva olha os caches.
@@ -965,6 +999,7 @@ export async function analisarEpisodio(
     repetiu: false,
     fotos: null,
     esperandoNomes: false,
+    conferindo: false,
   }
   // A vaga e reservada JA, antes do processo subir: um segundo clique no
   // mesmo instante leva "ja existe" em vez de subir dois motores.
@@ -984,7 +1019,7 @@ export async function analisarEpisodio(
  */
 export async function cancelarAnalise(jobId: string): Promise<void> {
   const job = atual
-  if (!job || job.id !== jobId || job.entregue || job.cancelado) return
+  if (!job || job.id !== jobId || job.entregue || job.cancelado || job.conferindo) return
   job.cancelado = true
   const filho = job.filho
   // Ainda nao subiu, ou esta entre as duas rodadas copiando a reserva do

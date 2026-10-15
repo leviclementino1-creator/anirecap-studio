@@ -43,6 +43,9 @@ export const respostas = {
   estilo: ESTILO as CaptionStyle | null,
   /** Musica forcada vale; senao, a primeira de MUSICAS que nao esta em evitar. */
   semMusica: false,
+  /** Cor: o look escolhido nas Configuracoes (null = Anime vivo) e os presets de cor salvos (crus). */
+  corPreset: null as string | null,
+  presetsDeCor: [] as unknown[],
 }
 
 /** O plano de som que o "main" devolve: whoosh nas viradas e impacto no comeco, musica sem repetir. */
@@ -119,7 +122,8 @@ const implementados: Record<string, (...args: unknown[]) => { ok: true; value: u
     ok: true,
     value: {
       captionStyle: respostas.estilo,
-      edicaoRapidaPadrao: { aoAbrirNoEditor: true, config: { sfx: true, musica: true, rosto: true, legenda: true } },
+      edicaoRapidaPadrao: { aoAbrirNoEditor: true, config: { sfx: true, musica: true, rosto: true, legenda: true, cor: true }, corPreset: respostas.corPreset },
+      presetsDeCor: respostas.presetsDeCor,
     },
   }),
   registrarMusicaUsada: () => ({ ok: true, value: true }),

@@ -4,6 +4,7 @@ import type { PedidoDeMontagem } from '@shared/cenas'
 import {
   captionStyleSchema,
   type AudioAnalysis,
+  type AjusteDeCor,
   type CaptionStyle,
   type PapelDaTrilha,
   type TrechoDeAudioSalvo,
@@ -12,15 +13,19 @@ import {
   CONFIG_DA_EDICAO_RAPIDA_PADRAO,
   chaveDoPedidoDeRosto,
   faixasDaEdicaoRapida,
+  lookDaCor,
   naFaixaDaEdicaoRapida,
+  presetsDeCorConferidos,
   PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO,
   preferenciasDaEdicaoRapidaSchema,
   secoesParaSom,
   trilhasDoPlanoDeSom,
+  trocaDaCamadaDeCor,
   type ConfigDaEdicaoRapida,
   type PedidoDeRosto,
   type PlanoDeSom,
   type PreferenciasDaEdicaoRapida,
+  type PresetDeCorSalvo,
   type ResumoDaEdicaoRapida,
   type RostosDoLote,
 } from '@shared/edicao-rapida'
@@ -45,8 +50,10 @@ import { CAMPOS, type CampoDoDocumento, type Documento } from './documento'
  *
  * Tudo continua editavel: os trechos de som entram nas faixas de audio com
  * `papel` (cada papel na sua faixa, arquivo inteiro como sobra), o foco e o
- * mesmo focusX/focusY que ele arrasta, e o estilo e o mesmo do painel.
- * Rodar de novo troca SO o que a Edicao rapida tinha posto.
+ * mesmo focusX/focusY que ele arrasta, o estilo e o mesmo do painel e a cor e
+ * uma camada de ajuste comum (`papel: 'cor'`) na faixa de video.
+ * Rodar de novo troca SO o que a Edicao rapida tinha posto -- e a camada de
+ * cor so se ele nao mexeu nela (trocaDaCamadaDeCor).
  */
 
 // =========================================================== preparar/aplicar
@@ -54,7 +61,7 @@ import { CAMPOS, type CampoDoDocumento, type Documento } from './documento'
 /** O que a action le do estado (o resto do store nao interessa). */
 export type EstadoParaEdicaoRapida = Pick<
   ProjectState,
-  'audio' | 'images' | 'plan' | 'transcript' | 'studio' | 'trilhas' | 'formato' | 'fontes'
+  'audio' | 'images' | 'plan' | 'transcript' | 'studio' | 'trilhas' | 'formato' | 'fontes' | 'sobreposicoes' | 'faixasMudas'
 >
 
 export interface OpcoesDaEdicaoRapida {
@@ -99,8 +106,9 @@ export function soOQueMuda(patch: Partial<ProjectState>, atual: Partial<ProjectS
     if (typeof valor === 'object' && valor !== null && JSON.stringify(valor) === JSON.stringify(agora)) continue
     // Os SFX refeitos nascem com id novo (prefixo da rodada) e a musica mantida
     // vem antes deles: iguais em todo o resto, nao sao mudanca (a pasta de
-    // musicas vazia oferecia um "Desfazer" que nao mudava nada).
-    if (campo === 'trilhas' && trilhasPorValor(valor) === trilhasPorValor(agora)) continue
+    // musicas vazia oferecia um "Desfazer" que nao mudava nada). A camada de
+    // cor igual a de antes (rodar duas vezes) tambem nao.
+    if ((campo === 'trilhas' || campo === 'sobreposicoes') && trilhasPorValor(valor) === trilhasPorValor(agora)) continue
     ;(saida as Record<string, unknown>)[campo] = valor
   }
   return saida
@@ -138,10 +146,11 @@ export async function prepararEdicaoRapida(
     })
   // As tres partes sao independentes: correm juntas (o rosto pelo motor e a
   // mais lenta; o som mede arquivos no ffmpeg).
-  const [som, rostos, legenda] = await Promise.all([
+  const [som, rostos, legenda, cor] = await Promise.all([
     config.sfx || config.musica ? seguro('Sem som', prepararSom(estado, config, opcoes, deps, avisos)) : Promise.resolve(null),
     config.rosto ? seguro('Sem rosto', prepararRostos(estado, avisos)) : Promise.resolve(null),
     config.legenda ? seguro('Legenda sem o estilo salvo', prepararLegenda(estado, avisos)) : Promise.resolve(null),
+    config.cor ? seguro('Sem cor', prepararCor(avisos)) : Promise.resolve(null),
   ])
 
   const aplicar = (atual: EstadoParaEdicaoRapida): Partial<ProjectState> => {
@@ -171,6 +180,32 @@ export async function prepararEdicaoRapida(
       if (mudou) patch.images = images
     }
     if (legenda) Object.assign(patch, legenda)
+    const duracao = atual.audio?.durationSec ?? 0
+    if (cor && duracao > 0) {
+      const feito = trocaDaCamadaDeCor(atual.sobreposicoes, {
+        look: cor,
+        duracaoSec: duracao,
+        mudas: atual.faixasMudas.video,
+        presets: cor.presets,
+        id: `er-cor-${Date.now().toString(36)}`,
+        extra: { url: '' },
+      })
+      patch.sobreposicoes = feito.sobreposicoes
+      // O que ela fez com a cor depende do estado ATUAL (ele pode ter mexido
+      // na camada enquanto o som rodava): o resumo e completado aqui, e a
+      // action devolve o resumo depois de aplicar.
+      if (feito.rodada.acao === 'mantida') {
+        resumo.cor = null
+        resumo.corMantida = feito.rodada.motivo
+        resumo.corPresetSumiu = null
+        resumo.corFaixaMuda = null
+      } else {
+        resumo.cor = feito.rodada.nome
+        resumo.corMantida = null
+        resumo.corPresetSumiu = cor.sumiu
+        resumo.corFaixaMuda = feito.rodada.faixaMuda
+      }
+    }
     return patch
   }
 
@@ -185,10 +220,36 @@ export async function prepararEdicaoRapida(
     musica: musica ? (aplicadas.find((t) => t.papel === 'musica')?.fileName ?? null) : null,
     rostos: rostos ? { comRosto: rostos.comRosto, total: rostos.total, fonte: rostos.fonte } : null,
     legenda: legenda !== null,
+    // Completados pelo aplicar (sobre o estado de la).
+    cor: null,
+    corMantida: null,
+    corPresetSumiu: null,
+    corFaixaMuda: null,
     avisos: [...new Set(avisos)],
     musicaMantida: mantida,
   }
   return { aplicar, resumo, musica }
+}
+
+// ------------------------------------------------------------------- cor
+
+/**
+ * O look da parte "cor" (Configuracoes > Edicao rapida > Cor): o Anime vivo
+ * ou o preset de cor salvo que ele escolheu, lido AGORA das settings (vale o
+ * preset que ele acabou de salvar no inspetor). Os presets vao junto: a camada
+ * de antes do `corOriginal` acha o look de origem pelo nome.
+ */
+async function prepararCor(
+  avisos: string[],
+): Promise<{ nome: string; cor: AjusteDeCor; sumiu: string | null; presets: PresetDeCorSalvo[] }> {
+  const r = await window.dangai.getSettings()
+  if (!r.ok) {
+    avisos.push(`Cor no Anime vivo (sem ler as Configuracoes: ${r.error})`)
+    return { ...lookDaCor(null, []), presets: [] }
+  }
+  const prefs = preferenciasDaEdicaoRapidaSchema.catch(PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO).parse(r.value.edicaoRapidaPadrao ?? {})
+  const presets = presetsDeCorConferidos(r.value.presetsDeCor ?? [])
+  return { ...lookDaCor(prefs.corPreset, presets), presets }
 }
 
 // ------------------------------------------------------------------- som
@@ -542,19 +603,19 @@ export async function pedidoDaMontagem(): Promise<PedidoDeMontagem> {
 }
 
 /** So a musica: o controle de musica da barra (por, trocar). */
-export const SO_A_MUSICA: ConfigDaEdicaoRapida = { sfx: false, musica: true, rosto: false, legenda: false }
+export const SO_A_MUSICA: ConfigDaEdicaoRapida = { sfx: false, musica: true, rosto: false, legenda: false, cor: false }
 
 /** Os trechos de musica que a Edicao rapida pos (o controle de musica mexe neles). */
 export function trechosDaMusica<T extends Pick<TrechoDeAudioSalvo, 'papel'>>(trilhas: readonly T[]): T[] {
   return trilhas.filter((t) => t.papel === 'musica')
 }
 
-/** Uma linha do resumo para a tela, ASCII e curta. */
+/** Uma linha do resumo para a tela, ASCII e curta (`dica` = o title, quando diz mais que o valor). */
 export function linhasDoResumo(
   r: ResumoDaEdicaoRapida,
   origem: 'editor' | 'montagem' = 'editor',
-): { rotulo: string; valor: string }[] {
-  const linhas: { rotulo: string; valor: string }[] = []
+): { rotulo: string; valor: string; dica?: string }[] {
+  const linhas: { rotulo: string; valor: string; dica?: string }[] = []
   if (r.config.sfx) {
     const n = r.whoosh + r.impacto
     linhas.push({ rotulo: 'Sons', valor: n === 0 ? 'nenhum' : `${r.whoosh} whoosh, ${r.impacto} ${r.impacto === 1 ? 'impacto' : 'impactos'}` })
@@ -576,5 +637,37 @@ export function linhasDoResumo(
       valor: r.legenda ? 'estilo salvo' : origem === 'montagem' ? 'padrao do app (sem estilo salvo)' : 'como estava (sem estilo salvo)',
     })
   }
+  if (r.config.cor) linhas.push(linhaDaCor(r))
   return linhas
+}
+
+/**
+ * A linha da Cor: o look, com o que ele precisa saber NA linha (os avisos
+ * soltos passam de 3 e somem atras do "+1"): o preset que sumiu, a faixa
+ * muda, ou que a camada dele ficou como estava.
+ */
+function linhaDaCor(r: ResumoDaEdicaoRapida): { rotulo: string; valor: string; dica?: string } {
+  if (r.corMantida) {
+    return {
+      rotulo: 'Cor',
+      valor: r.corMantida === 'varias' ? 'mantida (cortada ou copiada)' : 'mantida (editada por voce)',
+      dica: 'Voce mexeu na camada de cor: ela ficou como estava. Apague a camada para por o look de novo.',
+    }
+  }
+  if (!r.cor) return { rotulo: 'Cor', valor: 'nenhuma' }
+  const notas = [
+    r.corPresetSumiu ? `"${r.corPresetSumiu}" apagado` : null,
+    r.corFaixaMuda !== null && r.corFaixaMuda !== undefined ? `V${r.corFaixaMuda + 1} muda` : null,
+  ].filter((x): x is string => x !== null)
+  const dicas = [
+    r.corPresetSumiu ? `O preset "${r.corPresetSumiu}" foi apagado: entrou o ${r.cor}.` : null,
+    r.corFaixaMuda !== null && r.corFaixaMuda !== undefined
+      ? `A camada esta na V${r.corFaixaMuda + 1}, que esta muda: o video sai sem a cor.`
+      : null,
+  ].filter((x): x is string => x !== null)
+  return {
+    rotulo: 'Cor',
+    valor: notas.length > 0 ? `${r.cor} (${notas.join(', ')})` : r.cor,
+    ...(dicas.length > 0 ? { dica: dicas.join(' ') } : {}),
+  }
 }

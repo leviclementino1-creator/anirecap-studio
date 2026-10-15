@@ -17,8 +17,8 @@ import {
 /**
  * O BOTAO "EDICAO RAPIDA" da barra do editor (pedido do Levi, 14/10): um
  * clique faz o que hoje e manual -- whoosh nas viradas de parte, impacto no
- * gancho e no climax, musica baixa com ducking, cada bloco no rosto e a
- * legenda no estilo salvo. O que ela faz vem das Configuracoes (Edicao
+ * gancho e no climax, musica baixa com ducking, cada bloco no rosto, a
+ * legenda no estilo salvo e a cor (camada de ajuste no video inteiro). O que ela faz vem das Configuracoes (Edicao
  * rapida). Tudo continua editavel e Ctrl+Z desfaz a Edicao rapida inteira.
  *
  * Mora fora do RenderBar.tsx (herdado do Dangai) para ele ganhar so uma linha.
@@ -87,7 +87,7 @@ export function useDicaDaEdicaoRapida(): { ligadas: string; nada: boolean } {
   useEffect(() => {
     if (!useEdicaoRapida.getState().padrao) void carregarPadrao()
   }, [carregarPadrao])
-  if (!padrao) return { ligadas: 'sons, musica, rosto e legenda', nada: false }
+  if (!padrao) return { ligadas: 'sons, musica, rosto, legenda e cor', nada: false }
   return { ligadas: partesLigadas(padrao.config), nada: nadaLigado(padrao.config) }
 }
 
@@ -100,7 +100,7 @@ export function BotaoDaEdicaoRapida({ soIcone = false }: { soIcone?: boolean }) 
   const busy = useProject((s) => s.busy)
   // Projeto com algo posto pela Edicao rapida: o botao fica "ligado", como o
   // Publicacao com o texto pronto.
-  const aplicada = useProject((s) => s.trilhas.some((t) => t.papel !== undefined))
+  const aplicada = useProject((s) => s.trilhas.some((t) => t.papel !== undefined) || s.sobreposicoes.some((o) => o.papel !== undefined))
   const rodando = useEdicaoRapida((s) => s.rodando)
   const resumo = useEdicaoRapida((s) => s.resumo)
   const aberto = useEdicaoRapida((s) => s.resumoAberto)
@@ -207,7 +207,7 @@ export function BotaoDaEdicaoRapida({ soIcone = false }: { soIcone?: boolean }) 
             {linhas.map((l) => (
               <div key={l.rotulo} className="contents">
                 <dt className="text-ink-2">{l.rotulo}</dt>
-                <dd className="min-w-0 truncate text-ink" title={l.valor}>
+                <dd className="min-w-0 truncate text-ink" title={l.dica ?? l.valor}>
                   {l.valor}
                 </dd>
               </div>

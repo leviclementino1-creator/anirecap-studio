@@ -406,13 +406,24 @@ export function meioDoCaminho(caminho: string, maximo = 46): string {
  * "Senku 120": um nome com a contagem, no estilo dos chips do app. O que o
  * numero conta vai no tooltip ("23 cenas"), e nao numa frase embaixo.
  */
-export function Contagem({ nome, n, unidade }: { nome: string; n: number; unidade: readonly [string, string] }) {
+export function Contagem({
+  nome,
+  n,
+  unidade,
+  aviso,
+}: {
+  nome: string
+  n: number
+  unidade: readonly [string, string]
+  /** Frase do tooltip quando o numero merece conferencia; o nome fica na cor de aviso. */
+  aviso?: string
+}) {
   return (
     <span
-      title={`${nome}: ${n} ${n === 1 ? unidade[0] : unidade[1]}`}
+      title={`${nome}: ${n} ${n === 1 ? unidade[0] : unidade[1]}${aviso ? `. ${aviso}` : ''}`}
       className="flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2 py-1 text-[11px] text-ink-2"
     >
-      <span className="max-w-[160px] truncate">{nome}</span>
+      <span className={`max-w-[160px] truncate ${aviso ? COR_DE_AVISO : ''}`}>{nome}</span>
       <span className="tnum text-ink-3">{n}</span>
     </span>
   )

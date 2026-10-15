@@ -1,6 +1,11 @@
-import { captionStyleSchema, type CaptionStyle, type TrechoDeAudioSalvo } from '@shared/contract'
+import { captionStyleSchema, type CaptionStyle, type SobreposicaoSalva, type TrechoDeAudioSalvo } from '@shared/contract'
 import {
+  camadaDeCor,
   chaveDoPedidoDeRosto,
+  lookDaCor,
+  PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO,
+  preferenciasDaEdicaoRapidaSchema,
+  presetsDeCorConferidos,
   faixasDaEdicaoRapida,
   naFaixaDaEdicaoRapida,
   personagensDaFrase,
@@ -24,7 +29,8 @@ import { rostosDosPedacos } from './rostos-motor'
 
 /**
  * A EDICAO RAPIDA DENTRO DO "ABRIR NO EDITOR" (agente C, 14/10): o projeto ja
- * chega com SFX, musica, rosto pelo motor e a legenda no estilo salvo.
+ * chega com SFX, musica, rosto pelo motor, a legenda no estilo salvo e (15/10)
+ * a camada de cor no video inteiro.
  *
  * Mora fora do index.ts para a montagem de sempre continuar legivel: o index
  * so pergunta "com ou sem" e junta os pedacos. Cada parte e MELHOR ESFORCO --
@@ -181,6 +187,35 @@ export async function somDaMontagem(
 }
 
 /**
+ * A COR da Edicao rapida na montagem: a camada de ajuste no video inteiro, na
+ * faixa de video 1 (projeto novo: nenhum clipe dele), com o look das
+ * Configuracoes -- o Anime vivo ou o preset de cor salvo (settings.presetsDeCor).
+ * Ler as settings falhou: o Anime vivo, com aviso. Nunca impede a montagem.
+ */
+export function corDaMontagem(duracaoSec: number): {
+  camada: SobreposicaoSalva | null
+  nome: string | null
+  /** O preset escolhido que nao existe mais (o resumo diz na linha da Cor). */
+  sumiu: string | null
+  avisos: string[]
+} {
+  if (!(duracaoSec > 0)) return { camada: null, nome: null, sumiu: null, avisos: [] }
+  let corPreset: string | null = null
+  let presets: ReturnType<typeof presetsDeCorConferidos> = []
+  const avisos: string[] = []
+  try {
+    const s = getSettings()
+    corPreset = preferenciasDaEdicaoRapidaSchema.catch(PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO).parse(s.edicaoRapidaPadrao ?? {}).corPreset
+    presets = presetsDeCorConferidos(Array.isArray(s.presetsDeCor) ? s.presetsDeCor : [])
+  } catch (err) {
+    avisos.push(`Cor no Anime vivo (sem ler as Configuracoes: ${mensagem(err)})`)
+  }
+  const look = lookDaCor(corPreset, presets)
+  const camada = camadaDeCor({ cor: look.cor, nome: look.nome, duracaoSec, faixa: 0, id: `er-cor-${Date.now().toString(36)}` })
+  return { camada, nome: look.nome, sumiu: look.sumiu, avisos }
+}
+
+/**
  * Depois de GRAVAR o projeto: a musica entra no historico (sem repetir no
  * proximo short). Falhar so perde o "sem repetir" desta vez.
  */
@@ -204,6 +239,10 @@ export function resumoDaMontagem(e: {
   /** O rosto da Edicao rapida rodou (os testes pulam rosto: ai o resumo diz null). */
   rostoRodou: boolean
   legenda: boolean
+  /** O look da camada de cor posta. null/ausente = sem cor. */
+  cor?: string | null
+  /** O preset de cor escolhido que nao existe mais (entrou o Anime vivo). */
+  corPresetSumiu?: string | null
   avisos: readonly string[]
 }): ResumoDaEdicaoRapida {
   const sfx = e.plano?.sfx ?? []
@@ -219,6 +258,8 @@ export function resumoDaMontagem(e: {
         : { comRosto: [...e.focos.values()].filter((f) => f.focusAuto).length, total, fonte: 'lbp' }
       : null,
     legenda: e.legenda,
+    cor: e.cor ?? null,
+    corPresetSumiu: e.cor ? (e.corPresetSumiu ?? null) : null,
     avisos: [...new Set(e.avisos)],
   }
 }

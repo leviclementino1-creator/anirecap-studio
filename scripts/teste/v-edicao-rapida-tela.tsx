@@ -17,7 +17,7 @@ import { respostas } from './v-edicao-rapida-janela'
 import type React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PublicSettings } from '../../shared/channels'
-import { PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, type ResumoDaEdicaoRapida } from '../../shared/edicao-rapida'
+import { ANIME_VIVO, PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, type ResumoDaEdicaoRapida } from '../../shared/edicao-rapida'
 import { planEqualSplit } from '../../shared/plan'
 import { RenderBar } from '../../src/components/RenderBar'
 import { BotaoDaEdicaoRapida } from '../../src/components/EdicaoRapida'
@@ -27,6 +27,7 @@ import { ControleDaMusica } from '../../src/components/ControleDaMusica'
 import { fotografar } from '../../src/store/documento'
 import { useEdicaoRapida } from '../../src/store/edicao-rapida'
 import { useProject } from '../../src/store/project'
+import { usePresetsDeCor } from '../../src/store/presets-de-cor'
 
 let falhas = 0
 function confere(ok: boolean, mensagem: string): void {
@@ -46,7 +47,7 @@ void respostas
  * teste: antes de desenhar, o objeto inicial recebe o estado de agora.
  */
 function desenhar(el: React.ReactElement): string {
-  for (const loja of [useProject, useEdicaoRapida] as unknown as { getState: () => object; getInitialState: () => object }[]) {
+  for (const loja of [useProject, useEdicaoRapida, usePresetsDeCor] as unknown as { getState: () => object; getInitialState: () => object }[]) {
     Object.assign(loja.getInitialState(), loja.getState())
   }
   return renderToStaticMarkup(el)
@@ -111,12 +112,13 @@ confere(/border-accent bg-accent-dim[^"]*"[^>]*>[^<]*<svg/.test(html) || html.in
 
 console.log('\n== O resumo')
 const resumo: ResumoDaEdicaoRapida = {
-  config: { sfx: true, musica: true, rosto: true, legenda: true },
+  config: { sfx: true, musica: true, rosto: true, legenda: true, cor: true },
   whoosh: 5,
   impacto: 2,
   musica: 'Naruto - Afternoon of Konoha.mp3',
   rostos: { comRosto: 11, total: 17, fonte: 'motor' },
   legenda: true,
+  cor: 'Anime vivo',
   avisos: ['So 1 whoosh na pasta: ele repete'],
 }
 useEdicaoRapida.getState().mostrarResumo({ ...resumo, aplicou: true }, 'editor', fotografar(useProject.getState()))
@@ -124,6 +126,7 @@ html = desenhar(<BotaoDaEdicaoRapida />)
 t = texto(html)
 console.log(`  ${t.trim()}`)
 confere(t.includes('Sons') && t.includes('5 whoosh, 2 impactos') && t.includes('Rosto') && t.includes('11 de 17 (motor)') && t.includes('Legenda'), 'as linhas do resumo')
+confere(t.includes('Cor') && t.includes('Anime vivo'), 'a linha da cor diz o look')
 confere(t.includes('Desfazer') && t.includes('Ajustar') && html.includes('aria-label="Fechar"'), 'Desfazer, Ajustar e fechar')
 confere(ascii(t), 'texto da tela em ASCII')
 confere(!html.includes('fixed inset-0'), 'sem camada por cima: o 1o clique em outro botao ja vale')
@@ -134,9 +137,24 @@ useEdicaoRapida.getState().mostrarResumo({ ...resumo, legenda: false, musica: nu
 t = texto(desenhar(<BotaoDaEdicaoRapida />))
 confere(!t.includes('Desfazer') && t.includes('Ajustar'), 'resumo da montagem: sem Desfazer (abrir nao e passo de Ctrl+Z)')
 confere(t.includes('Naruto (mantida)') && t.includes('padrao do app (sem estilo salvo)'), 'musica mantida e legenda sem estilo salvo, ditas com todas as letras')
+// A cor (auditoria de 15/10): o que ele precisa saber vai NA linha da Cor, e
+// nao num aviso solto que passa de 3 e some atras do "+1".
+const tresAvisos = ['So 1 whoosh na pasta', 'So 1 impacto na pasta de SFX', 'Sem estilo de legenda salvo']
+useEdicaoRapida.getState().mostrarResumo({ ...resumo, avisos: tresAvisos, corPresetSumiu: 'Vivo forte' }, 'montagem')
+html = desenhar(<BotaoDaEdicaoRapida />)
+confere(texto(html).replace(/&quot;/g, '"').includes('Anime vivo ("Vivo forte" apagado)') && !texto(html).includes('+1'), 'preset apagado: dito na linha da Cor, mesmo com 3 avisos')
+useEdicaoRapida.getState().mostrarResumo({ ...resumo, cor: null, corMantida: 'editada', aplicou: false }, 'editor', null)
+html = desenhar(<BotaoDaEdicaoRapida />)
+confere(texto(html).includes('mantida (editada por voce)') && html.includes('Apague a camada para por o look de novo'), 'camada mexida por ele: "mantida (editada por voce)", e a dica diz como voltar')
+useEdicaoRapida.getState().mostrarResumo({ ...resumo, cor: null, corMantida: 'varias', aplicou: false }, 'editor', null)
+confere(texto(desenhar(<BotaoDaEdicaoRapida />)).includes('mantida (cortada ou copiada)'), 'camada cortada ou copiada: "mantida (cortada ou copiada)"')
+useEdicaoRapida.getState().mostrarResumo({ ...resumo, cor: 'Vivo forte', corFaixaMuda: 0 }, 'editor', null)
+html = desenhar(<BotaoDaEdicaoRapida />)
+confere(texto(html).includes('Vivo forte (V1 muda)') && html.includes('que esta muda: o video sai sem a cor'), 'camada numa faixa muda: "Vivo forte (V1 muda)"')
+confere(ascii(texto(html)), 'texto da tela em ASCII')
 useEdicaoRapida.getState().fecharResumo()
 confere(!texto(desenhar(<BotaoDaEdicaoRapida soIcone />)).includes('Edicao rapida'), 'barra apertada: so o icone (o nome fica no aria-label/title)')
-useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, config: { sfx: false, musica: false, rosto: false, legenda: false } } })
+useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, config: { sfx: false, musica: false, rosto: false, legenda: false, cor: false } } })
 html = desenhar(<BotaoDaEdicaoRapida />)
 confere(/<button[^>]*disabled=""[^>]*aria-label="Edicao rapida"/.test(html) && html.includes('Nada ligado na Edicao rapida'), 'tudo desligado nas Configuracoes: botao apagado, com o porque')
 useEdicaoRapida.setState({ padrao: PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO })
@@ -158,8 +176,32 @@ const settings = {
 html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
 t = texto(html)
 console.log(`  ${t.trim()}`)
-confere(['Sons', 'Musica', 'Rosto', 'Legenda', 'Ligada ao abrir no editor', 'Pasta de musicas', '(padrao)'].every((x) => t.includes(x)), 'as 4 partes, a caixinha do passo 4 e a pasta (padrao)')
-confere((html.match(/role="checkbox"/g) ?? []).length === 5 && (html.match(/aria-checked="true"/g) ?? []).length === 5, '5 caixinhas, todas ligadas por padrao')
+confere(['Sons', 'Musica', 'Rosto', 'Legenda', 'Cor', 'Ligada ao abrir no editor', 'Pasta de musicas', '(padrao)'].every((x) => t.includes(x)), 'as 5 partes, a caixinha do passo 4 e a pasta (padrao)')
+confere((html.match(/role="checkbox"/g) ?? []).length === 6 && (html.match(/aria-checked="true"/g) ?? []).length === 6, '6 caixinhas, todas ligadas por padrao')
+confere(t.includes('Cor da Edicao rapida') && /<option value="" selected="">Anime vivo<\/option>/.test(html), 'Cor da Edicao rapida: Anime vivo por padrao')
+// A lista de presets ainda nao chegou das settings (1a abertura na sessao):
+// o escolhido aparece pelo nome, sem acusar "apagado" (auditoria de 15/10).
+useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, corPreset: 'Meu look' } })
+html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
+confere(
+  /<option value="Meu look" selected="">Meu look<\/option>/.test(html) && !texto(html).includes('apagado'),
+  'presets ainda carregando: o escolhido aparece pelo nome, sem "apagado"',
+)
+useEdicaoRapida.setState({ padrao: PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO })
+usePresetsDeCor.setState({ lista: [{ nome: 'Meu look', cor: ANIME_VIVO }], carregado: true })
+html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
+confere(/<option value="Meu look">Meu look<\/option>/.test(html), 'os presets de cor salvos entram na lista')
+useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, corPreset: 'Meu look' } })
+html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
+confere(/<option value="Meu look" selected="">Meu look<\/option>/.test(html), 'o preset escolhido aparece escolhido')
+useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, corPreset: 'Apagado' } })
+html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
+confere(texto(html).includes('Apagado (apagado)') && texto(html).includes('entra o Anime vivo'), 'o preset apagado: dito, e o Anime vivo no lugar')
+useEdicaoRapida.setState({ padrao: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO, config: { ...PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO.config, cor: false } } })
+html = desenhar(<AjustesDaEdicaoRapida settings={settings} onSettings={() => {}} />)
+confere(/<select[^>]*disabled=""[^>]*id="cor-da-edicao-rapida"|<select[^>]*id="cor-da-edicao-rapida"[^>]*disabled=""/.test(html), 'Cor desligada: a lista do look fica apagada')
+usePresetsDeCor.setState({ lista: [], carregado: false })
+useEdicaoRapida.setState({ padrao: PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO })
 confere(ascii(t), 'texto da tela em ASCII')
 html = desenhar(
   <AjustesDaEdicaoRapida settings={{ ...settings, pastaDeMusicas: 'D:/minhas', pastaDeMusicasEfetiva: 'D:/minhas' }} onSettings={() => {}} />,

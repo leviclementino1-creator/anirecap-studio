@@ -10,6 +10,7 @@ import {
   type CaptionStyle,
   type Scene,
   type Segment,
+  type SobreposicaoSalva,
   type TrechoDeAudioSalvo,
   type Transcript,
   type Transition,
@@ -57,8 +58,8 @@ import type { TakeDaVoz } from '@shared/voz'
  *   guarda de reanalise do store (src/store/guarda-do-studio.ts); e `secoes`,
  *   as partes do roteiro no tempo do take (viradas do som, nomes do rosto);
  * - a legenda no ESTILO SALVO dele (settings.captionStyle), como um projeto
- *   novo do Dangai, e as faixas de audio da Edicao rapida quando pedida
- *   (./edicao-rapida.ts).
+ *   novo do Dangai, e as faixas de audio e a camada de cor da Edicao rapida
+ *   quando pedida (./edicao-rapida.ts).
  *
  * planOrigin 'auto' (o plano em que cada bloco dura a frase que escolheu a
  * cena dele) e planEdited true, como a montagem automatica do Dangai.
@@ -130,6 +131,8 @@ export interface EntradaDaMontagem {
   estilo?: CaptionStyle | null
   /** As faixas de audio da Edicao rapida (trilhasDoPlanoDeSom). Ausente = nenhuma. */
   trilhas?: readonly TrechoDeAudioSalvo[]
+  /** A faixa de video da Edicao rapida: a camada de cor (camadaDeCor). Ausente = nenhuma. */
+  sobreposicoes?: readonly SobreposicaoSalva[]
 }
 
 /**
@@ -390,6 +393,7 @@ export function montarArquivoDoProjeto(e: EntradaDaMontagem): { file: ProjectFil
     hookSec,
     studio,
     ...(e.trilhas && e.trilhas.length > 0 ? { trilhas: e.trilhas } : {}),
+    ...(e.sobreposicoes && e.sobreposicoes.length > 0 ? { sobreposicoes: e.sobreposicoes } : {}),
   })
   // O estilo salvo por cima dos padroes (o project-file tem defaults proprios:
   // sem isto o projeto abria no estilo de fabrica). Passa de novo no zod.

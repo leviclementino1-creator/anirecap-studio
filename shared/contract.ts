@@ -1354,6 +1354,15 @@ export function rampaDoFade(quadro: number, duracao: number, entra: number, sai:
 }
 export const AJUSTE_DE_COR_PADRAO: AjusteDeCor = ajusteDeCorSchema.parse({})
 
+/**
+ * Quem pos o clipe da faixa de video: a Edicao rapida marca a camada de ajuste
+ * dela ('cor') para rodar de novo trocando SO a dela, como o `papel` das
+ * trilhas de audio. Ausente = posto por ele.
+ */
+export const PAPEIS_DA_SOBREPOSICAO = ['cor'] as const
+export const papelDaSobreposicaoSchema = z.enum(PAPEIS_DA_SOBREPOSICAO)
+export type PapelDaSobreposicao = z.infer<typeof papelDaSobreposicaoSchema>
+
 export const sobreposicaoSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -1408,6 +1417,17 @@ export const sobreposicaoSchema = z.object({
    */
   fadeInSec: z.number().min(0).max(3600).default(0),
   fadeOutSec: z.number().min(0).max(3600).default(0),
+  /**
+   * Edicao rapida: quem pos o clipe (ver papelDaSobreposicaoSchema). Opcional
+   * SEM default: projeto antigo abre e grava igual, byte a byte.
+   */
+  papel: papelDaSobreposicaoSchema.optional(),
+  /**
+   * Edicao rapida: o look que ela POS nesta camada (papel 'cor'). `cor`
+   * diferente dele = ele mexeu, e rodar de novo deixa a camada como esta.
+   * Opcional sem default, como o `papel`.
+   */
+  corOriginal: ajusteDeCorSchema.optional(),
 })
 export type SobreposicaoSalva = z.infer<typeof sobreposicaoSchema>
 

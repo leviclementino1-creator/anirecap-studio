@@ -378,7 +378,7 @@ const estilo = aplicarEstiloNoProjeto(projetoStudio, { color: '#12AB34', y: 0.3,
 confere(estilo.captionColor === '#12AB34' && estilo.captionY === 0.3 && estilo.captionFont === 'Komika.ttf' && estilo.captionStroke === 9 && estilo.captionScale === projetoStudio.captionScale, 'estilo salvo nos campos do arquivo; o que falta fica')
 confere(projectFileSchema.safeParse(estilo).success, 'o arquivo com estilo passa no zod')
 
-confere(JSON.stringify(configDaEdicaoRapidaSchema.parse({})) === JSON.stringify({ sfx: true, musica: true, rosto: true, legenda: true }), 'config vazia = tudo ligado')
+confere(JSON.stringify(configDaEdicaoRapidaSchema.parse({})) === JSON.stringify({ sfx: true, musica: true, rosto: true, legenda: true, cor: true }), 'config vazia = tudo ligado (com a cor)')
 const prefs = preferenciasDaEdicaoRapidaSchema.catch(PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO).parse({ aoAbrirNoEditor: 'sim', config: { sfx: false, musica: 3 } })
 confere(prefs.aoAbrirNoEditor === true && prefs.config.sfx === false && prefs.config.musica === true, 'preferencia com lixo: campo ruim volta ao padrao, o bom fica')
 confere(preferenciasDaEdicaoRapidaSchema.catch(PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO).parse('lixo').aoAbrirNoEditor === true, 'preferencia que nem e objeto: padrao')
@@ -388,8 +388,8 @@ confere(pedidoDePlanoDeSomSchema.safeParse({ sfx: true, musica: true, duracaoSec
 confere(!pedidoDePlanoDeSomSchema.safeParse({ sfx: true, musica: true, duracaoSec: 60, cortes: [], secoes: [{ papel: 'pop', inicio: 0, fim: 1 }] }).success, 'papel desconhecido no pedido e recusado')
 confere(loteDeRostosSchema.parse({ pedidos: [{ chave: 'a@0.000', arquivo: 'a.mp4', de: 0, ate: 2 }] }).motor === true, 'lote de rostos: motor por padrao')
 confere(pedidoDePlanoDeSomSchema.parse({ sfx: true, musica: true, duracaoSec: 60, cortes: [], secoes: [] }).vozPath === null, 'pedido de som sem narracao: vozPath null')
-confere(nadaLigado({ sfx: false, musica: false, rosto: false, legenda: false }) && !nadaLigado({ sfx: false, musica: false, rosto: true, legenda: false }), 'nada ligado')
-confere(partesLigadas({ sfx: true, musica: true, rosto: false, legenda: true }) === 'sons, musica e legenda' && partesLigadas({ sfx: false, musica: false, rosto: true, legenda: false }) === 'rosto', 'a dica diz so as partes ligadas')
+confere(nadaLigado({ sfx: false, musica: false, rosto: false, legenda: false, cor: false }) && !nadaLigado({ sfx: false, musica: false, rosto: true, legenda: false, cor: false }) && !nadaLigado({ sfx: false, musica: false, rosto: false, legenda: false, cor: true }), 'nada ligado (a cor sozinha conta)')
+confere(partesLigadas({ sfx: true, musica: true, rosto: false, legenda: true, cor: false }) === 'sons, musica e legenda' && partesLigadas({ sfx: false, musica: false, rosto: true, legenda: false, cor: false }) === 'rosto' && partesLigadas({ sfx: true, musica: false, rosto: false, legenda: true, cor: true }) === 'sons, legenda e cor', 'a dica diz so as partes ligadas')
 
 console.log(`\n${total - falhas}/${total} ok${falhas ? `, ${falhas} FALHA(S)` : ''}`)
 process.exit(falhas ? 1 : 0)

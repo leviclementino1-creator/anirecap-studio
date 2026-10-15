@@ -22,6 +22,7 @@ import {
 } from '@shared/descoberta'
 import { temPlanos, type EpisodioEncontrado } from '@shared/episodio'
 import { useGerar } from './gerar'
+import { pedirMotor } from './motor-runtime'
 
 /*
  * DONO: agente B (tela), contrato de 15/10 em shared/descoberta.ts.
@@ -166,6 +167,8 @@ export const useDescoberta = create<EstadoDaTelaDaDescoberta>((set, get) => ({
       set({ aberta: true })
       return
     }
+    // App instalado sem o motor: a tela "Instalar motor" abre e o Reconhecer na mao vem quando ficar pronto.
+    if (await pedirMotor(() => void useDescoberta.getState().iniciar())) return
     const anime = palpite?.anime.trim()
     // Rodada nova de OUTRO episodio: a decisao guardada era de la.
     if (guardada && guardada.episodioId !== indice.id) guardada = null
@@ -314,6 +317,8 @@ export async function usarEReconhecer(achado: EpisodioEncontrado): Promise<void>
 export async function cortarEReconhecer(): Promise<void> {
   const g = useGerar.getState()
   if (!g.arquivo || g.job) return
+  // Sem o motor (app instalado): instala primeiro e volta para cortar e reconhecer.
+  if (await pedirMotor(() => void cortarEReconhecer())) return
   depoisDoCorte = { arquivo: g.arquivo }
   await g.analisar('studio', false)
   // O pedido nem subiu (motor ocupado, falta o nome): o erro ja esta na tela.

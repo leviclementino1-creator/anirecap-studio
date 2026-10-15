@@ -23,6 +23,7 @@ import { configureWhisper, encerrarWhisper } from './services/whisper'
 import { configureFaces } from './services/faces'
 import { configurarMotor, encerrarMotor } from './services/motor'
 import { encerrarRostosDoMotor } from './services/montar/rostos-motor'
+import { configurarMotorRuntime, encerrarMotorRuntime, iniciarMotorRuntime } from './services/motor-runtime'
 import { configurarEpisodios } from './services/episodio/indice'
 
 const isDev = !app.isPackaged
@@ -153,6 +154,15 @@ app.whenReady().then(async () => {
   // guardam no perfil fica aqui; as cenas vao para a biblioteca do Studio.
   configurarEpisodios(userData)
   configurarMotor({ userData, appPath: app.getAppPath(), empacotado: app.isPackaged })
+  // No app instalado o motor roda no runtime baixado no 1o uso (Python + torch,
+  // %LOCALAPPDATA%\AniRecap Studio\motor-runtime); o codigo vem em resources/motor.
+  configurarMotorRuntime({
+    userData,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    empacotado: app.isPackaged,
+    versaoDoApp: app.getVersion(),
+  })
 
   // Os SFX moram no userData para o usuario poder trocar os arquivos: a pasta
   // do app some numa atualizacao e pode nem ter permissao de escrita.
@@ -204,6 +214,9 @@ app.whenReady().then(async () => {
 
   registerIpc()
   createWindow()
+  // Runtime desatualizado so nos pacotes (o app mudou o studio-runtime.json):
+  // atualiza sozinho em segundo plano e avisa. Nunca lanca.
+  iniciarMotorRuntime()
 
   // Com catch: sem ele, uma falha aqui vira UnhandledPromiseRejection no
   // stdout do processo main -- que ninguem le -- e a atualizacao simplesmente
@@ -230,6 +243,9 @@ app.on('before-quit', encerrarWhisper)
 app.on('before-quit', encerrarMotor)
 // E o motor de rostos da Edicao rapida (um processo por lote, com o torch).
 app.on('before-quit', encerrarRostosDoMotor)
+// E a instalacao do runtime do motor: o uv sai junto, e o que ja baixou fica
+// para o "Continuar" (inclusive quando quem fecha e a atualizacao do app).
+app.on('before-quit', encerrarMotorRuntime)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

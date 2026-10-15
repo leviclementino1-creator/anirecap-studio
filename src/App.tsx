@@ -28,6 +28,7 @@ import { CommandPalette } from '@/components/CommandPalette'
 import { Library } from '@/components/Library'
 import { Queue } from '@/components/Queue'
 import { GerarRecap } from '@/components/gerar/GerarRecap'
+import { InstalarMotor } from '@/components/motor-runtime/InstalarMotor'
 import { useGerar } from '@/store/gerar'
 import { VIDEO_FPS } from '@shared/contract'
 import { semExtensaoDeProjeto } from '@shared/project-file'
@@ -471,6 +472,7 @@ export function App() {
       <Settings />
       <Script />
       <GerarRecap />
+      <InstalarMotor />
       <Library />
       <CommandPalette />
       <ConsoleFx />

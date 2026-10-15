@@ -19,6 +19,7 @@ import {
 import type { RascunhoAberto } from '@shared/roteiro'
 import { useProject } from './project'
 import { passoAoRestaurar, type PassoDoAssistente } from './gerar-passos'
+import { pedirMotor, quandoAFaseMudar } from './motor-runtime'
 
 /*
  * DONOS DESTA STORE (contrato de 14/10, cinco agentes em paralelo):
@@ -875,6 +876,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
        * vai junto e fica onde esta. O nome digitado passa a servir so para
        * achar o elenco -- corrigi-lo nao corta o episodio de novo noutra pasta.
        */
+      // Analise em primeiro plano sem o motor (app instalado): instala e volta.
+      if (motor === 'studio' && (await pedirMotor(() => void get().analisar(motor, reconhecer)))) return
       const indice = get().indice
       const pastaDoAnime =
         motor === 'studio' && indice?.biblioteca.origem === 'studio' ? pastaDaSerie(indice.biblioteca.pasta) : null
@@ -955,6 +958,8 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       const anterior = get().corte
       const motor = opcoes?.motor ?? anterior?.motor ?? 'studio'
       const reconhecer = opcoes?.reconhecer ?? anterior?.reconhecer ?? get().reconhecer
+      // App instalado sem o motor: a tela "Instalar motor" abre (uma vez por sessao) e o corte vem quando ficar pronto.
+      if (motor === 'studio' && (await pedirMotor(() => void get().cortarNoFundo(opcoes)))) return
       // O nome corrigido na tela (o anime que o AniList nao achou) vai junto.
       const corrigido =
         palpite &&
@@ -1190,6 +1195,8 @@ export function escutarGerar(): () => void {
   const tirarFim = window.dangai.onAnaliseFim((f) => receptores.receberFim(f))
   // O corte em segundo plano: andamento, fila e as cenas chegando (com a tela fechada tambem).
   const tirarCorte = window.dangai.onCorteProgresso((e) => receptores.receberCorte(e))
+  // O runtime do motor mudou de fase (instalou, removeu: app instalado): a linha do motor sonda de novo.
+  const tirarMotorPronto = quandoAFaseMudar(() => void useGerar.getState().conferirMotor())
   const tirarIndexar = window.dangai.onIndexarProgresso((mensagem) => {
     // So substitui um andamento que existe: a ultima mensagem pode chegar
     // depois de a indexacao ter acabado e ressuscitaria o "lendo".
@@ -1200,5 +1207,6 @@ export function escutarGerar(): () => void {
     tirarFim()
     tirarCorte()
     tirarIndexar()
+    tirarMotorPronto()
   }
 }

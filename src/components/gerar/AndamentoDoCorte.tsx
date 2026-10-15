@@ -331,7 +331,7 @@ function Parou({ corte }: { corte: EstadoDoCorte }) {
         {/* Sem fotos do elenco: o Levi da os nomes aos grupos de rostos (a acao da secao). */}
         <BotaoReconhecerNaMao principal pequeno />
       </div>
-      {corte.motor === 'studio' && !motor?.studio.pronto && <LinhaDoMotor />}
+      {corte.motor === 'studio' && !motor?.studio.pronto && <LinhaDoMotor depois={tentar} />}
     </Secao>
   )
 }
@@ -373,7 +373,7 @@ function PorCortar({ corte }: { corte: EstadoDoCorte }) {
           </Caixinha>
         </span>
       </div>
-      <LinhaDoMotor />
+      <LinhaDoMotor depois={() => void cortarNoFundo({ motor: 'studio', reconhecer })} />
     </Secao>
   )
 }

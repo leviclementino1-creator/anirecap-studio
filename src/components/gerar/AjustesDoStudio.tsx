@@ -3,6 +3,9 @@ import { Cpu, FolderOpen, Loader2 } from 'lucide-react'
 import type { PublicSettings } from '@shared/channels'
 import { useGerar } from '@/store/gerar'
 import { ConferirDeNovo } from './ResultadoDaBusca'
+import { ConfigDoMotorRuntime } from '@/components/motor-runtime/ConfigDoMotor'
+import { textoDoRuntime } from '@/components/motor-runtime/BotaoDoMotor'
+import { runtimeFora, useMotorRuntime } from '@/store/motor-runtime'
 import { Link, meioDoCaminho, nuvemDoCaminho, resumoDoMotor } from './pecas'
 
 /**
@@ -23,6 +26,8 @@ export function AjustesDoStudio({
   const motor = useGerar((s) => s.motor)
   const motorErro = useGerar((s) => s.motorErro)
   const conferirMotor = useGerar((s) => s.conferirMotor)
+  const runtime = useMotorRuntime((s) => s.estado)
+  const foraDoRuntime = runtimeFora(runtime)
   const [aviso, setAviso] = useState<string | null>(null)
   const [salvando, setSalvando] = useState(false)
   const secao = useRef<HTMLDivElement>(null)
@@ -125,10 +130,14 @@ export function AjustesDoStudio({
           <Cpu size={13} strokeWidth={1.5} className="shrink-0 text-ink-3" />
         )}
         <span
-          className={['min-w-0 select-text truncate', estado.estado === 'fora' ? 'text-danger' : 'text-ink-2'].join(' ')}
+          className={[
+            'min-w-0 select-text truncate',
+            runtime && foraDoRuntime ? (runtime.fase === 'instalando' ? 'text-ink-2' : 'text-danger') : estado.estado === 'fora' ? 'text-danger' : 'text-ink-2',
+          ].join(' ')}
           title={estado.detalhe}
         >
-          {estado.texto}
+          {/* App instalado sem o motor: a frase do runtime (a sondagem pode ser de antes de um Remover). */}
+          {runtime && foraDoRuntime ? textoDoRuntime(runtime) : estado.texto}
           {motor && (
             <span className="text-ink-3" title={motor.ancut.caminho ?? undefined}>
               {' '}
@@ -137,6 +146,8 @@ export function AjustesDoStudio({
           )}
         </span>
       </p>
+      {/* App instalado: onde mora o runtime do motor, instalar, reinstalar, remover. */}
+      <ConfigDoMotorRuntime />
     </div>
   )
 }

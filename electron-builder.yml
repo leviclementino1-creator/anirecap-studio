@@ -13,7 +13,8 @@ directories:
 # Repositorio publico desde o comeco, de proposito: privado exigiria um token do
 # GitHub embutido no instalador, de onde qualquer pessoa conseguiria extrair.
 # Repo proprio, e nao o do Dangai: o app instalado nunca pode se "atualizar"
-# para o Dangai. A busca fica desligada ate a 1a release (ver updater.ts).
+# para o Dangai. A busca automatica e LIGADA (ver ATUALIZACAO_LIGADA em
+# updater.ts): 8 s depois de abrir e a cada 6 h.
 publish:
   provider: github
   owner: leviclementino1-creator
@@ -27,6 +28,13 @@ files:
   - out/preload/**
   - out/renderer/**
   - package.json
+  # O onnxruntime-node traz o binario das tres plataformas e das duas
+  # arquiteturas; so o desta vai (${platform} = win32, ${arch} = x64 no
+  # Windows): ~200 MB a menos no instalado. Fica AQUI, e nao em win.files: um
+  # `files` na secao da plataforma SUBSTITUI esta lista inteira (medido: o asar
+  # levou o repositorio todo, motor/.venv junto, 5,4 GB).
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/!(${platform}){,/**}'
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/!(${arch}){,/**}'
 
 # O bundle do Remotion e os SFX ficam FORA do asar, como recursos soltos.
 # O Chrome do render carrega o bundle por caminho de arquivo e nao enxerga
@@ -44,6 +52,22 @@ extraResources:
   # momento possivel.
   - from: assets/upscale
     to: upscale
+  # O CODIGO do motor de personagens (~1 MB). O RUNTIME (Python + torch, ~5 GB)
+  # nao vai: o GitHub limita a 2 GB por arquivo de release, entao o app instala
+  # o runtime no 1o uso em %LOCALAPPDATA%\AniRecap Studio\motor-runtime
+  # (electron/services/motor-runtime/). So o que o app.headless le: nada do
+  # venv, do Python copiado, do cache, dos modelos nem do instalador antigo do
+  # AnCut. __pycache__ e .pyc ficam fora tambem: o motor roda com
+  # PYTHONDONTWRITEBYTECODE e resources/ e so leitura.
+  - from: motor
+    to: motor
+    filter:
+      - app/**
+      - run.py
+      - requirements.txt
+      - studio-runtime.json
+      - '!**/__pycache__{,/**}'
+      - '!**/*.{pyc,pyo}'
 
 # Binario dentro de asar nao pode ser executado, e o sharp carrega .node
 # nativo. Os dois precisam ficar desempacotados.
@@ -67,20 +91,47 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  # Nome fixo, sem o espaco do productName. O GitHub troca espaco por ponto no
-  # nome do arquivo enviado, e o electron-builder escreve no latest.yml um nome
-  # com hifen: com "${productName}" os tres nomes divergiriam e o updater
-  # procuraria um .exe que a release nao tem. O release.mjs usa este mesmo nome.
-  artifactName: AniRecap-Studio-${version}-win-${arch}.${ext}
+  # O uv (astral-sh/uv 0.11.7, MIT/Apache-2.0) que instala o runtime do motor
+  # no 1o uso. So no Windows: o mac nao tem runtime do motor. `npm run uv`
+  # (scripts/baixar-uv.mjs) baixa e confere o sha256 em build/uv antes.
+  extraResources:
+    - from: build/uv
+      to: uv
+      filter:
+        - uv.exe
+        - LICENSE-MIT
+        - LICENSE-APACHE
+        - uv.json
 
 nsis:
+  # Um clique, por usuario e sem admin: instala em
+  # %LOCALAPPDATA%\Programs\anirecap-studio (o `name` do package.json; os
+  # atalhos e o Painel de Controle mostram "AniRecap Studio"), sem pagina
+  # nenhuma. Com oneClick false o assistente mostra a escolha "para todos os
+  # usuarios", que pede admin. A atualizacao automatica roda este mesmo
+  # instalador com --updated.
+  oneClick: true
+  perMachine: false
+  # "always": o reinstalar a mao recria o atalho apagado; a atualizacao
+  # automatica (--updated) nunca recria (installer.nsh do electron-builder).
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: AniRecap Studio
+  runAfterFinish: true
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
+  # Os dados do Levi (%APPDATA%\AniRecap Studio) ficam sempre. O runtime do
+  # motor (~5 GB, %LOCALAPPDATA%) so sai se ele disser SIM na desinstalacao de
+  # verdade; na atualizacao nunca (build/installer.nsh).
   deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+  # Nome fixo, sem o espaco do productName. O GitHub troca espaco por ponto no
+  # nome do arquivo enviado, e o electron-builder escreve no latest.yml um nome
+  # com hifen: com "${productName}" os tres nomes divergiriam e o updater
+  # procuraria um .exe que a release nao tem. O blockmap e o latest.yml seguem
+  # este nome, e o release.mjs usa o mesmo.
+  artifactName: AniRecap-Studio-Setup-${version}.${ext}
 
 mac:
   icon: build/icon.png

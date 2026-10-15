@@ -6,6 +6,7 @@ import { Atalhos } from "./Atalhos";
 import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
 import { AjustesDeVoz } from "./gerar/AjustesDeVoz";
 import { AjustesDaEdicaoRapida } from "./gerar/AjustesDaEdicaoRapida";
+import { VersaoDoApp } from "./VersaoDoApp";
 import { useGerar } from "@/store/gerar";
 
 /**
@@ -425,6 +426,8 @@ export function Settings() {
               </p>
 
               <AjustesDoStudio settings={settings} onSettings={setSettings} />
+
+              <VersaoDoApp />
             </>
           )}
         </div>

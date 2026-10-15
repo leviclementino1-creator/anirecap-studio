@@ -5,6 +5,10 @@
  *   npm run release
  *   npm run release -- --dry-run     monta e confere, sem publicar
  *
+ * No ensaio, a arvore suja e a tag ausente viram AVISO em vez de parar: da
+ * para provar o empacotamento antes de commitar e criar a tag. O que o
+ * ensaio nao prova e so o upload (`gh`), que ele nunca faz.
+ *
  * POR QUE ISTO EXISTE, e não `electron-builder --publish always`:
  *
  * O electron-builder abre UM PUBLISHER POR ARTEFATO, e cada um guarda a
@@ -32,19 +36,21 @@
  * fica lá parecendo o novo. Por isso ele é conferido linha a linha.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { conferirPacote, nomeDoExe } from './conferir-pacote.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SAIDA = join(ROOT, 'release')
 const DRY = process.argv.includes('--dry-run')
 
 const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const TAG = `v${version}`
-// O mesmo nome do artifactName do electron-builder.yml, sem o espaço do
+// O mesmo nome do nsis.artifactName do electron-builder.yml, sem o espaço do
 // productName: com espaço, o GitHub, o latest.yml e o disco teriam três nomes.
-const EXE = `AniRecap-Studio-${version}-win-x64.exe`
+// AniRecap-Studio-Setup-<versao>.exe; o zip em pasta (workflow) continua
+// AniRecap-Studio-<versao>-win-x64.zip, que é o nome que o StatusBar ensina.
+const EXE = nomeDoExe(version)
 const REPO = 'leviclementino1-creator/anirecap-studio'
 
 function log(msg) {
@@ -54,6 +60,19 @@ function log(msg) {
 function morre(msg) {
   process.stderr.write(`\n  ERRO: ${msg}\n\n`)
   process.exit(1)
+}
+
+/** O que o ensaio deixou passar e a publicação de verdade recusaria. */
+const avisos = []
+
+/**
+ * Conferência de ANTES de empacotar: na publicação para tudo; no ensaio só
+ * avisa, para dar para ensaiar antes de commitar e de criar a tag.
+ */
+function recusa(msg) {
+  if (!DRY) morre(msg)
+  avisos.push(msg)
+  process.stdout.write(`  ! AVISO (ensaio): ${msg.split('\n')[0]}\n`)
 }
 
 /**
@@ -87,7 +106,7 @@ function git(...args) {
 log(`versão ${version}, tag ${TAG}`)
 
 if (git('status', '--porcelain')) {
-  morre('há mudanças não commitadas. Publicar assim geraria um instalador que\n' +
+  recusa('há mudanças não commitadas. Publicar assim geraria um instalador que\n' +
     '  não corresponde a commit nenhum.')
 }
 
@@ -108,76 +127,95 @@ if (git('status', '--porcelain')) {
  * anotada (as que o `npm version` cria) seria recusada com "não aponta para o
  * commit atual" estando perfeitamente certa. `^{commit}` desfaz os dois casos.
  */
-const local = git('rev-parse', `${TAG}^{commit}`)
+const local = (() => {
+  try {
+    return git('rev-parse', '--verify', '--quiet', `${TAG}^{commit}`)
+  } catch {
+    return ''
+  }
+})()
 
 /*
  * No remoto o mesmo problema aparece em duas linhas: `refs/tags/X` traz o
  * objeto da tag e `refs/tags/X^{}` traz o commit já resolvido (só existe para
  * tag anotada). A última linha é a que vale nos dois casos.
  */
-const linhas = git('ls-remote', 'origin', `refs/tags/${TAG}`, `refs/tags/${TAG}^{}`)
-  .split('\n')
-  .filter(Boolean)
-const remoto = linhas.at(-1)?.split('\t')[0]
+let consultou = true
+let remoto
+try {
+  const linhas = git('ls-remote', 'origin', `refs/tags/${TAG}`, `refs/tags/${TAG}^{}`)
+    .split('\n')
+    .filter(Boolean)
+  remoto = linhas.at(-1)?.split('\t')[0]
+} catch (e) {
+  // Sem rede ou sem acesso ao origin: publicar nao daria, ensaiar da.
+  consultou = false
+  recusa(`não consegui consultar as tags no GitHub (${e instanceof Error ? e.message.split('\n')[0] : e}).`)
+}
 
-if (!remoto) {
-  morre(`a tag ${TAG} não está no GitHub. Envie antes:\n\n    git push origin ${TAG}\n`)
-}
-if (remoto !== local) {
-  morre(`a tag ${TAG} no GitHub aponta para outro commit.\n` +
+if (!local) {
+  recusa(`a tag ${TAG} não existe aqui. Crie e envie antes:\n\n    git tag ${TAG}\n    git push origin ${TAG}\n`)
+} else if (!consultou) {
+  // ja avisado acima
+} else if (!remoto) {
+  recusa(`a tag ${TAG} não está no GitHub. Envie antes:\n\n    git push origin ${TAG}\n`)
+} else if (remoto !== local) {
+  recusa(`a tag ${TAG} no GitHub aponta para outro commit.\n` +
     `  local:  ${local}\n  remoto: ${remoto}`)
+} else if (git('rev-parse', 'HEAD') !== local) {
+  recusa(`a tag ${TAG} não aponta para o commit atual.`)
+} else {
+  log('tag conferida no remoto')
 }
-if (git('rev-parse', 'HEAD') !== local) {
-  morre(`a tag ${TAG} não aponta para o commit atual.`)
-}
-log('tag conferida no remoto')
 
 // ------------------------------------------------------------------ empacota
 
 log('empacotando (alguns minutos)...')
 // Estes dois precisam de shell (são .cmd), e nenhum argumento tem espaço.
 run('npm', ['run', 'build'], { shell: true })
+/*
+ * O uv.exe que vai em resources/uv (win.extraResources) mora em build/uv, fora
+ * do git: baixado aqui da release oficial do astral-sh/uv e conferido pelo
+ * sha256. Sem ele o electron-builder empacotaria um app que não consegue
+ * instalar o motor -- e só o Levi descobriria, no primeiro corte.
+ * O node é .exe: sem shell.
+ */
+run(process.execPath, ['scripts/baixar-uv.mjs'])
 run('npx', ['electron-builder', '--win', '--publish', 'never'], { shell: true })
 
 // ------------------------------------------------------------- confere o pacote
 
-const exePath = join(SAIDA, EXE)
-const ymlPath = join(SAIDA, 'latest.yml')
-
-if (!existsSync(exePath)) morre(`não achei ${EXE} em release/`)
-if (!existsSync(ymlPath)) morre('não achei release/latest.yml')
-
-const yml = readFileSync(ymlPath, 'utf8')
-const versaoNoYml = /^version:\s*(.+)$/m.exec(yml)?.[1]?.trim()
-const tamanhoNoYml = Number(/^\s*size:\s*(\d+)$/m.exec(yml)?.[1])
-const tamanhoReal = statSync(exePath).size
-
 /*
- * Estas três conferências são o coração do script.
+ * As conferências moram em scripts/conferir-pacote.mjs, para rodar também
+ * sozinhas depois de um `npm run dist`, sem tag nenhuma. As do latest.yml são
+ * o coração deste script:
  *
  * `release/` não é limpo entre publicações: um latest.yml da versão anterior
  * sobrevive ali e tem cara de novo. Subi-lo produz uma release que parece
  * completa e diz aos apps que a versão mais recente é a velha -- ninguém
  * atualiza, e o sintoma aparece dias depois.
  *
- * O tamanho é conferido porque reempacotar gera um .exe com bytes diferentes
- * (medido: 88 bytes entre duas execuções). Com o yml apontando para um tamanho
- * que o arquivo publicado não tem, o updater baixa e recusa na verificação.
+ * O tamanho (e agora o sha512) é conferido porque reempacotar gera um .exe com
+ * bytes diferentes (medido: 88 bytes entre duas execuções). Com o yml
+ * apontando para um arquivo que não é o publicado, o updater baixa e recusa na
+ * verificação.
+ *
+ * As do pacote são do instalador com o motor: o .exe abaixo de 1,9 GiB (o
+ * GitHub recusa acima de 2), o uv conferido, o código do motor igual ao do
+ * repo e sem __pycache__/.venv/python/cache/models, e o ffmpeg e o ffprobe
+ * que o motor do app instalado usa.
  */
-if (versaoNoYml !== version) {
-  morre(`release/latest.yml é da versão ${versaoNoYml}, e estamos publicando a ${version}.\n` +
-    '  É o arquivo da publicação anterior. Apague release/ e rode de novo.')
-}
-if (!yml.includes(EXE)) {
-  morre(`release/latest.yml não aponta para ${EXE}.`)
-}
-if (tamanhoNoYml !== tamanhoReal) {
-  morre(`o tamanho no latest.yml (${tamanhoNoYml}) não bate com o do arquivo (${tamanhoReal}).`)
-}
-log(`latest.yml confere: ${version}, ${tamanhoReal} bytes`)
+const { erros, info } = conferirPacote({ raiz: ROOT, versao: version })
+for (const linha of info) log(linha)
+if (erros.length) morre(erros.join('\n  ERRO: '))
 
 if (DRY) {
-  log('ensaio — nada foi publicado. Os arquivos estão em release/')
+  if (avisos.length) {
+    log(`ensaio — nada foi publicado. Publicar de verdade pararia em ${avisos.length} conferência(s):`)
+    for (const a of avisos) process.stdout.write(`      - ${a.split('\n')[0]}\n`)
+  } else {
+    log('ensaio — nada foi publicado. Os arquivos estão em release/')
+  }
   process.exit(0)
 }
 

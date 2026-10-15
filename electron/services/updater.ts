@@ -60,22 +60,63 @@ async function carregar(): Promise<typeof import('electron-updater')> {
   return embrulhado?.autoUpdater ? embrulhado : modulo
 }
 
-/** Uma vez por dia basta: o app fica aberto por sessoes de edicao, nao dias. */
+/**
+ * A cada 6 h: o app fica aberto por sessoes de edicao, e uma versao nova nao
+ * precisa chegar no mesmo minuto. Cada busca le o releases.atom do repo e o
+ * latest.yml da ultima release (sem token: o repo e publico).
+ */
 const INTERVALO_MS = 6 * 60 * 60 * 1000
 
+/** A 1a busca espera a janela abrir: os primeiros segundos sao do usuario. */
+const ESPERA_DA_1A_BUSCA_MS = 8000
+
 /**
- * A busca de atualizacao esta DESLIGADA ate a 1a release do Studio.
+ * A busca de atualizacao esta LIGADA desde a 1a release (0.1.0).
  *
- * O repo (leviclementino1-creator/anirecap-studio) e publico, mas ainda nao tem
- * release nenhuma, e o electron-updater trata "nenhuma versao publicada" como
- * erro -- que chegaria na barra de status de quem so abriu o app para editar.
- * Desligado, o app nao consulta nada e a versao na barra responde "em dia",
- * que e a verdade enquanto nao existe versao mais nova.
+ * QUANDO CONSULTA: so no app instalado (em dev nao ha o que substituir), 8 s
+ * depois de abrir e a cada 6 h com o app aberto, nas releases PUBLICADAS de
+ * leviclementino1-creator/anirecap-studio (o `publish` do electron-builder.yml,
+ * gravado no resources/app-update.yml). Achou versao nova: baixa sozinha em
+ * segundo plano e a barra mostra "Atualizar para X". A troca so acontece
+ * quando o Levi clica -- nunca no meio de um render, nunca enquanto o motor de
+ * personagens instala (o StatusBar segura o botao nos dois casos).
  *
- * Ligar = trocar para true no mesmo commit da versao publicada como 1a release.
- * O resto do codigo continua aqui inteiro para esse dia.
+ * O que ela le na release: o latest.yml, que aponta para
+ * AniRecap-Studio-Setup-<versao>.exe. O release.mjs confere os dois antes de
+ * subir; sem o latest.yml (ou com o de outra versao) ninguem atualiza.
+ *
+ * Busca sem release ainda (repo sem release, ou no meio de uma publicacao,
+ * com a release criada e o latest.yml ainda subindo) responde "em dia" e nao
+ * "erro", na automatica E na manual (versao na barra, "Procurar atualizacoes"
+ * nas Configuracoes): nao ha versao mais nova que a instalada, nao e falha de
+ * ninguem, e um "nao consegui verificar" em vermelho assustaria por nada. Sem
+ * internet, GitHub fora e o resto continuam "erro" na manual.
+ *
+ * Desligar = false: o app nao consulta nada e a versao na barra responde "em
+ * dia". O resto do codigo fica inteiro.
  */
-export const ATUALIZACAO_LIGADA: boolean = false
+export const ATUALIZACAO_LIGADA: boolean = true
+
+/**
+ * Os erros que querem dizer "ainda nao ha release com latest.yml para ler":
+ * repo sem release publicada, ou a ultima sem o latest.yml. Pelos codigos do
+ * electron-updater 6 (GitHubProvider), e pela frase como reserva -- o repo sem
+ * release nenhuma chega com o codigo generico ERR_XML_MISSED_ELEMENT (o
+ * releases.atom vazio) e a frase "No published versions on GitHub" (medido no
+ * app instalado em 15/10).
+ */
+const CODIGOS_SEM_RELEASE = new Set([
+  'ERR_UPDATER_NO_PUBLISHED_VERSIONS',
+  'ERR_UPDATER_LATEST_VERSION_NOT_FOUND',
+  'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+])
+
+export function semReleaseAinda(err: unknown): boolean {
+  const codigo = (err as { code?: unknown } | null)?.code
+  if (typeof codigo === 'string' && CODIGOS_SEM_RELEASE.has(codigo)) return true
+  const msg = err instanceof Error ? err.message : String(err)
+  return /No published versions|Unable to find latest version|Cannot find latest\.yml/i.test(msg)
+}
 
 export async function startUpdater(
   windows: () => BrowserWindow[],
@@ -131,6 +172,10 @@ export async function startUpdater(
       enviar({ state: 'bloqueada', version: prontaPara, message: err.message })
       return
     }
+    if (semReleaseAinda(err)) {
+      enviar({ state: 'atual' })
+      return
+    }
     enviar({ state: 'erro', message: err.message })
   })
 
@@ -140,7 +185,7 @@ export async function startUpdater(
 
   // Nao na abertura: os primeiros segundos sao do usuario soltando arquivos,
   // e nao de uma consulta de rede disputando a banda.
-  setTimeout(verificar, 8000)
+  setTimeout(verificar, ESPERA_DA_1A_BUSCA_MS)
   setInterval(verificar, INTERVALO_MS)
 }
 
@@ -178,15 +223,16 @@ export async function installUpdate(): Promise<void> {
  * Sem uma forma de perguntar, a unica maneira de saber se a atualizacao
  * funciona e esperar sair uma versao nova e torcer.
  *
- * Ao contrario da busca automatica, esta REPORTA o erro: quem clicou esta
- * esperando uma resposta, e silencio seria a mesma armadilha de novo.
+ * Ao contrario da busca automatica, esta REPORTA o erro (sem internet, GitHub
+ * fora): quem clicou esta esperando uma resposta, e silencio seria a mesma
+ * armadilha de novo. "Ainda sem release" nao e erro: responde "em dia".
  */
 export async function checkForUpdateNow(): Promise<void> {
   const enviar = enviarStatus
   if (!enviar) return
 
-  // Sem release publicada nao ha o que procurar, e responder erro aqui pintaria
-  // de vermelho a versao na barra por um motivo que nao e falha de ninguem.
+  // Desligada, nao ha o que procurar, e responder erro aqui pintaria de
+  // vermelho a versao na barra por um motivo que nao e falha de ninguem.
   if (!ATUALIZACAO_LIGADA) {
     enviar({ state: 'atual' })
     return
@@ -209,9 +255,12 @@ export async function checkForUpdateNow(): Promise<void> {
     // sem isto a interface ficaria presa em "procurando" para sempre.
     if (!resultado) enviar({ state: 'atual' })
   } catch (err) {
-    enviar({
-      state: 'erro',
-      message: err instanceof Error ? err.message : 'Nao consegui verificar agora.',
-    })
+    // O `error` do autoUpdater ja respondeu; isto e para a falha que chega so
+    // pela promessa. Sem release ainda = "em dia" (ver ATUALIZACAO_LIGADA).
+    enviar(
+      semReleaseAinda(err)
+        ? { state: 'atual' }
+        : { state: 'erro', message: err instanceof Error ? err.message : 'Nao consegui verificar agora.' },
+    )
   }
 }

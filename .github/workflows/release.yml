@@ -92,7 +92,8 @@ jobs:
       # funciona enquanto o projeto nao tiver certificado.
       #
       # ZIPA O CONTEUDO, e nao a pasta: o destino e substituir o que esta em
-      # `AppData\Local\Programs\AniRecap Studio`, entao o que sai do zip tem que ser
+      # `AppData\Local\Programs\anirecap-studio` (o instalador usa o `name` do
+      # package.json, sem espaco), entao o que sai do zip tem que ser
       # exatamente aquilo, sem um nivel a mais no meio.
       #
       # FICA FORA DO latest.yml de proposito. O updater do Windows so sabe

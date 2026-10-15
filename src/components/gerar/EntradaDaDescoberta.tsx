@@ -11,6 +11,7 @@ import {
 import { temPlanos } from '@shared/episodio'
 import { useGerar } from '@/store/gerar'
 import { opcoesDoResumo, useDescoberta } from '@/store/gerar-descoberta'
+import { runtimeFora, useMotorRuntime } from '@/store/motor-runtime'
 import { Barra } from './AndamentoDaAnalise'
 import { AbrirPasta, Aviso, Botao, focarBotao, Link } from './pecas'
 
@@ -58,13 +59,20 @@ function useOferta(): { motivo: MotivoDaDescoberta; desligado: string | null } |
   const corte = useGerar((s) => s.corte)
   const motor = useGerar((s) => s.motor)
   const job = useGerar((s) => s.job)
+  const runtime = useMotorRuntime((s) => s.estado)
   const viva = useDescobertaViva()
   if (!indice || viva) return null
   const oferta = podeReconhecerNaMao(indice, corte)
   if (!oferta.pode || !oferta.motivo) return null
   // So o motor do Studio agrupa (o corte pelo AnCut parou no AnCut).
   if (!temPlanos(indice) && corte && corte.motor !== 'studio') return null
-  const desligado = job !== null ? 'Espere a analise acabar' : motor?.studio.pronto !== true ? (motor?.studio.erro ?? 'O motor do Studio nao esta pronto') : null
+  // App instalado sem o motor: o clique abre a tela "Instalar motor" (pedirMotor) e segue depois.
+  const desligado =
+    job !== null
+      ? 'Espere a analise acabar'
+      : motor?.studio.pronto !== true && !runtimeFora(runtime)
+        ? (motor?.studio.erro ?? 'O motor do Studio nao esta pronto')
+        : null
   return { motivo: oferta.motivo, desligado }
 }
 

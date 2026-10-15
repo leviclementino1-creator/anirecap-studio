@@ -11,6 +11,7 @@ import { configDoMotor, pastaDeDadosDoMotor } from '../motor'
 import { focoNoQuadro, focosDosPedacos, instantesDoTrecho } from './foco'
 import { chaveDoPedaco } from './projeto'
 import { pythonDoMotor } from '../python-do-motor'
+import { ambienteDoRuntime, backendDoRuntime, usaRuntime } from '../motor-runtime'
 
 /**
  * O ROSTO PELO MOTOR (Edicao rapida, agente B, 14/10).
@@ -38,8 +39,8 @@ import { pythonDoMotor } from '../python-do-motor'
  *   presenca x tamanho ("o maior rosto", suavizado). Outro rosto grande que
  *   cabe junto na janela 9:16 entra no enquadramento (plano de dois).
  *
- * Reserva: motor desligado (lote.motor false), sem venv (app instalado ate a
- * F5), erro ao subir ou teto: os pedacos sem resposta vao para o detector
+ * Reserva: motor desligado (lote.motor false), sem motor (app instalado sem o
+ * runtime: motor-runtime/), erro ao subir ou teto: os pedacos sem resposta vao para o detector
  * antigo (focosDosPedacos), e `fonte` diz quem achou cada um. Rosto e melhoria,
  * nunca requisito: nada daqui lanca para quem chama.
  *
@@ -319,14 +320,20 @@ interface Backend {
   python: string
   cwd: string
   dados: string
+  /** O runtime do app instalado: o ambiente vem do ambienteDoRuntime. */
+  runtime?: { cudaOk: boolean }
 }
 
 function backend(o: OpcoesDoRostoPeloMotor): Backend | { erro: string } {
   try {
     if (o.python && o.cwd) return { python: o.python, cwd: o.cwd, dados: o.dados ?? pastaDeDadosDoMotor() }
     const c = configDoMotor()
-    // App instalado: o pacote do motor so chega na F5 (motor.ts, backendDoStudio).
-    if (c.empacotado) return { erro: 'motor de personagens ainda nao vem no app instalado' }
+    // App instalado: o runtime baixado no 1o uso (o mesmo do motor.ts). Sem ele, o detector antigo.
+    if (usaRuntime()) {
+      const r = backendDoRuntime()
+      if ('erro' in r) return { erro: r.erro }
+      return { python: r.python, cwd: r.cwd, dados: o.dados ?? pastaDeDadosDoMotor(), runtime: { cudaOk: r.cudaOk } }
+    }
     const cwd = join(c.appPath, 'motor')
     const python =
       process.platform === 'win32' ? join(cwd, '.venv', 'Scripts', 'python.exe') : join(cwd, '.venv', 'bin', 'python')
@@ -444,15 +451,20 @@ export function rodarMotorDeRostos(
       resolver(resposta)
     }
 
-    const env: NodeJS.ProcessEnv = {
+    let env: NodeJS.ProcessEnv = {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       // O run.py do exe liga isto; rodando o modulo, a ultralytics tentaria um pip install sozinha.
       YOLO_AUTOINSTALL: 'false',
       ANIRECAP_MOTOR_DADOS: b.dados,
     }
-    const chavePath = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
-    env[chavePath] = [env[chavePath], dirname(ffmpegPath)].filter(Boolean).join(delimiter)
+    if (b.runtime) {
+      // App instalado: ffmpeg do app primeiro, Python isolado, sem .pyc na pasta de instalacao.
+      env = ambienteDoRuntime(env, b.runtime)
+    } else {
+      const chavePath = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+      env[chavePath] = [env[chavePath], dirname(ffmpegPath)].filter(Boolean).join(delimiter)
+    }
 
     try {
       // Direto no Python base, sem o lancador do venv (python-do-motor.ts).

@@ -54,5 +54,29 @@ Remotion
   pessoa fisica e empresa pequena; empresas maiores precisam de licenca
   paga. Ver https://www.remotion.dev/license.
 
+uv 0.11.7 (astral-sh/uv)
+  Copyright (c) 2025 Astral Software Inc. Licenca MIT OU Apache-2.0, a escolha.
+  https://github.com/astral-sh/uv. O uv.exe vai no instalador do Windows,
+  sem modificacao, em resources/uv, junto com as duas licencas
+  (LICENSE-MIT e LICENSE-APACHE) da mesma tag.
+
+
+Baixado no primeiro uso, nao redistribuido
+------------------------------------------
+
+O runtime do motor de personagens nao vai no instalador. No primeiro uso o
+app baixa, com o uv, das fontes oficiais de cada projeto, direto para
+%LOCALAPPDATA%\AniRecap Studio\motor-runtime, nas versoes e hashes fixados
+em motor/studio-runtime.json:
+
+- Python 3.12 (python-build-standalone, Licenca PSF e as das bibliotecas
+  embutidas), pela release oficial que o uv usa;
+- PyTorch e torchvision (BSD-3-Clause), de download.pytorch.org;
+- os demais pacotes Python (open_clip, ultralytics, onnxruntime, OpenCV,
+  PySceneDetect, numpy e as dependencias deles), do PyPI, cada um com a sua
+  licenca, que fica junto do pacote instalado (site-packages/<pacote>.dist-info).
+  O ultralytics e AGPL-3.0: e baixado pelo usuario e usado localmente pelo
+  motor, sem ser redistribuido pelo Studio.
+
 As demais dependencias do npm seguem as licencas de cada pacote, listadas em
 node_modules/<pacote>/LICENSE.

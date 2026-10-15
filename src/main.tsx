@@ -5,6 +5,7 @@ import './index.css'
 import { App } from './App'
 import { useProject } from './store/project'
 import { useGerar } from './store/gerar'
+import { useMotorRuntime } from './store/motor-runtime'
 
 const container = document.getElementById('root')
 if (!container) throw new Error('Elemento #root nao encontrado')
@@ -16,6 +17,8 @@ if (import.meta.env.DEV) {
   // O assistente "Gerar recap" tem store propria; o teste por CDP escolhe o
   // episodio por ela, ja que o dialogo nativo nao da para clicar.
   Reflect.set(window, 'gerarStore', useGerar)
+  // A tela "Instalar motor" (app instalado), para os prints por CDP.
+  Reflect.set(window, 'motorRuntimeStore', useMotorRuntime)
 }
 
 createRoot(container).render(

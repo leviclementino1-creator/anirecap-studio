@@ -3,6 +3,12 @@ out/
 dist/
 release/
 
+# O uv.exe do instalador: baixado e conferido por `npm run uv`
+# (scripts/baixar-uv.mjs, pinado por versao e sha256). Binario de 68 MB nao
+# entra no git, e sem esta linha o release.mjs acharia "mudancas nao commitadas".
+build/uv/
+build/uv.novo-*/
+
 *.tsbuildinfo
 
 # Nunca versionar chave de API. As chaves (Gemini e Anthropic) vivem cifradas

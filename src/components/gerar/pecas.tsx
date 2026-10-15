@@ -455,15 +455,22 @@ export function resumoDoMotor(
   const s = motor.studio
   if (!s.pronto) {
     const erro = s.erro ?? ''
+    // As frases do main (motor.ts e o runtime do app instalado, motor-runtime/index.ts).
     const texto = /nao esta instalado|falta o python/i.test(erro)
       ? 'Motor nao instalado'
-      : /app instalado/i.test(erro)
-        ? 'Motor so na versao de desenvolvimento'
-        : /ffmpeg/i.test(erro)
-          ? 'Motor sem ffmpeg'
-          : /nao respondeu/i.test(erro)
-            ? 'O motor nao respondeu'
-            : 'Motor fora do ar'
+      : /esta sendo instalado/i.test(erro)
+        ? 'Motor instalando'
+        : /nao terminou/i.test(erro)
+          ? 'Instalacao do motor parou'
+          : /precisa de uma atualizacao/i.test(erro)
+            ? 'Motor precisa de atualizacao'
+            : /so roda no windows/i.test(erro)
+              ? 'Motor so no Windows'
+              : /ffmpeg/i.test(erro)
+                ? 'Motor sem ffmpeg'
+                : /nao respondeu/i.test(erro)
+                  ? 'O motor nao respondeu'
+                  : 'Motor fora do ar'
     return { estado: 'fora', texto, detalhe: erro || undefined }
   }
   return {

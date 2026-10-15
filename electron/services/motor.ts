@@ -25,6 +25,7 @@ import { ffmpegPath } from './ffmpeg-path'
 import { ascii, fraseDoMotor } from './frase-do-motor'
 import { pastaDaBibliotecaStudio, pastaDeDocumentos } from './settings'
 import { pythonDoMotor } from './python-do-motor'
+import { ambienteDoRuntime, backendDoRuntime, usaRuntime } from './motor-runtime'
 
 /**
  * O MOTOR: corta o episodio em cenas e reconhece os personagens pelo rosto,
@@ -53,7 +54,10 @@ export interface ConfigDoMotor {
   userData: string
   /** app.getAppPath(): em dev, a raiz do repositorio (onde mora motor/). */
   appPath: string
-  /** app.isPackaged. O pacote do motor para download fica na F5. */
+  /**
+   * app.isPackaged. No app instalado o motor roda no RUNTIME baixado no 1o uso
+   * (electron/services/motor-runtime/), com o codigo em resources/motor.
+   */
   empacotado: boolean
 }
 
@@ -104,6 +108,8 @@ interface Backend {
   cwd: string
   /** Variaveis a mais para o processo (o __PYVENV_LAUNCHER__ do motor do Studio). */
   env?: Record<string, string>
+  /** O motor do Studio no runtime do app instalado: o ambiente vem do ambienteDoRuntime. */
+  runtime?: { cudaOk: boolean }
 }
 
 /**
@@ -115,12 +121,16 @@ interface Backend {
  */
 function backendDoStudio(): Backend | { erro: string } {
   const c = configDoMotor()
-  if (c.empacotado) {
-    // F5: no app instalado o motor vira um pacote para download opcional
-    // (~2 a 5 GB de torch + CUDA), fora do asar e fora do instalador -- o
-    // mesmo motivo do AnCut HUB (NSIS 32-bit nao mapeia pacote acima de ~2 GB).
-    // Quando existir, ele entra aqui, antes do venv.
-    return { erro: 'O motor de personagens ainda nao vem no app instalado. Por enquanto ele roda so na versao de desenvolvimento.' }
+  if (usaRuntime()) {
+    // App instalado (ou ANIRECAP_MOTOR_RUNTIME=1 no dev): o Python + torch que
+    // o app instalou no 1o uso em %LOCALAPPDATA%\AniRecap Studio\motor-runtime
+    // (o GitHub limita a 2 GB por arquivo de release; o torch cu128 sozinho
+    // tem 2,7). O erro e a frase da tela ("nao esta instalado", "esta sendo
+    // instalado", "precisa de uma atualizacao"...): o resumoDoMotor reconhece.
+    const r = backendDoRuntime()
+    if ('erro' in r) return { erro: r.erro }
+    const { cmd, env } = pythonDoMotor(r.python)
+    return { cmd, args: ['-m', 'app.headless'], cwd: r.cwd, env, runtime: { cudaOk: r.cudaOk } }
   }
   const pasta = join(c.appPath, 'motor')
   const python =
@@ -180,15 +190,20 @@ function backendDoAnCut(): Backend | { erro: string } {
  *   PATH (motor/app/ffmpeg_locate.py) quando nao ha motor/bin/.
  * - ANIRECAP_MOTOR_DADOS: so no motor do Studio. O do AnCut usa a pasta dele,
  *   que e a escolha do usuario quando ele pede "Analisar com o AnCut".
+ * - Motor no runtime (app instalado): o ambienteDoRuntime por cima -- o
+ *   ffmpeg do APP primeiro e o ffprobe do Remotion no fim (nada do PATH de
+ *   quem instalou decide o corte), Python isolado e PYTHONDONTWRITEBYTECODE
+ *   (o codigo fica na pasta de instalacao, onde nada pode ser gravado).
  */
-function ambiente(motor: Motor): NodeJS.ProcessEnv {
+function ambiente(motor: Motor, backend?: Backend): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', YOLO_AUTOINSTALL: 'false' }
+  if (motor === 'studio') env['ANIRECAP_MOTOR_DADOS'] = pastaDeDadosDoMotor()
+  else delete env['ANIRECAP_MOTOR_DADOS']
+  if (motor === 'studio' && backend?.runtime) return ambienteDoRuntime(env, backend.runtime)
   // No Windows a chave e 'Path'. Criar 'PATH' ao lado deixaria duas, e qual
   // vale fica por conta da ordem.
   const chave = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   env[chave] = [env[chave], dirname(ffmpegPath)].filter(Boolean).join(delimiter)
-  if (motor === 'studio') env['ANIRECAP_MOTOR_DADOS'] = pastaDeDadosDoMotor()
-  else delete env['ANIRECAP_MOTOR_DADOS']
   return env
 }
 
@@ -301,7 +316,7 @@ function rodarCurto(backend: Backend, motor: Motor, args: string[], limiteMs: nu
       filho = spawn(backend.cmd, [...backend.args, ...args], {
         cwd: backend.cwd,
         windowsHide: true,
-        env: { ...ambiente(motor), ...backend.env },
+        env: { ...ambiente(motor, backend), ...backend.env },
       })
     } catch (e) {
       resolver({ eventos, stderr, falha: e instanceof Error ? e.message : String(e) })
@@ -364,6 +379,15 @@ function explicar(saida: SaidaCurta, padrao: string): string {
  * poder ser conferido de novo sem reiniciar o app.
  */
 let sondaDoStudio: Promise<StatusDoMotor['studio']> | null = null
+
+/**
+ * O runtime do motor mudou (instalou, atualizou, removeu: motor-runtime/ipc.ts):
+ * a resposta guardada, boa ou ruim, ja nao vale. O proximo statusDoMotor sonda
+ * de novo.
+ */
+export function esquecerSondaDoMotor(): void {
+  sondaDoStudio = null
+}
 
 async function sondarStudio(): Promise<StatusDoMotor['studio']> {
   const vazio = { pronto: false, versao: null, gpu: null }
@@ -802,7 +826,7 @@ function iniciar(job: Job, repeticao: boolean): void {
     filho = spawn(backend.cmd, [...backend.args, 'run'], {
       cwd: backend.cwd,
       windowsHide: true,
-      env: { ...ambiente(job.motor), ...backend.env },
+      env: { ...ambiente(job.motor, backend), ...backend.env },
     })
   } catch (e) {
     entregar(job, falhou(job, `Nao deu para iniciar o motor: ${e instanceof Error ? e.message : String(e)}`))

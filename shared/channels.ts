@@ -63,6 +63,7 @@ import type {
   PedidoDaDescoberta,
   ResultadoDaDescoberta,
 } from './descoberta'
+import type { EstadoDoMotorRuntime, PedidoDeInstalacao } from './motor-runtime'
 import type {
   AudioDoTake,
   EstimativaDeCusto,
@@ -185,6 +186,16 @@ export const IPC = {
   analiseProgresso: 'motor:progresso',
   /** main -> renderer, FimDaAnalise (uma vez por job) */
   analiseFim: 'motor:fim',
+
+  // Runtime do motor no app instalado (Python + torch baixados no 1o uso).
+  // Tipos em shared/motor-runtime.ts; o main e electron/services/motor-runtime/.
+  estadoDoMotorRuntime: 'motor-runtime:estado',
+  instalarMotorRuntime: 'motor-runtime:instalar',
+  cancelarMotorRuntime: 'motor-runtime:cancelar',
+  escolherPastaDoMotorRuntime: 'motor-runtime:escolher-pasta',
+  removerMotorRuntime: 'motor-runtime:remover',
+  /** main -> renderer, EstadoDoMotorRuntime inteiro (no maximo ~4 por segundo) */
+  motorRuntimeEstado: 'motor-runtime:mudou',
 
   // Gerar recap, passo 2 (Roteiro). Tipos em shared/roteiro.ts.
   abrirRascunho: 'recap:abrir-rascunho',
@@ -1125,6 +1136,26 @@ export interface DangaiBridge {
   cancelarAnalise(jobId: string): Promise<IpcResult<null>>
   onAnaliseProgresso(listener: (progresso: ProgressoDaAnalise) => void): () => void
   onAnaliseFim(listener: (fim: FimDaAnalise) => void): () => void
+
+  // ----------------------------------------- runtime do motor (app instalado)
+  // Contrato em shared/motor-runtime.ts. Em dev a fase e 'dev' e nada instala.
+  /** O estado agora (fase, pasta, GPU, tamanhos, andamento, erro, mudancas). */
+  estadoDoMotorRuntime(): Promise<IpcResult<EstadoDoMotorRuntime>>
+  /**
+   * Instala, continua ou atualiza, em segundo plano: devolve na hora com a fase
+   * 'instalando'; o andamento chega por onMotorRuntime. Ja instalando = erro.
+   */
+  instalarMotorRuntime(pedido: PedidoDeInstalacao): Promise<IpcResult<EstadoDoMotorRuntime>>
+  /** Para a instalacao; o que ja baixou fica para o "Continuar". */
+  cancelarMotorRuntime(): Promise<IpcResult<null>>
+  /**
+   * Dialogo de pasta (so com o motor ausente). Cancelado no dialogo = o estado
+   * de antes. `padrao` = volta para %LOCALAPPDATA%, sem dialogo.
+   */
+  escolherPastaDoMotorRuntime(padrao?: boolean): Promise<IpcResult<EstadoDoMotorRuntime>>
+  /** Apaga o runtime da pasta atual (libera ~5 GB). So fora de 'instalando'. */
+  removerMotorRuntime(): Promise<IpcResult<EstadoDoMotorRuntime>>
+  onMotorRuntime(listener: (estado: EstadoDoMotorRuntime) => void): () => void
   /**
    * Cria (ou le, se ja existe e confere) o episodio.json: legenda com falante,
    * planos com as falas, sugestoes de OP/ED. Grava so na biblioteca do Studio.

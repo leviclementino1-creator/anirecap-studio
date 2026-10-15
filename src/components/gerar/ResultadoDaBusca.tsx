@@ -6,6 +6,8 @@ import { useGerar } from '@/store/gerar'
 import { cortarEReconhecer, usarEReconhecer } from '@/store/gerar-descoberta'
 import { useProject } from '@/store/project'
 import { Chip } from '@/components/painel'
+import { runtimeFora, useMotorRuntime } from '@/store/motor-runtime'
+import { BotaoDoMotorRuntime, textoDoRuntime } from '@/components/motor-runtime/BotaoDoMotor'
 import { AbrirPasta, Aviso, Botao, Caixinha, Contagem, gpuCurta, Link, nuvemDoCaminho, resumoDoMotor, Secao } from './pecas'
 
 /** Como a busca achou, em poucas palavras. O jargao (impressao digital, indice) fica de fora. */
@@ -301,7 +303,10 @@ function useBloqueioDoStudio(): string | null {
   const motor = useGerar((s) => s.motor)
   const motorErro = useGerar((s) => s.motorErro)
   const semAnime = useGerar((s) => !s.palpite?.anime.trim())
+  const runtime = useMotorRuntime((s) => s.estado)
   if (semAnime) return 'Falta o nome do anime'
+  // App instalado sem o motor: o clique abre a tela "Instalar motor" (pedirMotor) e segue depois.
+  if (runtimeFora(runtime)) return null
   if (motorErro) return `Nao deu para conferir o motor: ${motorErro}`
   if (!motor) return 'Conferindo o motor...'
   if (!motor.studio.pronto) return motor.studio.erro ?? 'O motor do Studio nao esta pronto'
@@ -347,11 +352,29 @@ export function ConferirDeNovo() {
 /**
  * Uma linha discreta sobre o motor: pronto (e com que GPU) ou por que nao. O
  * detalhe (versao, caminho, a frase inteira) fica no tooltip.
+ *
+ * No app instalado com o motor fora (runtime ausente, parado, desatualizado ou
+ * instalando), a frase vem do runtime e o botao abre a tela "Instalar motor";
+ * `depois` roda quando ele ficar pronto.
  */
-export function LinhaDoMotor() {
+export function LinhaDoMotor({ depois }: { depois?: () => void } = {}) {
   const motor = useGerar((s) => s.motor)
   const motorErro = useGerar((s) => s.motorErro)
+  const runtime = useMotorRuntime((s) => s.estado)
   const r = resumoDoMotor(motor, motorErro)
+
+  if (runtime && runtimeFora(runtime)) {
+    const instalando = runtime.fase === 'instalando'
+    return (
+      <p className={['flex flex-wrap items-center gap-1.5 text-[11px]', instalando ? 'text-ink-3' : 'text-danger'].join(' ')}>
+        <Cpu size={12} strokeWidth={1.5} className="shrink-0" />
+        <span className="min-w-0 select-text truncate" title={runtime.erro?.mensagem ?? r.detalhe}>
+          {textoDoRuntime(runtime)}
+        </span>
+        <BotaoDoMotorRuntime depois={depois} />
+      </p>
+    )
+  }
 
   if (r.estado === 'conferindo') {
     return (

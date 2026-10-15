@@ -3,6 +3,7 @@ import { useAbreParaBaixo } from './aperto-da-barra'
 import { Loader2, Undo2, WandSparkles, X } from 'lucide-react'
 import { nadaLigado, partesLigadas } from '@shared/edicao-rapida'
 import { useProject } from '@/store/project'
+import { RostoSemMotor } from '@/components/motor-runtime/BotaoDoMotor'
 import { fotografar } from '@/store/documento'
 import { desfazer, fecharPassoAgora } from '@/store/undo'
 import {
@@ -223,6 +224,7 @@ export function BotaoDaEdicaoRapida({ soIcone = false }: { soIcone?: boolean }) 
               {resumo.avisos.length > 3 && <li>+{resumo.avisos.length - 3}</li>}
             </ul>
           )}
+          {resumo.config.rosto && <RostoSemMotor fonte={resumo.rostos?.fonte} />}
           <div className="mt-3 flex items-center gap-2">
             {podeDesfazer && (
               <button

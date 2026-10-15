@@ -210,6 +210,7 @@ import { escolherMusica, listarMusicas, registrarMusicaUsada } from './services/
 import { planejarSom, sfxDaEdicaoRapida } from './services/som/planejar'
 import { medirSom } from './services/som/medir'
 import { rostosDosPedacos } from './services/montar/rostos-motor'
+import { registrarIpcDoMotorRuntime } from './services/motor-runtime/ipc'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -257,6 +258,8 @@ function enviarATodas(canal: string, dado: unknown): void {
 }
 
 export function registerIpc(): void {
+  // Runtime do motor (app instalado): canais motor-runtime:*, no proprio modulo.
+  registrarIpcDoMotorRuntime()
   handle<[string], AudioAnalysis>(IPC.analyzeAudio, (path) => analyzeAudio(path))
   handle<[string], { peaks: number[]; rms: number[]; durationSec: number }>(IPC.ondaDetalhada, (path) =>
     ondaDetalhada(path),

@@ -12,6 +12,7 @@ import {
   ShieldAlert,
 } from 'lucide-react'
 import { useProject } from '@/store/project'
+import { useMotorRuntime } from '@/store/motor-runtime'
 import { AnaliseNaBarra } from '@/components/gerar/AnaliseNaBarra'
 import { RELEASES_URL } from '@shared/channels'
 import type { PlanOrigin } from '@shared/contract'
@@ -165,6 +166,9 @@ export function StatusBar({ isDragging }: StatusBarProps) {
 function UpdateChip({ appVersion }: { appVersion: string }) {
   const update = useProject((s) => s.update)
   const rendering = useProject((s) => s.render !== null)
+  // Atualizar fecha o app; no meio da instalacao do motor isso joga fora o
+  // andamento da etapa (a retomada guarda o resto, mas o Levi esperaria de novo).
+  const motorInstalando = useMotorRuntime((s) => s.estado?.fase === 'instalando')
   const [perguntou, setPerguntou] = useState(false)
 
   // A resposta de uma busca manual some sozinha: ela responde a uma pergunta,
@@ -207,7 +211,7 @@ function UpdateChip({ appVersion }: { appVersion: string }) {
           'Para atualizar sem instalador:' +
             `\n1. baixe AniRecap-Studio-${update.version}-win-x64.zip nesta release` +
             '\n2. FECHE o AniRecap Studio (o Windows nao substitui arquivo em uso)' +
-            '\n3. extraia por cima de %LOCALAPPDATA%\\Programs\\AniRecap Studio',
+            '\n3. extraia por cima de %LOCALAPPDATA%\\Programs\\anirecap-studio',
         ].join('\n\n')}
         className="flex shrink-0 items-center gap-1.5 rounded-sm border border-danger px-2 py-0.5 text-[11px] text-danger transition-colors duration-150 hover:bg-danger/10"
       >
@@ -221,9 +225,15 @@ function UpdateChip({ appVersion }: { appVersion: string }) {
     return (
       <button
         type="button"
-        disabled={rendering}
+        disabled={rendering || motorInstalando}
         onClick={() => void window.dangai.installUpdate()}
-        title={rendering ? 'Termine o render primeiro' : `Instala a ${update.version} e reabre o app`}
+        title={
+          rendering
+            ? 'Termine o render primeiro'
+            : motorInstalando
+              ? 'Espere o motor terminar de instalar'
+              : `Instala a ${update.version} e reabre o app`
+        }
         className="flex shrink-0 items-center gap-1.5 rounded-sm border border-accent bg-accent-dim px-2 py-0.5 text-[11px] text-ink disabled:opacity-40"
       >
         <Download size={12} strokeWidth={1.5} className="text-accent" />

@@ -93,9 +93,20 @@ encerra uma cena.
 - Projeto: grava `.anirecap` e abre `.anirecap` e `.dangai`, os dois no formato
   versão 1 (`shared/project-file.ts`). Nunca grava por cima de um `.dangai`.
 - Dados em `%APPDATA%/AniRecap Studio`, que sai do `productName` do
-  `package.json`. O updater fica desligado (`ATUALIZACAO_LIGADA` em
-  `electron/services/updater.ts`) até a primeira release do repositório
-  público `leviclementino1-creator/anirecap-studio`.
+  `package.json` (igual no dev e no instalado). O updater está **ligado**
+  (`ATUALIZACAO_LIGADA` em `electron/services/updater.ts`): o app instalado lê
+  as releases do repositório público `leviclementino1-creator/anirecap-studio`
+  8 s depois de abrir e a cada 6 h. "Procurar atualizacoes" fica no fim das
+  Configurações (`VersaoDoApp.tsx`) e na versão da barra; sem release ainda,
+  as duas buscas respondem "em dia" (`semReleaseAinda`), nunca erro.
+- **Instalador** (15/10): `AniRecap-Studio-Setup-<versão>.exe`, NSIS por
+  usuário, sem admin, em `%LOCALAPPDATA%\Programs\anirecap-studio` (o `name`
+  do `package.json`, sem espaço), ~200 MB. Leva o CÓDIGO do motor
+  (`resources/motor`) e o uv (`resources/uv`); o RUNTIME do motor (Python +
+  torch, ~5 GB) é instalado pelo app no 1º uso em
+  `%LOCALAPPDATA%\AniRecap Studio\motor-runtime` (o GitHub limita a 2 GB por
+  arquivo). Nada é gravado na pasta de instalação. O desinstalador pergunta se
+  apaga o runtime (padrão Não; na atualização nunca: `build/installer.nsh`).
 
 ## Layout
 
@@ -111,7 +122,8 @@ encerra uma cena.
 | `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`; `edicao-rapida.ts` e `rostos-motor.ts` para a Edição rápida) |
 | `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e velocidade, volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
 | `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente (`gerar-passos.ts` = a ordem dos passos; `gerar-cenas.ts` = o passo 4 e as sugestões em segundo plano) |
-| `scripts/` | ícone, SFX, `release.mjs` e testes manuais em `scripts/teste/` |
+| `electron/services/motor-runtime/`, `shared/motor-runtime.ts` | o runtime do motor no app instalado: pasta, lock (`motor/studio-runtime.json`, gerado por `npm run motor:lock`), impressão, instalação pelo uv com retomada, ambiente do motor (ffmpeg do app primeiro, ffprobe do Remotion por último); a tela é `src/components/motor-runtime/` + `src/store/motor-runtime.ts` |
+| `scripts/` | ícone, SFX, `release.mjs` (publica), `conferir-pacote.mjs` (confere `release/`), `baixar-uv.mjs` (`npm run uv`), `motor-lock.mjs` e testes manuais em `scripts/teste/` |
 
 Mudou o formato de uma mensagem IPC? O tipo mora em `shared/`: mexa lá primeiro
 e deixe os dois lados seguirem o tipo.
@@ -123,9 +135,16 @@ npm ci               # se o postinstall do Electron for bloqueado: node node_mod
 npm run dev          # app com recarga automática
 npm run typecheck    # TS nos três processos
 npm run build        # typecheck + bundles do Electron e do Remotion
-npm run dist         # instalador em release/
+npm run uv           # baixa e confere o uv.exe do instalador em build/uv (fora do git)
+npm run dist         # instalador em release/ (build + uv + electron-builder, nunca publica)
+node scripts/conferir-pacote.mjs   # confere release/: .exe, latest.yml, resources
+npm run release -- --dry-run       # o caminho da publicação inteiro, sem subir nada
 ```
 
 `GH_TOKEN` (de `gh auth token`) só é necessário para **publicar** release.
+Ordem: commit, `git push`, `git push origin vX.Y.Z`, `npm run release` (ou o
+workflow `release` do GitHub). O `release.mjs` recusa publicar sem a tag no
+remoto apontando para o HEAD e confere o `latest.yml` (versão, nome
+`AniRecap-Studio-Setup-<v>.exe`, tamanho e sha512) antes de subir.
 
 Ambiente: Node 24 e npm 11; ffmpeg 9 no PATH.

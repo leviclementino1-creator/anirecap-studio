@@ -260,11 +260,25 @@ anime novo ficava com 1 retrato por personagem (AniList) e terminava em
 - Dev: `motor/.venv/Scripts/python.exe -m app.headless <modo>`, cwd `motor/`.
   O venv é **próprio** (uv, Python 3.12, torch cu128 para a RTX 5080), nunca o
   do Corte Cenas.
-- Empacotado: fica para a F5 (pacote do motor para download, ~2 a 5 GB).
+- Empacotado (15/10): o CÓDIGO vai no instalador em `resources/motor`
+  (`app/`, `run.py`, `requirements.txt`, `studio-runtime.json`); o RUNTIME
+  (Python 3.12 + torch + pacotes, ~5 GB) é instalado pelo app no 1º uso em
+  `%LOCALAPPDATA%\AniRecap Studio\motor-runtime`, das fontes oficiais, pelo uv
+  embutido (`electron/services/motor-runtime/`, tela "Instalar motor de
+  personagens"). O Studio sobe `<runtime>\venv` com cwd `resources/motor`;
+  a lista exata do que instalar é `motor/studio-runtime.json` (o lock:
+  Python, torch cu128/cpu com URL + sha256, e os pacotes do PyPI com hash,
+  sem o Qt). Dev com `ANIRECAP_MOTOR_RUNTIME=1` usa o runtime também
+  (`ANIRECAP_MOTOR_RUNTIME_PASTA` troca a pasta, para testes).
 - Env: `ANIRECAP_MOTOR_DADOS`, `PYTHONIOENCODING=utf-8`,
   `YOLO_AUTOINSTALL=false` (o `run.py` liga isto no exe; o `-m app.headless`
   não passa por ele) e o PATH com o ffmpeg do sistema primeiro e o
-  ffmpeg-static do app no fim, de reserva.
+  ffmpeg-static do app no fim, de reserva. No runtime (app instalado) é o
+  contrário, para não depender do PATH de ninguém: o ffmpeg-static do app
+  PRIMEIRO, o ffprobe do compositor do Remotion por ÚLTIMO, Python isolado
+  (sem `PYTHONHOME`/`PYTHONPATH`/site do usuário) e `PYTHONDONTWRITEBYTECODE`
+  (nada é gravado em `resources/motor`; o site-packages já vem compilado da
+  instalação). `motor-runtime/ambiente.ts`.
 - Modos usados: `probe` (versão, GPU, ffmpeg), `parse <arquivo>` e `run`
   (requisição JSON na 1ª linha do stdin; `{"cmd":"cancel"}` cancela), e
   `rostos` (o item 7 acima, chamado por `montar/rostos-motor.ts` com o
@@ -349,3 +363,8 @@ normal.
    `app/providers/mal_direto.py` fica até o upstream ter o seu).
 3. Atualizar o commit no topo deste arquivo e no `NOTICE`.
 4. `node out/teste/v-motor.cjs rapido` (ver `scripts/teste/v-motor.ts`).
+5. Pacote novo ou de outra versão no `motor/.venv`? Regerar o lock do app
+   instalado: `node scripts/motor-lock.mjs` (e `--conferir`). Ele vai no
+   instalador; o app instalado compara a "impressão" dele com a do runtime e
+   atualiza sozinho quando só os pacotes mudaram (torch ou Python mudados:
+   pergunta antes). Teste: `scripts/teste/v-motor-runtime-instalar.ts`.

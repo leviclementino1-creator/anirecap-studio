@@ -55,6 +55,7 @@ import type {
 } from '@shared/roteiro'
 import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
 import type { EstadoDaDescoberta, EventoDaDescoberta, ResultadoDaDescoberta } from '@shared/descoberta'
+import type { EstadoDoMotorRuntime } from '@shared/motor-runtime'
 import type { CandidatosDaFrase, CenasGravadas, EtapaDaMontagem, ProjetoMontado } from '@shared/cenas'
 import type { MedidaDoSom, MusicaDaPasta, PlanoDeSom, RostosDoLote, SfxDaEdicaoRapida } from '@shared/edicao-rapida'
 
@@ -311,6 +312,25 @@ const bridge: DangaiBridge = {
       ipcRenderer.off(IPC.analiseFim, handler)
     }
   },
+
+  // Runtime do motor (app instalado). Contrato em shared/motor-runtime.ts.
+  estadoDoMotorRuntime: () =>
+    ipcRenderer.invoke(IPC.estadoDoMotorRuntime) as Promise<IpcResult<EstadoDoMotorRuntime>>,
+  instalarMotorRuntime: (pedido) =>
+    ipcRenderer.invoke(IPC.instalarMotorRuntime, pedido) as Promise<IpcResult<EstadoDoMotorRuntime>>,
+  cancelarMotorRuntime: () => ipcRenderer.invoke(IPC.cancelarMotorRuntime) as Promise<IpcResult<null>>,
+  escolherPastaDoMotorRuntime: (padrao) =>
+    ipcRenderer.invoke(IPC.escolherPastaDoMotorRuntime, padrao === true) as Promise<IpcResult<EstadoDoMotorRuntime>>,
+  removerMotorRuntime: () =>
+    ipcRenderer.invoke(IPC.removerMotorRuntime) as Promise<IpcResult<EstadoDoMotorRuntime>>,
+  onMotorRuntime: (listener) => {
+    const handler = (_event: unknown, estado: EstadoDoMotorRuntime): void => listener(estado)
+    ipcRenderer.on(IPC.motorRuntimeEstado, handler)
+    return () => {
+      ipcRenderer.off(IPC.motorRuntimeEstado, handler)
+    }
+  },
+
   indexarEpisodio: (args) =>
     ipcRenderer.invoke(IPC.indexarEpisodio, args) as Promise<IpcResult<EpisodeIndex>>,
   onIndexarProgresso: (listener) => {

@@ -27,13 +27,40 @@ continuam funcionando. O que muda:
 - **Projeto `.anirecap`.** O Studio também abre `.dangai`, que é o mesmo formato
   (versão 1). Salvar um projeto do Dangai abre o "Salvar como" na mesma pasta,
   já em `.anirecap`, e o `.dangai` original fica intacto.
-- **Atualização automática desligada** até existir a primeira release (ver
+- **Atualização automática ligada** desde a primeira release (ver
   `ATUALIZACAO_LIGADA` em `electron/services/updater.ts`).
 
 A geração a partir do episódio entra na F1. O plano completo, com as fases e as
 decisões, está em `G:/ClaudeEditor/fusao/PLANO.md`.
 
-## Rodar
+## Instalar
+
+Baixe `AniRecap-Studio-Setup-<versão>.exe` na
+[última release](https://github.com/leviclementino1-creator/anirecap-studio/releases/latest)
+e abra. Ele instala só para o seu usuário, sem pedir administrador, em
+`%LOCALAPPDATA%\Programs\anirecap-studio`, com atalho na área de trabalho e no
+menu Iniciar.
+
+O instalador não é assinado, então o SmartScreen avisa na primeira execução:
+**Mais informações → Executar assim mesmo**. Se o Smart App Control barrar o
+instalador, a mesma release tem `AniRecap-Studio-<versão>-win-x64.zip`: extraia
+por cima de `%LOCALAPPDATA%\Programs\anirecap-studio` com o app fechado.
+
+**O motor de personagens (cortar cenas e reconhecer personagens) é instalado
+no primeiro uso.** Ele precisa de Python e PyTorch (~5 GB no disco), que não
+cabem no instalador. Na primeira vez que precisar, o app oferece **Instalar
+motor de personagens**: baixa ~3 GB com placa NVIDIA (ou ~320 MB sem ela, e o
+motor roda na CPU) das fontes oficiais, para
+`%LOCALAPPDATA%\AniRecap Studio\motor-runtime`. Dá para cancelar e continuar
+depois, e ele não pergunta de novo. Desinstalar o app pergunta se apaga o motor
+também (o padrão é manter).
+
+As atualizações do app chegam sozinhas: ele procura 8 s depois de abrir e a
+cada 6 h, baixa em segundo plano e mostra **Atualizar para X** na barra de
+baixo. A troca só acontece quando você clica. Seus dados
+(`%APPDATA%\AniRecap Studio`) e o motor ficam.
+
+## Rodar do código
 
 Precisa de Node 24 e npm 11.
 
@@ -55,7 +82,10 @@ node node_modules/electron/install.js
 | `npm run dev` | abre o app com recarga automática |
 | `npm run typecheck` | TypeScript nos três processos |
 | `npm run build` | typecheck + bundles do Electron e do Remotion |
-| `npm run dist` | gera o instalador em `release/` |
+| `npm run uv` | baixa e confere o `uv.exe` que vai no instalador (`build/uv`, fora do git) |
+| `npm run motor:lock` | regera `motor/studio-runtime.json` a partir do `motor/.venv` |
+| `npm run dist` | gera o instalador em `release/` (nunca publica) |
+| `node scripts/conferir-pacote.mjs` | confere `release/`: `.exe`, `latest.yml` e `resources/` |
 | `npm run icon -- caminho/logo.png` | regenera `build/icon.ico` e `build/icon.png` |
 | `npm run sfx` | sintetiza os SFX de exemplo |
 
@@ -74,15 +104,15 @@ npm run release          # ou deixe o workflow "release" do GitHub fazer
 ```
 
 O push vem **antes** do release, e o script recusa publicar sem isso.
-`npm run release -- --dry-run` monta e confere sem publicar. O
-`scripts/release.mjs` explica por que não se usa `electron-builder --publish
-always` e o que ele confere antes de subir qualquer arquivo (tag no remoto,
-`latest.yml` da versão certa, tamanho do `.exe`).
+`npm run release -- --dry-run` monta e confere sem publicar (no ensaio, a
+árvore suja e a tag ausente só avisam). O `scripts/release.mjs` explica por
+que não se usa `electron-builder --publish always` e o que ele confere antes de
+subir qualquer arquivo (tag no remoto, `latest.yml` da versão certa com o nome,
+o tamanho e o sha512 do `.exe`, o `.exe` abaixo de 1,9 GiB, o uv conferido e o
+código do motor igual ao do repositório).
 
-Na primeira release, troque `ATUALIZACAO_LIGADA` para `true` no mesmo commit.
-
-O instalador não é assinado, então o SmartScreen avisa na primeira execução:
-**Mais informações → Executar assim mesmo**.
+O que sobe: `AniRecap-Studio-Setup-<versão>.exe`, o `.blockmap` e o
+`latest.yml` (que o updater lê), e o zip em pasta pelo workflow.
 
 ## Onde as coisas ficam
 

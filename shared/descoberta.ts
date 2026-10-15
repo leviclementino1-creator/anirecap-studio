@@ -100,6 +100,28 @@ export const SIMILARIDADE_FORTE = 0.96
  * para conferir (no E02 do Nia Liston, Bendelio e Neil erraram muito).
  */
 export const ORIGEM_DO_BATISMO = 'Reconhecer na mao'
+/**
+ * O `fotosDoElenco` de uma analise em que algum reconhecido so tinha UMA arte
+ * no catalogo: o retrato do MyAnimeList e o da AniList costumam ser a mesma
+ * imagem em dois recortes, e as duas passam do minimo de 2 fotos como se
+ * fossem duas (electron/services/descoberta/arte-unica.ts). No E02 do Nia
+ * Liston (15/10) o Anzel assim errou 7 de 13 cenas e o Gandolf 2 de 4. A tela
+ * pede para conferir, com os nomes: e o prefixo seguido dos nomes do motor
+ * separados por SEPARADOR_DE_UMA_ARTE (os nomes do MAL ja tem virgula).
+ */
+export const PREFIXO_DE_UMA_ARTE = 'Uma arte so: '
+const SEPARADOR_DE_UMA_ARTE = '; '
+
+export function origemDeUmaArte(nomes: readonly string[]): string {
+  return PREFIXO_DE_UMA_ARTE + nomes.join(SEPARADOR_DE_UMA_ARTE)
+}
+
+/** Os nomes do aviso de uma arte so, ou null quando o `fotosDoElenco` e outra coisa. */
+export function nomesDeUmaArte(fotosDoElenco: string | null | undefined): string[] | null {
+  if (!fotosDoElenco?.startsWith(PREFIXO_DE_UMA_ARTE)) return null
+  const nomes = fotosDoElenco.slice(PREFIXO_DE_UMA_ARTE.length).split(SEPARADOR_DE_UMA_ARTE).filter(Boolean)
+  return nomes.length ? nomes : null
+}
 
 // =========================================================== protocolo do motor
 // So o main usa. Os nomes sao os do Python (camelCase do headless.py), sem

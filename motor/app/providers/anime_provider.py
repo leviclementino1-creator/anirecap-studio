@@ -12,6 +12,7 @@ from .anilist import AniListAnime, AniListClient, AniListRelation
 from .danbooru import DanbooruClient, character_tag_candidates
 from .jikan import JikanClient
 from .kitsu import KitsuClient
+from .mal_direto import JikanOuMal, MalDireto
 
 _ROLE_WEIGHT = {"Main": 0, "MAIN": 0, "Supporting": 1, "SUPPORTING": 1, "Background": 2, "BACKGROUND": 2}
 
@@ -142,7 +143,10 @@ class AnimeProvider:
         self.cache_root = Path(cache_root) / "anime_db"
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self.anilist = AniListClient()
-        self.jikan = JikanClient()
+        # [Studio] O Jikan com o MyAnimeList DIRETO de reserva (mal_direto.py):
+        # quando o api.jikan.moe falha, o elenco e as galerias saem das paginas
+        # do proprio myanimelist.net, com cache em anime_db/_mal_direto.
+        self.jikan = JikanOuMal(JikanClient(), MalDireto(self.cache_root / "_mal_direto"))
         self.kitsu = KitsuClient()
         self.danbooru = DanbooruClient()
         # Problemas de fonte na ÚLTIMA resolve() (ex.: MyAnimeList fora do
@@ -689,6 +693,7 @@ class AnimeProvider:
 
         resolved: list[CharacterRef] = []
         sem_galeria: list[int] = []
+        kitsu_por_nome = 0  # [Studio]
         for i, ch in enumerate(sorted_chars, 1):
             status(f"Coletando imagens ({i}/{len(sorted_chars)}): {ch['name']}")
 
@@ -734,6 +739,14 @@ class AnimeProvider:
             ):
                 if extra_img and extra_img not in urls:
                     urls.append(extra_img)
+            # [Studio] Kitsu por NOME, reserva do 2o retrato: o MAL nao deu
+            # galeria (anime novo, personagem fora dos principais) e a Kitsu
+            # nao tem o elenco deste anime. So o personagem com o mesmo MAL id.
+            if len(urls) < 2 and not ch.get("kitsu_image"):
+                kimg = self.kitsu.retrato_por_nome(ch["name"], ch["mal_id"])
+                if kimg and kimg not in urls:
+                    urls.append(kimg)
+                    kitsu_por_nome += 1
 
             resolved.append(
                 CharacterRef(
@@ -744,6 +757,11 @@ class AnimeProvider:
                     image_urls=urls,
                 )
             )
+
+        if kitsu_por_nome:  # [Studio]
+            status(f"Kitsu (por nome): +1 foto pra {kitsu_por_nome} personagens.")
+        if self.jikan.pelo_mal:  # [Studio]
+            status(f"MyAnimeList direto: {self.jikan.pelo_mal} leituras (Jikan fora do ar).")
 
         # O denominador é quantos personagens REALMENTE pediram galeria — com
         # o limite dos principais, comparar com o elenco inteiro nunca

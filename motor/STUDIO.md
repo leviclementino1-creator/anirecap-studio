@@ -91,7 +91,8 @@ três para levar ao ancut-hub-engine:
      personagens com 2 fotos.
    - Não resolve Dr. Stone: a Kitsu não tem elenco de nenhuma das 9 entradas
      da franquia (2019 em diante), nem de Mushoku, Frieren, Lv999 ou
-     Apothecary. Para esses, a saída é a reserva do Corte Cenas (abaixo).
+     Apothecary. Para esses, a saída é a reserva do Corte Cenas (abaixo) e,
+     desde 15/10, o MyAnimeList direto (item 8).
 6. **`app/pipeline.py`** (`run`, passo 3/5) — o personagem do elenco acha a
    linha do banco pelo id que o `upsert_character` devolveu, não só pelo
    nome. Bug do upstream: o upsert reusa por tokens a linha de "Senkuu
@@ -147,6 +148,110 @@ reconhecimento muda.
      inteiro identificando (pronto em ~9 s) e 12,4 s só detectando, contra
      9,5 s do lbpcascade. O custo é quase todo fixo (torch + CUDA): o
      lbpcascade cresce ~0,5 s por bloco, o motor ~0,1 s.
+
+### MyAnimeList direto, reserva do Jikan (15/10)
+
+Motivo: o `api.jikan.moe` não abre conexão na rede do Levi (item 4), mas o
+`myanimelist.net` responde, e o Jikan só lê o MAL e repassa. Sem as galerias,
+anime novo ficava com 1 retrato por personagem (AniList) e terminava em
+"sem-referencias". Para levar ao ancut-hub-engine também.
+
+8. **`app/providers/mal_direto.py`** (arquivo novo) +
+   **`app/providers/anime_provider.py`** + **`app/providers/kitsu.py`**.
+   - `MalDireto` lê as MESMAS páginas que o Jikan lê:
+     `/anime/<id>/_/characters` (blocos `table.js-anime-character-table`:
+     link `/character/<id>/<slug>`, `h3.h3_character_name`, papel
+     "Main"/"Supporting" e o retrato) e `/character/<id>/<slug>/pics`
+     (links `a.js-picture-gallery`). Devolve os tipos do `JikanClient`
+     (`JikanCharacter`, lista de URLs), com o nome no formato do MAL
+     ("Liston, Nia" = o do Jikan; o merge por tokens com a AniList e a
+     Kitsu continua igual). O retrato do elenco vem como miniatura assinada
+     (`/r/42x62/...jpg?s=`) e vira a original (`/images/characters/...jpg`),
+     que é a mesma URL da galeria: retrato e foto igual viram um arquivo só.
+     O ponto de interrogação de quem não tem foto vira `None`.
+   - Página sem os blocos e sem o aviso de vazia ("No characters ... added",
+     "No pictures have been added") é FALHA (layout mudou, anti-bot), nunca
+     "vazio": vai para o `missing_gallery` e a próxima rodada tenta de novo.
+     E desiste do MAL na rodada JÁ na 1ª (`_pagina_estranha`): o 200 zerava
+     o contador de falhas seguidas, e com o desafio servido em 200 as 18
+     galerias eram pedidas uma a uma (simulado: 19 pedidos, sem desistir;
+     agora 2). A página real de anime sem elenco (mal 65161) dá `[]`.
+   - Educado: User-Agent de Chrome, um pedido por vez com 1 s de intervalo,
+     `connect` de 6 s e leitura de 15 s; sem resposta no 1º pedido desiste
+     do MAL na rodada (como o item 4), 3 falhas HTTP seguidas também, e a
+     página estranha na 1ª; 429/5xx tem uma 2ª tentativa, 403/405 não.
+     Cache em disco
+     `<cache>/anime_db/_mal_direto/{anime-<id>-personagens,personagem-<id>-fotos}.json`
+     (7 dias; a pasta não tem `metadata.json` nem `[al…]`, ninguém a toma
+     por anime).
+   - `JikanOuMal` tem a interface do `JikanClient` que o provider usa e é o
+     que vai em `self.jikan` (1 linha no `__init__`, `[Studio]`): tenta o
+     Jikan e só quando ELE falha (o `failures` dele sobe) lê o MAL direto. O
+     `failures` dele só conta quando os DOIS falham, então `partial`,
+     `missing_gallery`, `_completar_galerias` e os avisos de fonte seguem
+     certos sem mexer neles. Com o Jikan no ar, o resultado é o dele. A busca
+     do anime (só com a AniList fora) continua só no Jikan.
+   - Kitsu por NOME (`KitsuClient.retrato_por_nome`, `filter[name]`): no
+     laço dos personagens, quem ainda tem < 2 URLs e nenhum retrato da Kitsu
+     ganha 1. A busca da Kitsu é aproximada ("Nia Liston" devolve Nia
+     Teppelin), então só vale o personagem com o mesmo `malId`; sem MAL id
+     (elenco da reserva da AniList), só o nome idêntico de 2+ palavras e
+     único. Educada: um pedido a cada 0,5 s (`INTERVALO_NOME_S`), no máximo
+     18 por rodada (`TETO_NOME`, na ordem por papel: corta figurante, nunca
+     principal), e erro de rede, 429, 403 ou 5xx desliga a busca por nome na
+     rodada. Achou 0 em Nia Liston, Bocchi e Dr. Stone (que fazia ~32 pedidos
+     seguidos): ela fica para personagem que a Kitsu tem solto.
+   - Medido (Jikan fora, pasta de dados nova, scratchpad `mal-direto/`):
+
+     | anime | personagens | com ≥ 2 fotos | com 2+ artes distintas | resolve | fotos | pedidos ao MAL |
+     |---|---|---|---|---|---|---|
+     | Nia Liston (2025) | 22 | 11 (antes: 0) | 2 (Nia, Lynokis) | 34 s | 7 s | 19 |
+     | Dr. Stone (9 entradas) | 80 de 93 | 43 | 29 | 60 s | 77 s | 27 |
+     | Bocchi the Rock (3 entradas) | 17 | 13 | 13 | 36 s | 31 s | 20 |
+
+     "Com ≥ 2 fotos" conta ARQUIVOS, como o motor. Os outros 9 do Nia Liston
+     (e 14 do Dr. Stone) têm a MESMA arte duas vezes: o retrato do MAL e o da
+     AniList em dois recortes (ORB + homografia: 177 a 770 pontos em comum,
+     contra até 30 entre artes diferentes). No Nia Liston as galerias do MAL
+     não acrescentam nada (a da Nia tem 2 fotos e uma cai no `_filtered`;
+     com todas em 403 também saem 11): o ganho veio do retrato do elenco do
+     MAL somado ao da AniList. O Studio avisa quem foi reconhecido assim
+     (abaixo, "Limites").
+
+     Os 8 s do 1º pedido ao Jikan entram no resolve. 2ª rodada: 0 pedidos
+     HTTP, 0,2 s (banco + fotos no disco). Banco refeito sem metadata e com o
+     MAL bloqueado: elenco e galerias saem do `_mal_direto` (0 pedidos ao
+     MAL). MAL também fora: 1 pedido e o caminho antigo (reserva da AniList).
+     Galerias em 403: desiste no 3º, banco `partial` com as 18 em
+     `missing_gallery`, e o `_completar_galerias` (depois da trégua) as
+     completa pelo MAL direto.
+   - `run` do Nia Liston S01E01 pelo `analisarEpisodio` do Studio (perfil,
+     biblioteca e pasta de dados novos, Jikan fora; 15/10, depois das
+     correções): elenco em 44 s dentro da análise (34 s antes das pausas da
+     Kitsu por nome), 11 personagens com embedding, `done` (não mais
+     "sem-referencias") em 374 s; 214 de 432 cenas com personagem (Nia 147,
+     Lynokis 54, Bendelio 16, Lynette 9, Anzel 9, Reliared 9, Fressa 4), e o
+     fim com "Uma arte so: Anzel; Bendelio; Blanc, Lynette; Fressa; Silver,
+     Reliared" (0,5 s). O S01E02 na mesma pasta de dados: elenco do banco em
+     0,1 s, sem pedido ao MAL nem ao Jikan, 316 de 545 cenas com personagem
+     (Nia 195, Sharro 62, Lynokis 51, Reliared 23, Anzel 13, Bendelio 6,
+     Fressa 5, Gandolf 4) e o aviso para os 6 de uma arte só; Nia e Lynokis,
+     com duas artes, ficam de fora.
+   - Limites que ficam: anime novo tem galeria de 1 foto no MAL (o próprio
+     retrato), então o 2º retrato depende de o nome do MAL e o da AniList
+     terem as mesmas palavras (Nia Liston: "Hildetora"/"Hildetaura",
+     "Neal"/"Neil" não casam), e quase sempre é a MESMA arte: passa do
+     mínimo de 2 com uma imagem só. Conferido nos keyframes do S01E02: o
+     Anzel errou 7 de 13 cenas (órfãos com a Sharro, capanga de jaqueta
+     marrom) e o Gandolf 2 de 4 (capanga de bandana); a Nia, com duas artes,
+     não. Isto NÃO muda no motor (o mínimo conta arquivos, igual ao
+     upstream, e com o Jikan no ar seria igual): o Studio confere as fotos
+     dos reconhecidos depois do `done`
+     (`electron/services/descoberta/arte-unica.ts`, OpenCV em WASM) e a tela
+     diz "Confira: ... (uma foto so)" com o "Revisar personagens" ao lado.
+     Fixtures e testes, no scratchpad: `mal-direto/fixtures`,
+     `mal-direto/scripts/t_parser.py`, `t_falhas.py` (MAL respondendo torto)
+     e `t_kitsu_nome.py`; o aviso tem `scripts/teste/v-arte-unica.ts`.
 
 ## Como o Studio chama
 
@@ -239,7 +344,8 @@ normal.
 ## Atualizar a cópia
 
 1. Copiar o ancut-hub-engine novo por cima de `motor/` (sem `.venv`).
-2. Reaplicar as sete mudanças acima (procurar `[Studio]` no diff; o
-   `app/rostos.py` é só do Studio e fica como está).
+2. Reaplicar as oito mudanças acima (procurar `[Studio]` no diff; o
+   `app/rostos.py` é só do Studio e fica como está; o
+   `app/providers/mal_direto.py` fica até o upstream ter o seu).
 3. Atualizar o commit no topo deste arquivo e no `NOTICE`.
 4. `node out/teste/v-motor.cjs rapido` (ver `scripts/teste/v-motor.ts`).

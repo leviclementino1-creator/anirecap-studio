@@ -8,6 +8,7 @@ import {
   juntarGrupos,
   mudancasDaDecisao,
   nomearGrupo,
+  nomesDeUmaArte,
   reaplicarDecisao,
   resumoDaDecisao,
   separarGrupo,
@@ -248,6 +249,8 @@ export const useDescoberta = create<EstadoDaTelaDaDescoberta>((set, get) => ({
       return
     }
     guardada = null
+    // O aviso "uma foto so" era sobre os nomes do reconhecimento automatico; agora os nomes sao os do Levi.
+    if (nomesDeUmaArte(useGerar.getState().fotosDoElenco)) useGerar.setState({ fotosDoElenco: null })
     set({ confirmando: false, resultado: r.value, pronta: null, decisao: VAZIA, aberta: false, mostrarFigurantes: false })
   },
 

@@ -10,7 +10,7 @@ import {
   type ResumoDoIndice,
 } from '@shared/episodio'
 import { nomeNatural } from '@shared/nomes'
-import { ORIGEM_DO_BATISMO, podeReconhecerNaMao } from '@shared/descoberta'
+import { nomesDeUmaArte, ORIGEM_DO_BATISMO, podeReconhecerNaMao } from '@shared/descoberta'
 import { TRECHO_MINIMO, useGerar } from '@/store/gerar'
 import { useDescoberta } from '@/store/gerar-descoberta'
 import { SecaoDoCorte } from './AndamentoDoCorte'
@@ -77,6 +77,13 @@ export function ResumoDoEpisodio() {
     }
     return [...porNome.entries()].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n)
   }, [resumo])
+  // Reconhecidos com uma arte so (arte-unica.ts), no nome natural dos chips.
+  const umaArte = useMemo(() => {
+    const nomes = nomesDeUmaArte(fotosDoElenco)
+    if (!nomes || !resumo) return null
+    const falantes = resumo.falantes.map((f) => f.nome)
+    return [...new Set(nomes.map((n) => nomeNatural(n, falantes)))]
+  }, [fotosDoElenco, resumo])
 
   if (fase !== 'pronto' || !indice || !resumo) return null
 
@@ -141,6 +148,17 @@ export function ResumoDoEpisodio() {
                     >
                       Confira: fotos do Reconhecer na mao
                     </span>
+                  ) : umaArte ? (
+                    // O retrato do MAL e o da AniList eram a mesma arte: passou do minimo com uma
+                    // foto so, e no E02 do Nia Liston o Anzel errou 7 de 13 cenas.
+                    <span
+                      className={`text-[11px] ${COR_DE_AVISO}`}
+                      title={`${umaArte.join(', ')}: reconhecidos com uma imagem so do elenco (a mesma arte em dois recortes). Costuma confundir com figurantes parecidos. Confira as cenas deles; se errou, Revisar personagens corrige.`}
+                    >
+                      {umaArte.length <= 2
+                        ? `Confira: ${umaArte.join(' e ')} (uma foto so)`
+                        : `Confira: ${umaArte.length} personagens com uma foto so`}
+                    </span>
                   ) : (
                     fotosDoElenco && (
                       <span
@@ -160,7 +178,13 @@ export function ResumoDoEpisodio() {
             {personagens.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
                 {personagens.slice(0, PERSONAGENS_VISIVEIS).map((p) => (
-                  <Contagem key={p.nome} nome={p.nome} n={p.n} unidade={['cena', 'cenas']} />
+                  <Contagem
+                    key={p.nome}
+                    nome={p.nome}
+                    n={p.n}
+                    unidade={['cena', 'cenas']}
+                    aviso={umaArte?.includes(p.nome) ? 'Uma foto so do elenco: confira as cenas' : undefined}
+                  />
                 ))}
                 {personagensSobram > 0 && (
                   <span className="px-1 py-1 text-[11px] text-ink-3">e mais {personagensSobram}</span>

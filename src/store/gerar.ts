@@ -459,9 +459,11 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
       ...(recado?.startsWith('As cenas ainda') ? { recado: null } : {}),
       // Marcacao mexida e nao salva fica como esta na tela; o resto segue o disco.
       ...(get().exclusoesMudaram ? {} : { exclusoes: emOrdem(novo.exclusoes) }),
-      fimDoCorteEm: Date.now(),
+      // Indice novo SEM rodada de corte (o fim do Reconhecer na mao): "Cenas
+      // prontas" so quando as cenas chegaram agora, e nada de "Studio · 0s".
+      ...(acabouRodada || !temPlanos(indice) ? { fimDoCorteEm: Date.now() } : {}),
+      ...(tempoDoMotor.rodadas > 0 ? { ultimaAnalise: { motor: e.estado.motor, ...tempoDoMotor } } : {}),
       tempoDoMotor,
-      ultimaAnalise: { motor: e.estado.motor, ...tempoDoMotor },
       ...(e.fotosDoElenco ? { fotosDoElenco: e.fotosDoElenco } : {}),
     })
     // Cenas novas na biblioteca do Studio: a Biblioteca do editor so as ve
@@ -690,7 +692,7 @@ export const useGerar = create<EstadoDoGerar>((set, get) => {
         erro:
           f.precisaDescoberta === 'anime-nao-encontrado'
             ? `Nao achei "${palpite?.anime.trim() ?? ''}" no AniList/MAL. Corrija o nome (em romaji) e tente de novo.`
-            : 'Sem fotos do elenco desse anime, nem no Corte Cenas. Tente de novo mais tarde.',
+            : 'Sem fotos do elenco desse anime, nem no Corte Cenas. Use "Reconhecer na mao": voce da os nomes.',
       })
     } else {
       set({ ...fimDaFila, erro: f.erro || 'A analise parou sem dizer por que.' })

@@ -1008,7 +1008,16 @@ export function escutarCenas(): () => void {
       episodioDoCorte: ev.episodioId,
       ...(ev.indice ? { indiceDoCorte: ev.indice } : comecou ? { indiceDoCorte: null } : {}),
     })
-    if (ev.indice) agendarConferencia()
+    if (ev.indice) {
+      // Indice novo (fim do corte, Reconhecer na mao): as grades guardadas tem os personagens de antes.
+      gradesVistas.clear()
+      const grade = useCenas.getState().grade
+      if (grade) {
+        useCenas.setState({ grade: { ...grade, chave: '' } })
+        void useCenas.getState().carregarGrade()
+      }
+      agendarConferencia()
+    }
   })
   agendarConferencia()
   return () => {

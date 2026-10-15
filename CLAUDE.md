@@ -11,6 +11,12 @@ o caminho inteiro, na ordem decidida pelo Levi em 14/10 (`src/store/gerar-passos
    libera logo e o corte das cenas (+ personagens) roda em segundo plano
    (`falas.ts`, `corte-fundo.ts`). O índice nasce sem planos em
    `<bibliotecaStudio>/_indices/<id>` e ganha os planos no fim do corte.
+   **Reconhecer na mao** (15/10): sem fotos do elenco ('sem-referencias',
+   'anime-nao-encontrado') ou nas cenas sem personagem, o motor agrupa os
+   rostos (`run` com `discovery`), o Levi da nome aos grupos (elenco da
+   AniList como sugestao, ignorar, juntar) e o commit grava os personagens
+   no indice e as fotos como referencia no motor do Studio: o proximo
+   episodio do anime reconhece sozinho. "Revisar personagens" refaz.
 2. **Roteiro**: eventos e roteiro pelo Gemini, versões e aprovação, salvo em
    `<userData>/recaps`; modo "Partes | Texto" e "Meu roteiro" (re-divide pelos
    pontos finais, mantém id e vínculos do que não mudou e religa o resto numa
@@ -93,7 +99,8 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto) e `loudness.ts` (BS.1770 em JS) |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto), `loudness.ts` (BS.1770 em JS) e `descoberta.ts` (Reconhecer na mao: protocolo cru do motor, decisao, juntar/ignorar, `paraOMotor`) |
+| `electron/services/descoberta/` | o main do Reconhecer na mao: uma rodada por vez segurando o motor (`index.ts`), recortes copiados por job e elenco (`recortes.ts`), o indice pelo caminho do fim de corte (`aplicar.ts`), o erro do motor em frase curta (`erro.ts`) e o aviso "Confira" quando o reconhecimento seguinte dependeu das fotos do batismo (`refs.ts`); a tela e `ReconhecerNaMao.tsx`, `GrupoDeRostos.tsx`, `EntradaDaDescoberta.tsx` e `src/store/gerar-descoberta.ts` |
 | `electron/services/som/` | a Edição rápida no main: `medir.ts` (loudness com cache), `musicas.ts` (pasta e histórico), `planejar.ts` (SFX e música) e `mix.ts` (envelope e limitador do render) |
 | `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 (índice, `falas.ts`, `corte-fundo.ts`) e passo 2 (prompts, cache de IA, rascunho, `religar.ts` + `prompt-religar.ts`) |
 | `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`; `edicao-rapida.ts` e `rostos-motor.ts` para a Edição rápida) |

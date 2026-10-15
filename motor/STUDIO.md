@@ -164,6 +164,19 @@ reconhecimento muda.
   (requisição JSON na 1ª linha do stdin; `{"cmd":"cancel"}` cancela), e
   `rostos` (o item 7 acima, chamado por `montar/rostos-motor.ts` com o
   próprio spawn; log em `<dados>/logs/ultimos-rostos.log`).
+- `run` com `discovery: true` ("Reconhecer na mao", 15/10): o Studio usa o
+  Modo Descoberta como o AnCut, sem mudar nada no Python
+  (`electron/services/descoberta/` + `analisarEpisodio(..., { descoberta: true })`
+  e `comandarDescoberta` em `motor.ts`). Com as cenas no disco vai a
+  `outputFolder` da pasta do anime e o corte é reaproveitado
+  (`shot_bounds.json` + `shots/`); os rostos ficam em `metadata/face_cache.npz`.
+  Depois do `discovery-ready` o processo fica vivo esperando UMA linha
+  `{"cmd":"commit-discovery","names":{...},"removed":{...}}` (ou `cancel`); o
+  Studio confere antes que pelo menos um grupo tem nome (sem nenhum, o
+  `commit_discovery` lança e o processo morre). As fotos batizadas vão para
+  `<dados>/cache/anime_db/<anime>/characters/<nome>/auto_disc_NN.jpg` e o
+  centroide para `<dados>/cache/index.db`, os do Studio; o `run` normal do
+  próximo episódio soma essas fotos às do catálogo e reconhece sozinho.
 - Log da última análise: `<dados>/logs/ultima-analise.log`.
 
 "Analisar com o AnCut" não usa esta pasta: chama o `CorteCenas.exe --headless`

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Check, Cpu, Loader2, Scissors, X } from 'lucide-react'
+import { Check, Cpu, Loader2, Scissors, Users, X } from 'lucide-react'
 import { ROTULO_DA_ORIGEM, type ComoAchou, type EpisodioEncontrado } from '@shared/episodio'
 import { nomeNatural } from '@shared/nomes'
 import { useGerar } from '@/store/gerar'
+import { cortarEReconhecer, usarEReconhecer } from '@/store/gerar-descoberta'
 import { useProject } from '@/store/project'
 import { Chip } from '@/components/painel'
 import { AbrirPasta, Aviso, Botao, Caixinha, Contagem, gpuCurta, Link, nuvemDoCaminho, resumoDoMotor, Secao } from './pecas'
@@ -144,7 +145,11 @@ function Achado({ achado }: { achado: EpisodioEncontrado }) {
   )
 }
 
-/** Os botoes do achado: usar o que existe, ou cortar de novo no Studio. */
+/**
+ * Os botoes do achado: usar o que existe, ou cortar de novo no Studio. Cenas
+ * do Studio sem personagem nenhum (o caso do Nia Liston): [Reconhecer na mao]
+ * ja aqui -- usa a analise e abre a tela de grupos, sem passar pelo resumo.
+ */
 function Acoes({ achado }: { achado: EpisodioEncontrado }) {
   const usarAnalise = useGerar((s) => s.usarAnalise)
   const analisar = useGerar((s) => s.analisar)
@@ -152,6 +157,7 @@ function Acoes({ achado }: { achado: EpisodioEncontrado }) {
   const definirReconhecer = useGerar((s) => s.definirReconhecer)
   const temDescoberta = useGerar((s) => s.descoberta !== null)
   const bloqueio = useBloqueioDoStudio()
+  const semPersonagens = achado.origem === 'studio' && achado.personagens.length === 0 && achado.totalCenas > 0
 
   return (
     <div className="flex flex-col gap-3 border-t border-line pt-3">
@@ -168,6 +174,16 @@ function Acoes({ achado }: { achado: EpisodioEncontrado }) {
           <Check size={13} strokeWidth={1.5} />
           Usar essa analise
         </Botao>
+        {semPersonagens && (
+          <Botao
+            onClick={() => void usarEReconhecer(achado)}
+            disabled={bloqueio !== null}
+            title={bloqueio ?? 'Usa essa analise e o motor agrupa os rostos: voce da o nome a cada grupo'}
+          >
+            <Users size={13} strokeWidth={1.5} />
+            Reconhecer na mao
+          </Botao>
+        )}
         <Botao
           onClick={() => void analisar('studio')}
           disabled={bloqueio !== null}
@@ -368,9 +384,11 @@ export function LinhaDoMotor() {
 }
 
 /**
- * O motor parou pedindo ajuda para achar o elenco. A rodada de descoberta com
- * nomes fica para depois; por agora, cortar sem personagens ja destrava o
- * episodio -- e o "reconhecer" pode rodar de novo quando o nome estiver certo.
+ * O motor parou pedindo ajuda para achar o elenco ("Analisar de novo" com
+ * Reconhecer ligado). O principal e o [Reconhecer na mao] (pedido do Levi,
+ * 15/10): corta sem personagens (reaproveita o corte do disco quando o motor
+ * ja cortou) e, com as cenas no indice, abre a tela de grupos
+ * (cortarEReconhecer). So o motor do Studio agrupa; o do AnCut fica no cortar.
  *
  * Uma frase so: o fato e o que fazer. A frase do motor vai no tooltip (antes
  * eram tres frases dizendo que o anime nao foi achado).
@@ -381,18 +399,34 @@ export function PedidoDeDescoberta() {
   const anime = useGerar((s) => s.palpite?.anime ?? '')
   const analisar = useGerar((s) => s.analisar)
   const esquecer = useGerar((s) => s.esquecerDescoberta)
+  const bloqueio = useBloqueioDoStudio()
 
   if (fase !== 'escolha' || !descoberta) return null
+  const naMao = descoberta.motor === 'studio'
 
   return (
     <Secao titulo="Elenco nao encontrado">
       <p className="text-[13px] text-ink" title={descoberta.erro || undefined}>
         {descoberta.motivo === 'anime-nao-encontrado'
-          ? `Nao achei "${anime.trim()}" no AniList/MAL. Corrija o nome (em romaji) ou corte sem personagens.`
-          : `Sem fotos do elenco de "${anime.trim()}", nem no Corte Cenas. Tente mais tarde ou corte sem personagens.`}
+          ? `Nao achei "${anime.trim()}" no AniList/MAL. Corrija o nome (em romaji) ou ${naMao ? 'reconheca na mao' : 'corte sem personagens'}.`
+          : naMao
+            ? `Sem fotos do elenco de "${anime.trim()}". Reconheca na mao: voce da os nomes.`
+            : `Sem fotos do elenco de "${anime.trim()}", nem no Corte Cenas. Tente mais tarde ou corte sem personagens.`}
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <Botao principal onClick={() => void analisar(descoberta.motor, false)}>
+        {naMao && (
+          <Botao
+            principal
+            foco="reconhecer-na-mao"
+            onClick={() => void cortarEReconhecer()}
+            disabled={bloqueio !== null}
+            title={bloqueio ?? 'Corta sem personagens e o motor agrupa os rostos: voce da o nome a cada grupo. As fotos servem para os proximos episodios.'}
+          >
+            <Users size={13} strokeWidth={1.5} />
+            Reconhecer na mao
+          </Botao>
+        )}
+        <Botao principal={!naMao} onClick={() => void analisar(descoberta.motor, false)}>
           <Scissors size={13} strokeWidth={1.5} />
           Cortar sem personagens
         </Botao>

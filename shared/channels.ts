@@ -57,6 +57,13 @@ import type {
   SfxDaEdicaoRapida,
 } from './edicao-rapida'
 import type {
+  DecisaoDaDescoberta,
+  EstadoDaDescoberta,
+  EventoDaDescoberta,
+  PedidoDaDescoberta,
+  ResultadoDaDescoberta,
+} from './descoberta'
+import type {
   AudioDoTake,
   EstimativaDeCusto,
   PedidoDeAjuste,
@@ -216,6 +223,15 @@ export const IPC = {
   cancelarCorte: 'episodio:corte-cancelar',
   /** main -> renderer, EventoDoCorte (andamento e fim do corte em segundo plano) */
   corteProgresso: 'episodio:corte-progresso',
+
+  // Gerar recap, passo 1: Reconhecer na mao (Modo Descoberta). Tipos e regras
+  // em shared/descoberta.ts; o main e electron/services/descoberta/.
+  iniciarDescoberta: 'episodio:descoberta-iniciar',
+  descobertaAtual: 'episodio:descoberta-atual',
+  confirmarDescoberta: 'episodio:descoberta-confirmar',
+  cancelarDescoberta: 'episodio:descoberta-cancelar',
+  /** main -> renderer, EventoDaDescoberta (andamento, grupos prontos e fim) */
+  descobertaProgresso: 'episodio:descoberta-progresso',
 
   // Gerar recap, passo 2 em texto (agente D). Tipos em shared/roteiro.ts; o main
   // e electron/services/gerar/religar.ts. Andamento pelo roteiroProgresso (etapa 'religar').
@@ -1242,6 +1258,29 @@ export interface DangaiBridge {
   /** Para o corte. O estado volta a 'pendente' (pelo onCorteProgresso). false = nao havia corte rodando. */
   cancelarCorte(episodioId: string): Promise<IpcResult<boolean>>
   onCorteProgresso(listener: (evento: EventoDoCorte) => void): () => void
+
+  // ------------------------------ Gerar recap, passo 1: Reconhecer na mao
+  // Tipos e regras em shared/descoberta.ts (podeReconhecerNaMao, paraOMotor);
+  // o main e electron/services/descoberta/. O indice novo chega TAMBEM pelo
+  // onCorteProgresso (estado 'pronto'), como no fim de um corte.
+
+  /**
+   * Comeca: o motor (corta, se faltar, e) agrupa os rostos do episodio.
+   * Devolve o estado na hora ('agrupando', com jobId); os grupos chegam por
+   * onDescobertaProgresso ('pronta'). Motor ocupado = erro, sem fila.
+   */
+  iniciarDescoberta(pedido: PedidoDaDescoberta): Promise<IpcResult<EstadoDaDescoberta>>
+  /** A descoberta viva deste episodio (com os grupos, se ja chegaram). null = nenhuma. */
+  descobertaAtual(episodioId: string): Promise<IpcResult<EventoDaDescoberta | null>>
+  /**
+   * Os nomes do Levi. Espera o motor salvar (segundos) e devolve o resultado
+   * com o indice novo, ja gravado. Decisao sem nenhum nome volta como erro e a
+   * descoberta continua esperando.
+   */
+  confirmarDescoberta(jobId: string, decisao: DecisaoDaDescoberta): Promise<IpcResult<ResultadoDaDescoberta>>
+  /** Para (agrupando ou esperando nomes). O indice fica como estava. false = nao havia. */
+  cancelarDescoberta(jobId: string): Promise<IpcResult<boolean>>
+  onDescobertaProgresso(listener: (evento: EventoDaDescoberta) => void): () => void
 
   // ------------------------------------------ Gerar recap, passo 2 em texto
   // Tipos e regras em shared/roteiro.ts (redividirRoteiro); o main e

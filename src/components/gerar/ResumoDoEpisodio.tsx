@@ -10,8 +10,11 @@ import {
   type ResumoDoIndice,
 } from '@shared/episodio'
 import { nomeNatural } from '@shared/nomes'
+import { ORIGEM_DO_BATISMO, podeReconhecerNaMao } from '@shared/descoberta'
 import { TRECHO_MINIMO, useGerar } from '@/store/gerar'
+import { useDescoberta } from '@/store/gerar-descoberta'
 import { SecaoDoCorte } from './AndamentoDoCorte'
+import { BotaoReconhecerNaMao, LinhaDaDescoberta, LinkRevisarPersonagens, useDescobertaViva } from './EntradaDaDescoberta'
 import { SeletorDeLegenda } from './CartaoDoEpisodio'
 import { LISTRADO, ReguaDoEpisodio } from './ReguaDoEpisodio'
 import {
@@ -23,6 +26,7 @@ import {
   CampoDeTempo,
   CLASSE_DO_CAMPO,
   Contagem,
+  COR_DE_AVISO,
   duracaoCurta,
   formatarTempo,
   listaCurta,
@@ -56,6 +60,10 @@ export function ResumoDoEpisodio() {
   const indice = useGerar((s) => s.indice)
   const ultimaAnalise = useGerar((s) => s.ultimaAnalise)
   const fotosDoElenco = useGerar((s) => s.fotosDoElenco)
+  const corte = useGerar((s) => s.corte)
+  // Reconhecer na mao deste episodio: rodando, ou o resultado ainda na tela.
+  const descobrindo = useDescobertaViva()
+  const comResultado = useDescoberta((s) => s.resultado !== null && s.episodioId === indice?.id)
 
   const resumo = useMemo(() => (indice ? resumirIndice(indice) : null), [indice])
   const personagens = useMemo(() => {
@@ -77,6 +85,8 @@ export function ResumoDoEpisodio() {
   const podeReconhecer = indice.reconhecimento === 'pulado' && indice.biblioteca.origem === 'studio'
   // Indice so com as falas: as cenas estao sendo cortadas por tras (SecaoDoCorte).
   const comCenas = temPlanos(indice)
+  // Sem cenas, a porta do Reconhecer na mao e o "Corte parou" (SecaoDoCorte); aqui, so com cenas.
+  const naMao = comCenas && (podeReconhecerNaMao(indice, corte).pode || descobrindo || comResultado)
 
   return (
     <>
@@ -116,19 +126,33 @@ export function ResumoDoEpisodio() {
       >
         <Numeros resumo={resumo} />
 
-        {(personagens.length > 0 || podeReconhecer) && (
+        {(personagens.length > 0 || podeReconhecer || naMao) && (
           <div className="flex flex-col gap-2">
             <Subtitulo
               icone={<Users size={12} strokeWidth={1.5} />}
               canto={
-                fotosDoElenco && (
-                  <span
-                    className="text-[11px] text-ink-3"
-                    title={`As fotos do elenco que reconheceram os personagens vieram do ${fotosDoElenco} (copiadas; a pasta de la nao muda).`}
-                  >
-                    Fotos do elenco: {fotosDoElenco}
-                  </span>
-                )
+                <span className="flex items-center gap-3">
+                  {fotosDoElenco === ORIGEM_DO_BATISMO ? (
+                    // Reconhecido com as fotos do batismo de outro episodio: no E02 do Nia Liston
+                    // os de poucas fotos erraram muito. Pede para conferir (o link ao lado refaz).
+                    <span
+                      className={`text-[11px] ${COR_DE_AVISO}`}
+                      title="Algum personagem so foi reconhecido com as fotos do Reconhecer na mao de outro episodio. Confira os personagens; se errou, Revisar personagens corrige."
+                    >
+                      Confira: fotos do Reconhecer na mao
+                    </span>
+                  ) : (
+                    fotosDoElenco && (
+                      <span
+                        className="text-[11px] text-ink-3"
+                        title={`As fotos do elenco que reconheceram os personagens vieram do ${fotosDoElenco} (copiadas; a pasta de la nao muda).`}
+                      >
+                        Fotos do elenco: {fotosDoElenco}
+                      </span>
+                    )
+                  )}
+                  {comCenas && !descobrindo && <LinkRevisarPersonagens />}
+                </span>
               }
             >
               Personagens
@@ -142,9 +166,13 @@ export function ResumoDoEpisodio() {
                   <span className="px-1 py-1 text-[11px] text-ink-3">e mais {personagensSobram}</span>
                 )}
               </div>
-            ) : (
-              <ReconhecerAgora />
+            ) : descobrindo ? null : (
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {podeReconhecer && <ReconhecerAgora />}
+                {comCenas && <BotaoReconhecerNaMao />}
+              </div>
             )}
+            {comCenas && <LinhaDaDescoberta />}
           </div>
         )}
 

@@ -54,6 +54,7 @@ import type {
   RoteiroReligado,
 } from '@shared/roteiro'
 import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
+import type { EstadoDaDescoberta, EventoDaDescoberta, ResultadoDaDescoberta } from '@shared/descoberta'
 import type { CandidatosDaFrase, CenasGravadas, EtapaDaMontagem, ProjetoMontado } from '@shared/cenas'
 import type { MedidaDoSom, MusicaDaPasta, PlanoDeSom, RostosDoLote, SfxDaEdicaoRapida } from '@shared/edicao-rapida'
 
@@ -392,6 +393,22 @@ const bridge: DangaiBridge = {
     ipcRenderer.on(IPC.corteProgresso, handler)
     return () => {
       ipcRenderer.off(IPC.corteProgresso, handler)
+    }
+  },
+
+  // Gerar recap, passo 1: Reconhecer na mao
+  iniciarDescoberta: (pedido) =>
+    ipcRenderer.invoke(IPC.iniciarDescoberta, pedido) as Promise<IpcResult<EstadoDaDescoberta>>,
+  descobertaAtual: (episodioId) =>
+    ipcRenderer.invoke(IPC.descobertaAtual, episodioId) as Promise<IpcResult<EventoDaDescoberta | null>>,
+  confirmarDescoberta: (jobId, decisao) =>
+    ipcRenderer.invoke(IPC.confirmarDescoberta, jobId, decisao) as Promise<IpcResult<ResultadoDaDescoberta>>,
+  cancelarDescoberta: (jobId) => ipcRenderer.invoke(IPC.cancelarDescoberta, jobId) as Promise<IpcResult<boolean>>,
+  onDescobertaProgresso: (listener) => {
+    const handler = (_event: unknown, evento: EventoDaDescoberta): void => listener(evento)
+    ipcRenderer.on(IPC.descobertaProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.descobertaProgresso, handler)
     }
   },
 

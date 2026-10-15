@@ -16,6 +16,7 @@ import {
   type PedidoDeAnalise,
   type PedidoDeCorte,
 } from '@shared/episodio'
+import { haDescobertaViva, motorComADescoberta } from '../descoberta/vivas'
 import { analisarEpisodio, cancelarAnalise, type OuvintesDaAnalise } from '../motor'
 import { estadoPendente } from './falas'
 import {
@@ -474,6 +475,9 @@ export async function iniciarCorte(pedido: PedidoDeCorte, avisar: (evento: Event
   if (!lido) throw new Error('Nao achei os dados desse episodio. Abra o episodio de novo no passo 1.')
   if (temPlanos(lido.indice) && statusDoCorte(lido.indice) === 'pronto') return lido.indice.corte ?? estadoPronto(lido.indice)
   if (!existsSync(lido.indice.fonte.path)) throw new Error('O video desse episodio nao esta mais no disco.')
+  // Reconhecer na mao (descoberta/) vivo neste episodio: um corte agora
+  // regravaria o shots.json por baixo dos nomes que ele vai salvar.
+  if (haDescobertaViva(id)) throw new Error('Esse episodio esta no Reconhecer na mao. Termine ou cancele antes de cortar.')
 
   const corte: Corte = {
     episodioId: id,
@@ -487,6 +491,15 @@ export async function iniciarCorte(pedido: PedidoDeCorte, avisar: (evento: Event
   if (rodando !== null) {
     fila.push(id)
     enviar(id, corte.estado)
+    return corte.estado
+  }
+  // A descoberta de OUTRO episodio segura a vaga do motor esperando os nomes:
+  // este corte espera na fila (o proximo() tenta de 5 em 5 s) em vez de voltar erro.
+  if (motorComADescoberta()) {
+    fila.push(id)
+    atualizar(corte, { mensagem: 'Esperando o motor' })
+    enviar(id, corte.estado)
+    relogioDaFila ??= setTimeout(() => void proximo(), ESPERA_DO_MOTOR_OCUPADO_MS)
     return corte.estado
   }
   await comecar(corte)

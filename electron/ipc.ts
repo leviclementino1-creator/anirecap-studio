@@ -164,6 +164,22 @@ import { estimarVoz } from './services/voz/estimar'
 import { ajustarVoz, cancelarVoz, gerarVoz, importarAudio, regravarFrases } from './services/voz/gerar'
 import { aprovarVoz, audioDoTake, desaprovarVoz, escolherTakeDoRascunho } from './services/voz/takes'
 import { cancelarCorte, estadoDoCorte, indexarFalas, iniciarCorte } from './services/episodio/corte-fundo'
+import {
+  decisaoDaDescobertaSchema,
+  pedidoDaDescobertaSchema,
+  type DecisaoDaDescoberta,
+  type EstadoDaDescoberta,
+  type EventoDaDescoberta,
+  type PedidoDaDescoberta,
+  type ResultadoDaDescoberta,
+} from '@shared/descoberta'
+import {
+  cancelarDescoberta,
+  confirmarDescoberta,
+  descobertaAtual,
+  iniciarDescoberta,
+  type AvisosDaDescoberta,
+} from './services/descoberta'
 import { religarRoteiro } from './services/gerar/religar'
 import {
   filtrosDeCandidatosSchema,
@@ -1039,6 +1055,29 @@ export function registerIpc(): void {
 
   handle<[string], boolean>(IPC.cancelarCorte, async (episodioId) => cancelarCorte(idDoEpisodio(episodioId)))
 
+  // ------------------------------ Gerar recap, passo 1: Reconhecer na mao
+  // Contrato em shared/descoberta.ts; o main e electron/services/descoberta/ (agente A).
+  // O fim leva o indice novo pelos DOIS canais: o corteProgresso de sempre e o da descoberta.
+
+  const avisosDaDescoberta: AvisosDaDescoberta = {
+    descoberta: (evento) => enviarATodas(IPC.descobertaProgresso, evento),
+    corte: (evento) => enviarATodas(IPC.corteProgresso, evento),
+  }
+
+  handle<[PedidoDaDescoberta], EstadoDaDescoberta>(IPC.iniciarDescoberta, async (pedido) =>
+    iniciarDescoberta(pedidoDaDescobertaSchema.parse(pedido), avisosDaDescoberta),
+  )
+
+  handle<[string], EventoDaDescoberta | null>(IPC.descobertaAtual, async (episodioId) =>
+    descobertaAtual(idDoEpisodio(episodioId)),
+  )
+
+  handle<[string, DecisaoDaDescoberta], ResultadoDaDescoberta>(IPC.confirmarDescoberta, async (jobId, decisao) =>
+    confirmarDescoberta(idDoJob(jobId), decisaoDaDescobertaSchema.parse(decisao)),
+  )
+
+  handle<[string], boolean>(IPC.cancelarDescoberta, async (jobId) => cancelarDescoberta(idDoJob(jobId)))
+
   // ------------------------------------------ Gerar recap, passo 2 em texto
   // Contrato em shared/roteiro.ts (redividirRoteiro); o main e
   // electron/services/gerar/religar.ts (agente D).
@@ -1115,6 +1154,12 @@ function idDoTake(valor: unknown): string {
 /** 'ep_' + 40 hex, como o EpisodeIndex.id. Qualquer outra coisa e recusada. */
 function idDoEpisodio(valor: unknown): string {
   if (typeof valor !== 'string' || !/^ep_[0-9a-f]{40}$/.test(valor)) throw new Error('Episodio invalido.')
+  return valor
+}
+
+/** O id de job do motor.ts ('job_' + base36 + '_' + 6 hex). Vira nome de pasta dos recortes. */
+function idDoJob(valor: unknown): string {
+  if (typeof valor !== 'string' || !/^job_[0-9a-z]{1,16}_[0-9a-f]{6}$/.test(valor)) throw new Error('Descoberta invalida.')
   return valor
 }
 

@@ -8,6 +8,7 @@ import {
 } from '@shared/episodio'
 import { useGerar } from '@/store/gerar'
 import { Barra, useRelogio } from './AndamentoDaAnalise'
+import { BotaoReconhecerNaMao, LinhaDaDescoberta, useDescobertaViva } from './EntradaDaDescoberta'
 import { LinhaDoMotor } from './ResultadoDaBusca'
 import { Botao, Caixinha, CAMPO_PEQUENO, CLASSE_DO_CAMPO, formatarTempo, Secao } from './pecas'
 
@@ -270,15 +271,20 @@ function CampoDoAnime({ onEnter }: { onEnter: () => void }) {
   )
 }
 
-/** O corte parou: o porque numa linha (inteiro no tooltip) e o que fazer. */
+/**
+ * O corte parou: o porque numa linha (inteiro no tooltip) e o que fazer. Sem
+ * fotos do elenco, a acao da secao e o [Reconhecer na mao] (rosa, pedido do
+ * Levi em 15/10): os nomes que ele da viram as fotos dos proximos episodios.
+ */
 function Parou({ corte }: { corte: EstadoDoCorte }) {
   const cortarNoFundo = useGerar((s) => s.cortarNoFundo)
   const pedindo = useGerar((s) => s.pedindoCorte)
   const semAnime = useGerar((s) => !s.palpite?.anime.trim())
   const motor = useGerar((s) => s.motor)
   const erro = corte.erro ?? 'O corte parou sem dizer por que.'
+  const descobrindo = useDescobertaViva()
   const tentar = (): void => {
-    if (!pedindo && !semAnime) void cortarNoFundo()
+    if (!pedindo && !semAnime && !descobrindo) void cortarNoFundo()
   }
   const semElenco = corte.descoberta !== null
   const frase =
@@ -294,7 +300,9 @@ function Parou({ corte }: { corte: EstadoDoCorte }) {
         <TriangleAlert size={13} strokeWidth={1.5} className="mt-px shrink-0 text-ink-3" />
         <span className="min-w-0 select-text truncate">Corte parou: {frase}</span>
       </p>
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Reconhecer na mao rodando: a linha dela no lugar dos botoes (o corte esperaria por ela). */}
+      <LinhaDaDescoberta />
+      <div className={['flex flex-wrap items-center gap-2', descobrindo ? 'hidden' : ''].join(' ')}>
         {corte.descoberta === 'anime-nao-encontrado' && <CampoDoAnime onEnter={tentar} />}
         <Botao
           pequeno
@@ -320,6 +328,8 @@ function Parou({ corte }: { corte: EstadoDoCorte }) {
             Cortar sem personagens
           </Botao>
         )}
+        {/* Sem fotos do elenco: o Levi da os nomes aos grupos de rostos (a acao da secao). */}
+        <BotaoReconhecerNaMao principal pequeno />
       </div>
       {corte.motor === 'studio' && !motor?.studio.pronto && <LinhaDoMotor />}
     </Secao>

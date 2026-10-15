@@ -10,6 +10,7 @@ import {
 import { escutarRoteiro, roteiroAprovado, useRoteiro } from '@/store/gerar-roteiro'
 import { escutarVoz, useSituacaoDaVoz, useVoz } from '@/store/gerar-voz'
 import { escutarCenas, useCenas } from '@/store/gerar-cenas'
+import { escutarDescoberta } from '@/store/gerar-descoberta'
 import { avisoDoPasso, PASSOS, passoLiberado } from '@/store/gerar-passos'
 import { useProject } from '@/store/project'
 import { classifyFile } from '@shared/channels'
@@ -19,10 +20,12 @@ import { cenasDoRascunho, escolhasDesatualizadas } from '@shared/cenas'
 import { AndamentoDaAnalise, Indexando } from './AndamentoDaAnalise'
 import { AndamentoDoCorte, corteVivo, textoCurtoDoCorte } from './AndamentoDoCorte'
 import { AreaDeSoltar, CartaoDoEpisodio } from './CartaoDoEpisodio'
+import { AndamentoDaDescoberta } from './EntradaDaDescoberta'
 import { PassoDasCenas } from './PassoDasCenas'
 import { PassoDaVoz } from './PassoDaVoz'
 import { PassoDoRoteiro } from './PassoDoRoteiro'
 import { PedidoDeDescoberta, ResultadoDaBusca } from './ResultadoDaBusca'
+import { ReconhecerNaMao } from './ReconhecerNaMao'
 import { ResumoDoEpisodio } from './ResumoDoEpisodio'
 import { RodapeDasCenas } from './RodapeDasCenas'
 import { RodapeDaVoz } from './RodapeDaVoz'
@@ -53,6 +56,8 @@ export function GerarRecap() {
   useEffect(() => escutarVoz(), [])
   // As sugestoes de cena saem em segundo plano assim que o roteiro e aprovado (com o assistente fechado tambem).
   useEffect(() => escutarCenas(), [])
+  // Reconhecer na mao: o andamento e os grupos chegam com o assistente fechado tambem.
+  useEffect(() => escutarDescoberta(), [])
 
   if (!aberto) return null
   return <Assistente />
@@ -164,6 +169,7 @@ function Assistente() {
         <Passos />
         {/* O corte em segundo plano, discreto (agente E preenche). */}
         <AndamentoDoCorte />
+        <AndamentoDaDescoberta />
         <span className="flex-1" />
         <button
           type="button"
@@ -261,6 +267,9 @@ function Assistente() {
       ) : (
         <Rodape />
       )}
+
+      {/* Reconhecer na mao: a tela de grupos por cima de tudo do assistente (z-36). */}
+      <ReconhecerNaMao />
     </div>
   )
 }

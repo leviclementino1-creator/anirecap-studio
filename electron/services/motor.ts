@@ -13,6 +13,8 @@ import {
   type ProgressoDaAnalise,
   type StatusDoMotor,
 } from '@shared/episodio'
+import { ORIGEM_DO_BATISMO, type ComandoCommitDiscovery } from '@shared/descoberta'
+import { dependeDoBatismo } from './descoberta/refs'
 import { desarmarCorteDeOutroArquivo, pastaLembradaPeloMotor } from './episodio/corte-de-outro-arquivo'
 import { impressaoLembrada } from './episodio/impressao'
 import { garantirGravavel, saidaDoCorteCenas } from './episodio/protegidas'
@@ -71,6 +73,14 @@ export function configDoMotor(): ConfigDoMotor {
 export interface OuvintesDaAnalise {
   progresso(progresso: ProgressoDaAnalise): void
   fim(fim: FimDaAnalise): void
+  /**
+   * Reconhecer na mao (electron/services/descoberta/): o `discovery-ready`
+   * cru. O processo fica VIVO esperando os nomes (comandarDescoberta), sem o
+   * relogio de 30 s. Sem este ouvinte o evento e dispensado como antes.
+   */
+  descobertaPronta?(evento: Record<string, unknown>): void
+  /** O `result` cru do `done`, antes do fim (a descoberta le o `refsDir`). */
+  resultadoDoMotor?(resultado: Record<string, unknown>): void
 }
 
 // ------------------------------------------------------------------ onde mora
@@ -450,6 +460,8 @@ interface Job {
   repetiu: boolean
   /** As fotos do elenco que a reserva copiou neste job. */
   fotos: ReservaDoElenco | null
+  /** Reconhecer na mao: o discovery-ready chegou e o processo espera UMA linha de nomes. */
+  esperandoNomes: boolean
 }
 
 /** O job da vez. Um por vez: o motor ocupa a GPU inteira. */
@@ -545,12 +557,20 @@ function tratarEvento(job: Job, ev: Evento): void {
       const nomes = Array.isArray(r['identifiedCharacters'])
         ? r['identifiedCharacters'].filter((n): n is string => typeof n === 'string' && n.trim() !== '')
         : []
+      try {
+        job.ouvintes.resultadoDoMotor?.(r)
+      } catch (e) {
+        console.error('[motor] ouvinte do resultado falhou:', e)
+      }
       let fotos: ReservaDoElenco | null = null
+      let doBatismo = false
       if (job.motor === 'studio' && job.reconhecer) {
         // De onde vieram as fotos do elenco: a reserva deste job, ou a de uma
         // analise anterior (reserva-do-studio.json na pasta do banco).
         fotos = job.fotos ?? fotosDoElenco(pastaDeDadosDoMotor(), job.anime, job.temporada)
-        job.log?.write(`[studio] fotos do elenco: ${fotos ? `${fotos.origem} (${fotos.de})` : 'busca online'}\n`)
+        // Algum reconhecido so passou do minimo com as fotos do Reconhecer na mao: a tela pede para conferir.
+        doBatismo = dependeDoBatismo(typeof r['refsDir'] === 'string' ? r['refsDir'] : null, nomes)
+        job.log?.write(`[studio] fotos do elenco: ${fotos ? `${fotos.origem} (${fotos.de})` : 'busca online'}${doBatismo ? ' + Reconhecer na mao' : ''}\n`)
       }
       entregar(job, {
         jobId: job.id,
@@ -561,7 +581,7 @@ function tratarEvento(job: Job, ev: Evento): void {
         personagens: nomes,
         segundos: segundosDesde(job.inicio),
         // A tela diz "Fotos: Corte Cenas" quando o elenco veio da reserva.
-        fotosDoElenco: fotos?.origem ?? null,
+        fotosDoElenco: doBatismo ? ORIGEM_DO_BATISMO : (fotos?.origem ?? null),
       })
       return
     }
@@ -611,8 +631,23 @@ function tratarEvento(job: Job, ev: Evento): void {
       return
     }
     case 'discovery-ready': {
-      // So acontece com `discovery: true`, que o Studio nao pede. Se vier, o
-      // processo ficaria esperando nomes para sempre: dispensa e avisa.
+      // Reconhecer na mao: os grupos vao para a descoberta e o processo fica
+      // vivo, SEM relogio, esperando a linha de nomes (comandarDescoberta). O
+      // cancelamento e o de sempre; o app fechando mata a arvore (encerrarMotor).
+      if (job.ouvintes.descobertaPronta && !job.entregue && !job.cancelado) {
+        job.esperandoNomes = true
+        const grupos = Array.isArray(ev['groups']) ? ev['groups'].length : 0
+        job.log?.write(`\n[studio] discovery-ready: ${grupos} grupos, ${String(ev['totalFaces'])} rostos; esperando os nomes\n`)
+        try {
+          job.ouvintes.descobertaPronta(ev)
+          return
+        } catch (e) {
+          job.esperandoNomes = false
+          console.error('[motor] ouvinte da descoberta falhou:', e)
+        }
+      }
+      // Sem ouvinte (ou ele quebrou): o processo ficaria esperando nomes para
+      // sempre. Dispensa e avisa.
       try {
         job.filho?.stdin.write('{"cmd":"cancel"}\n')
       } catch {
@@ -825,8 +860,20 @@ function iniciar(job: Job, repeticao: boolean): void {
  *   ele ainda voltar sem fotos, a reserva tenta de novo com o id que ele
  *   resolveu e o motor roda uma 2a vez no mesmo job.
  * - `fim` e chamado exatamente uma vez por job, sempre.
+ * - `opcoes.descoberta` (Reconhecer na mao, so motor do Studio): `discovery:
+ *   true`. O motor agrupa os rostos, manda o discovery-ready ao ouvinte
+ *   `descobertaPronta` e espera os nomes (comandarDescoberta); o `done` do
+ *   commit e o fim ok de sempre.
  */
-export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: OuvintesDaAnalise): Promise<string> {
+export async function analisarEpisodio(
+  pedido: PedidoDeAnalise,
+  ouvintes: OuvintesDaAnalise,
+  opcoes?: { descoberta?: true },
+): Promise<string> {
+  const descoberta = opcoes?.descoberta === true
+  if (descoberta && (pedido.motor !== 'studio' || !ouvintes.descobertaPronta)) {
+    throw new Error('Reconhecer na mao so roda no motor do Studio.')
+  }
   await esperarOAnterior()
   // A impressao (para o desarme abaixo) vem ANTES da checagem da vaga: dali
   // ate reservar o job nao pode haver await, ou dois cliques passariam juntos.
@@ -882,10 +929,10 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     episode: pedido.episodio,
     kind: pedido.kind,
     outputDir,
-    cutOnly: !pedido.reconhecer,
+    cutOnly: !pedido.reconhecer && !descoberta,
     renderExportMode: 'compat',
     aiReview: false,
-    discovery: false,
+    discovery: descoberta,
     mergePrevious: false,
     skipCreditShots: false,
     useDanbooru: false,
@@ -901,7 +948,7 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     motor: pedido.motor,
     anime: pedido.anime,
     temporada: pedido.temporada,
-    reconhecer: pedido.reconhecer,
+    reconhecer: pedido.reconhecer || descoberta,
     backend,
     requisicao,
     ouvintes,
@@ -917,6 +964,7 @@ export async function analisarEpisodio(pedido: PedidoDeAnalise, ouvintes: Ouvint
     refsDir: null,
     repetiu: false,
     fotos: null,
+    esperandoNomes: false,
   }
   // A vaga e reservada JA, antes do processo subir: um segundo clique no
   // mesmo instante leva "ja existe" em vez de subir dois motores.
@@ -950,6 +998,30 @@ export async function cancelarAnalise(jobId: string): Promise<void> {
   }
   if (job.relogio) clearTimeout(job.relogio)
   job.relogio = setTimeout(() => matarArvore(filho), 10_000)
+}
+
+/**
+ * Reconhecer na mao: manda a linha de nomes ao processo que espera depois do
+ * discovery-ready. UMA vez por job. false = o job nao esta esperando nomes
+ * (cancelado, morreu, ja recebeu) -- quem chama diz "os grupos expiraram".
+ * A decisao ja vem conferida (paraOMotor): nome vazio para todos faria o
+ * motor lancar e o processo morrer com os grupos.
+ */
+export function comandarDescoberta(jobId: string, comando: ComandoCommitDiscovery): boolean {
+  const job = atual
+  if (!job || job.id !== jobId || !job.esperandoNomes || job.entregue || job.cancelado || !job.filho) return false
+  const filho = job.filho
+  if (filho.exitCode !== null || filho.signalCode !== null || filho.stdin.destroyed) return false
+  job.esperandoNomes = false
+  job.log?.write(
+    `\n[studio] commit-discovery: ${Object.keys(comando.names).length} grupos com nome (${[...new Set(Object.values(comando.names))].length} personagens)\n`,
+  )
+  try {
+    filho.stdin.write(`${JSON.stringify(comando)}\n`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

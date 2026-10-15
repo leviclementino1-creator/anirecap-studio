@@ -8,6 +8,7 @@ import { useRoteiro } from '@/store/gerar-roteiro'
 import { avisosDasFrases, cenasNaTela, resumoDasCenas, useCenas, useIndiceDasCenas } from '@/store/gerar-cenas'
 import { useProject } from '@/store/project'
 import { Botao, COR_DE_AVISO, focarBotao, Link } from './pecas'
+import { CaixinhaDaEdicaoRapida } from './CaixinhaDaEdicaoRapida'
 
 /**
  * A BARRA DE BAIXO do passo 4: voltar a voz, o recado do momento, "Sugerir de
@@ -31,6 +32,7 @@ export function RodapeDasCenas() {
   const sugerindo = useCenas((s) => s.sugerindo)
   const encaixando = useCenas((s) => s.encaixando)
   const montando = useCenas((s) => s.montando)
+  const etapaDaMontagem = useCenas((s) => s.etapaDaMontagem)
   const confirmando = useCenas((s) => s.confirmando)
   const limparErro = useCenas((s) => s.limparErro)
   const limparRecado = useCenas((s) => s.limparRecado)
@@ -111,7 +113,7 @@ export function RodapeDasCenas() {
             {erro.split(/(?<=[.!?])\s/)[0]}
           </button>
         ) : montando ? (
-          <span className="min-w-0 truncate text-[11px] text-ink-3">Montando o projeto...</span>
+          <span className="min-w-0 truncate text-[11px] text-ink-3">{etapaDaMontagem ?? 'Montando o projeto...'}</span>
         ) : sugerindo !== null ? (
           <span className="min-w-0 truncate text-[11px] text-ink-3">Sugerindo as cenas...</span>
         ) : encaixando ? (
@@ -170,11 +172,15 @@ export function RodapeDasCenas() {
           </Botao>
         </>
       ) : (
-        <Botao principal foco="abrir-no-editor" onClick={() => void abrirNoEditor()} disabled={!podeAbrir} title={porqueNao}>
-          <Clapperboard size={13} strokeWidth={1.5} />
-          {montando ? 'Abrindo...' : 'Abrir no editor'}
-          <ArrowRight size={13} strokeWidth={1.5} />
-        </Botao>
+        <>
+          {/* A Edicao rapida junto da montagem: o projeto ja chega pronto. */}
+          <CaixinhaDaEdicaoRapida disabled={montando} />
+          <Botao principal foco="abrir-no-editor" onClick={() => void abrirNoEditor()} disabled={!podeAbrir} title={porqueNao}>
+            <Clapperboard size={13} strokeWidth={1.5} />
+            {montando ? 'Abrindo...' : 'Abrir no editor'}
+            <ArrowRight size={13} strokeWidth={1.5} />
+          </Botao>
+        </>
       )}
     </footer>
   )

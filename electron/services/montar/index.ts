@@ -15,10 +15,19 @@ import type { EpisodeIndex } from '@shared/episodio'
 import { gravarRascunho, indiceDoRascunho, lerRascunhoDoDisco } from '../gerar/rascunho'
 import { saveProjectFile } from '../project'
 import { arquivoDaVoz } from '../voz/pastas'
+import { secoesDoTake, type RostosDoLote } from '@shared/edicao-rapida'
 import { aquecerMiniaturas } from './abertura'
+import {
+  estiloSalvo,
+  personagensDosPedacos,
+  registrarAMusica,
+  resumoDaMontagem,
+  rostosDaMontagem,
+  somDaMontagem,
+} from './edicao-rapida'
 import { focosDosPedacos } from './foco'
 import { arquivoDoProjeto, conferirPastaPedida, nomeDoProjeto, pastaPadraoDoProjeto } from './pasta'
-import { montarArquivoDoProjeto, pedacosDaMontagem } from './projeto'
+import { montarArquivoDoProjeto, pedacosDaMontagem, type FocoDoPedaco } from './projeto'
 
 /**
  * O ENCAIXE NA VOZ e a MONTAGEM do projeto (agente B).
@@ -36,7 +45,9 @@ import { montarArquivoDoProjeto, pedacosDaMontagem } from './projeto'
  *   secao e zoom curto na virada, gancho, legendas do editor e `studio`, que
  *   liga a guarda de reanalise do store). Validado pelo zod e gravado atomico
  *   pelo saveProjectFile do Dangai (o mesmo `rel` de um Ctrl+S). Nunca escreve
- *   em biblioteca externa (./pasta.ts).
+ *   em biblioteca externa (./pasta.ts). A legenda nasce no estilo salvo dele;
+ *   com `pedido.edicaoRapida`, o projeto ja chega com som, musica e o rosto
+ *   pelo motor (./edicao-rapida.ts), e o resumo volta em `edicaoRapida`.
  *
  * Mesma regra do rascunho.ts: ler -> aplicar -> gravar SEM await no meio. A
  * montagem trabalha sobre o que foi lido e encaixado; a parte lenta (rostos)
@@ -104,6 +115,8 @@ export interface OpcoesDaMontagem {
   rostos?: boolean
   /** Teto da busca de rostos, em ms. */
   tetoDosRostosMs?: number
+  /** O que esta rodando agora, em ASCII curto (o rodape do passo 4 mostra). */
+  aoAndar?: (texto: string) => void
 }
 
 export async function montarProjeto(
@@ -143,15 +156,76 @@ export async function montarProjeto(
   // 3. A narracao vai junto do projeto (o projeto nao aponta para o userData),
   // com o NOME do projeto: o render do Dangai grava ao lado do audio, com o
   // nome dele ("Dr. Stone S04E37-short.mp4"), e o "Salvar" sugere esse nome.
+  const andar = (texto: string): void => {
+    try {
+      opcoes.aoAndar?.(texto)
+    } catch {
+      // Recado de andamento nunca derruba a montagem.
+    }
+  }
+  andar('Copiando a narracao...')
   const narracaoPath = narracaoNaPasta(pasta, nome, origem)
   if (!existsSync(narracaoPath)) copyFileSync(origem, narracaoPath)
 
   // 4. O rosto de cada bloco (melhor esforco) e as miniaturas prontas para o
-  // openProject (o mesmo mp4 em dois blocos nao pode correr no import).
-  const focos = opcoes.rostos === false ? new Map() : await focosDosPedacos(previa.pedacos, opcoes.tetoDosRostosMs)
-  await aquecerMiniaturas(previa.pedacos.map((p) => p.arquivo))
+  // openProject (o mesmo mp4 em dois blocos nao pode correr no import). Com a
+  // Edicao rapida, o rosto e o do motor (lote, preferindo quem a frase cita);
+  // sem ela, o detector de sempre.
+  const config = pedido.edicaoRapida ?? null
+  const avisosDaEdicao: string[] = []
+  const rostos = async (): Promise<{ focos: Map<string, FocoDoPedaco>; lote: RostosDoLote | null; avisos: string[] }> => {
+    if (opcoes.rostos === false) return { focos: new Map(), lote: null, avisos: [] }
+    if (config?.rosto) {
+      const nomes = personagensDosPedacos(previa.pedacos, roteiro, r.eventos, indice)
+      return rostosDaMontagem(previa.pedacos, nomes, r.episodioId, opcoes.tetoDosRostosMs)
+    }
+    return { focos: await focosDosPedacos(previa.pedacos, opcoes.tetoDosRostosMs), lote: null, avisos: [] }
+  }
 
-  // 5. O .anirecap: zod + gravacao atomica do Dangai.
+  // 5. O som da Edicao rapida: whoosh nas viradas, impacto no gancho e no
+  // climax, musica com ducking. Os cortes sao os comecos dos blocos (o mesmo
+  // `start` que montarArquivoDoProjeto da a cada Scene).
+  const somDaEdicao = () =>
+    config
+      ? somDaMontagem(config, {
+          duracaoSec: take.duracao,
+          cortes: previa.pedacos.map((p, j) => (j === 0 ? 0 : p.inicio)),
+          secoes: secoesDoTake(roteiro, take, r.eventos),
+          vozPath: narracaoPath,
+        })
+      : Promise.resolve(null)
+
+  // Rosto, miniaturas e som nao dependem um do outro: correm juntos. O motor de
+  // rostos gasta ~9 s fixos para subir o torch, e nao precisa somar ao resto.
+  // O rodape diz o que AINDA falta (a Edicao rapida leva ~20 s).
+  const faltam = new Set<'rostos' | 'som' | 'miniaturas'>(['rostos', 'miniaturas', ...(config && (config.sfx || config.musica) ? (['som'] as const) : [])])
+  const dizerOQueFalta = (): void => {
+    const partes: string[] = []
+    if (faltam.has('rostos')) partes.push(config?.rosto ? 'Rostos' : 'Enquadramento')
+    if (faltam.has('som')) partes.push(config?.sfx && config.musica ? 'sons e musica' : config?.sfx ? 'sons' : 'musica')
+    if (partes.length === 0 && faltam.has('miniaturas')) partes.push('Miniaturas')
+    if (partes.length > 0) andar(`${partes.join(', ').replace(/^./, (c) => c.toUpperCase())}...`)
+  }
+  const acabou = <T,>(qual: 'rostos' | 'som' | 'miniaturas', p: Promise<T>): Promise<T> =>
+    p.finally(() => {
+      faltam.delete(qual)
+      dizerOQueFalta()
+    })
+  dizerOQueFalta()
+  const [feito, , som] = await Promise.all([
+    acabou('rostos', rostos()),
+    acabou('miniaturas', aquecerMiniaturas(previa.pedacos.map((p) => p.arquivo))),
+    acabou('som', somDaEdicao()),
+  ])
+  andar('Gravando o projeto...')
+  const focos = feito.focos
+  const lote = feito.lote
+  avisosDaEdicao.push(...feito.avisos)
+  if (som) avisosDaEdicao.push(...som.avisos)
+
+  // 6. O .anirecap: zod + gravacao atomica do Dangai. O estilo salvo da
+  // legenda entra com ou sem a Edicao rapida (e o padrao de projeto novo).
+  const estilo = estiloSalvo()
   const { file, avisos } = montarArquivoDoProjeto({
     rascunho: r,
     roteiro,
@@ -161,8 +235,30 @@ export async function montarProjeto(
     narracaoPath,
     focos,
     agora: agora(),
+    eventos: r.eventos,
+    estilo,
+    trilhas: som?.trilhas ?? [],
   })
   const projetoPath = arquivoDoProjeto(pasta, nome)
   saveProjectFile(projetoPath, file)
-  return { projetoPath, avisos }
+  if (!config) return { projetoPath, avisos }
+
+  // 7. Gravado: a musica entra no historico (o proximo short nao repete).
+  avisosDaEdicao.push(...(await registrarAMusica(som?.plano ?? null, projetoPath)))
+  // Nunca ajustou um estilo: a parte Legenda nao tem o que por, e ele precisa saber por que.
+  if (config.legenda && estilo === null) avisosDaEdicao.push('Sem estilo de legenda salvo: ficou o padrao do app')
+  return {
+    projetoPath,
+    avisos,
+    edicaoRapida: resumoDaMontagem({
+      config,
+      plano: som?.plano ?? null,
+      lote,
+      focos,
+      pedacos: previa.pedacos,
+      rostoRodou: config.rosto && opcoes.rostos !== false,
+      legenda: estilo !== null,
+      avisos: avisosDaEdicao,
+    }),
+  }
 }

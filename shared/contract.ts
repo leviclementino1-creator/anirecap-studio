@@ -1742,6 +1742,48 @@ export const CAPTION_CHARS_PER_LINE = 18
 export const MUSIC_GAIN_DB_DEFAULT = -20
 
 /**
+ * DUCKING da musica (Edicao rapida, 14/10): ela desce enquanto a narracao fala
+ * e sobe um pouco nas pausas. O envelope sai das PALAVRAS do transcript (tempo
+ * real da voz), nunca de um compressor olhando o audio: assim o preview e o
+ * render calculam o MESMO ganho com a mesma funcao (envelopeDeDucking em
+ * shared/edicao-rapida.ts). O comentario do MUSIC_GAIN_DB_DEFAULT continua
+ * valendo para o Dangai (narracao corrida, sem pausa): ducking so existe no
+ * trecho que o pede.
+ *
+ * Mora aqui, e nao em edicao-rapida.ts, porque o trechoDeAudioSchema usa: o
+ * edicao-rapida importa deste arquivo, e o contrario seria um ciclo.
+ *
+ * MEDIDO no take do S4-37 (t1, 64,4 s, pausas cortadas no passo 3): o vao
+ * entre FRASES fica em 0,15-0,22 s e o vao entre palavras chega a 0,27 s:
+ * pelo tempo do vao, frase e palavra nao se separam. Por isso o
+ * envelopeDeDucking tambem abre um RESPIRO depois de palavra que fecha frase
+ * (. ! ? ou paragrafo) com vao de 0,1 s ou mais, e a Edicao rapida usa rampas
+ * curtas (REGRAS_DE_SOM_PADRAO.musica.ducking): a musica sobe ~2,3 dB nesses
+ * respiros e os 6 dB inteiros nas pausas longas. Este padrao aqui nao mudou.
+ */
+export const duckingSchema = z.object({
+  /** Quanto a musica desce enquanto a voz fala, em dB (positivo). */
+  abaixoDb: z.number().min(0).max(30).default(6),
+  /** Quanto tempo leva para descer, terminando na 1a palavra, em segundos. */
+  ataqueSec: z.number().min(0).max(2).default(0.15),
+  /** Quanto tempo leva para voltar, depois da ultima palavra, em segundos. */
+  soltaSec: z.number().min(0).max(4).default(0.6),
+  /** Pausa menor que isto nao conta: a musica fica embaixo. Segundos. */
+  pausaMinSec: z.number().min(0).max(5).default(0.5),
+})
+export type Ducking = z.infer<typeof duckingSchema>
+export const DUCKING_PADRAO: Ducking = { abaixoDb: 6, ataqueSec: 0.15, soltaSec: 0.6, pausaMinSec: 0.5 }
+
+/**
+ * Quem pos o trecho: a Edicao rapida marca os dela (musica e SFX por tipo, cada
+ * tipo numa faixa) para rodar de novo trocando SO os dela, sem tocar no que ele
+ * pos a mao. Ausente = posto por ele (todo projeto antigo).
+ */
+export const PAPEIS_DA_TRILHA = ['musica', 'whoosh', 'impacto'] as const
+export const papelDaTrilhaSchema = z.enum(PAPEIS_DA_TRILHA)
+export type PapelDaTrilha = z.infer<typeof papelDaTrilhaSchema>
+
+/**
  * Um trecho numa FAIXA DE AUDIO da linha do tempo -- musica, ambiente, o que
  * ele quiser por por baixo da narracao, onde quiser.
  *
@@ -1772,6 +1814,17 @@ export const trechoDeAudioSchema = z.object({
   fadeOutSec: z.number().min(0).max(3600).default(1),
   peaks: z.array(z.number().min(0).max(1)).default([]),
   rms: z.array(z.number().min(0).max(1)).default([]),
+  /**
+   * Edicao rapida: quem pos o trecho (ver papelDaTrilhaSchema). Opcional SEM
+   * default: projeto antigo abre e grava igual, byte a byte.
+   */
+  papel: papelDaTrilhaSchema.optional(),
+  /**
+   * Ducking deste trecho pela voz (ver duckingSchema). null/ausente = volume
+   * fixo, como sempre. O envelope e em TEMPO DO VIDEO (segue a narracao, nao o
+   * trecho): mover a musica nao arrasta o ducking junto.
+   */
+  ducking: duckingSchema.nullable().optional(),
 })
 export type TrechoDeAudioSalvo = z.infer<typeof trechoDeAudioSchema>
 

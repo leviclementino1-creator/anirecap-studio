@@ -7,12 +7,15 @@ import {
   KEN_BURNS_EFFECTS,
   medidasDo,
   VIDEO_FPS,
+  type CaptionStyle,
   type Scene,
   type Segment,
+  type TrechoDeAudioSalvo,
   type Transcript,
   type Transition,
   type Word,
 } from '@shared/contract'
+import { aplicarEstiloNoProjeto, secoesDoTake } from '@shared/edicao-rapida'
 import { encaixarEscolha } from '@shared/encaixe'
 import type { EpisodeIndex } from '@shared/episodio'
 import { buildCaptions, cutCandidatesFrom } from '@shared/plan'
@@ -22,7 +25,7 @@ import {
   type OrigemDoStudio,
   type ProjectFile,
 } from '@shared/project-file'
-import { ROTULO_DO_PAPEL, textoDoRoteiro, type RascunhoDoRecap, type Roteiro } from '@shared/roteiro'
+import { ROTULO_DO_PAPEL, textoDoRoteiro, type Evento, type RascunhoDoRecap, type Roteiro } from '@shared/roteiro'
 import type { TakeDaVoz } from '@shared/voz'
 
 /**
@@ -51,7 +54,11 @@ import type { TakeDaVoz } from '@shared/voz'
  * - legendas: as do editor (buildCaptions com as regras padrao), com
  *   `captionsEdited: false` -- o openProject refaz com as regras de quem abre;
  * - `studio` (origemDoStudioSchema) com `vozAlinhada: true`: e o que liga a
- *   guarda de reanalise do store (src/store/guarda-do-studio.ts).
+ *   guarda de reanalise do store (src/store/guarda-do-studio.ts); e `secoes`,
+ *   as partes do roteiro no tempo do take (viradas do som, nomes do rosto);
+ * - a legenda no ESTILO SALVO dele (settings.captionStyle), como um projeto
+ *   novo do Dangai, e as faixas de audio da Edicao rapida quando pedida
+ *   (./edicao-rapida.ts).
  *
  * planOrigin 'auto' (o plano em que cada bloco dura a frase que escolheu a
  * cena dele) e planEdited true, como a montagem automatica do Dangai.
@@ -111,6 +118,18 @@ export interface EntradaDaMontagem {
   /** Enquadramento por chaveDoPedaco. Ausente = centro. */
   focos?: ReadonlyMap<string, FocoDoPedaco>
   agora: string
+  /**
+   * Os eventos do rascunho: dao os personagens de cada frase em
+   * `studio.secoes` (o rosto e o som da Edicao rapida leem). Ausente = sem nomes.
+   */
+  eventos?: readonly Pick<Evento, 'id' | 'personagens'>[]
+  /**
+   * O estilo de legenda salvo dele (settings.captionStyle): o projeto montado
+   * nasce com ele, como um projeto novo do Dangai. Ausente/null = o padrao.
+   */
+  estilo?: CaptionStyle | null
+  /** As faixas de audio da Edicao rapida (trilhasDoPlanoDeSom). Ausente = nenhuma. */
+  trilhas?: readonly TrechoDeAudioSalvo[]
 }
 
 /**
@@ -344,11 +363,13 @@ export function montarArquivoDoProjeto(e: EntradaDaMontagem): { file: ProjectFil
     roteiroVersao: e.roteiro.versao,
     vozAlinhada: true,
     geradoEm: e.agora,
+    // As partes do roteiro no tempo do take: as viradas do som e os nomes do rosto.
+    secoes: secoesDoTake(e.roteiro, e.take, e.eventos ?? []),
   }
 
   // O zod confere E completa os campos com padrao (cor, fonte, curva...),
   // exatamente como um projeto novo do Dangai nasce.
-  const file = projectFileSchema.parse({
+  const padrao = projectFileSchema.parse({
     version: PROJECT_FILE_VERSION,
     savedAt: e.agora,
     formato: 'short',
@@ -368,7 +389,11 @@ export function montarArquivoDoProjeto(e: EntradaDaMontagem): { file: ProjectFil
     hookText: gancho,
     hookSec,
     studio,
+    ...(e.trilhas && e.trilhas.length > 0 ? { trilhas: e.trilhas } : {}),
   })
+  // O estilo salvo por cima dos padroes (o project-file tem defaults proprios:
+  // sem isto o projeto abria no estilo de fabrica). Passa de novo no zod.
+  const file = e.estilo ? projectFileSchema.parse(aplicarEstiloNoProjeto(padrao, e.estilo)) : padrao
 
   return { file, pedacos, avisos }
 }

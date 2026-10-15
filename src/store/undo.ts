@@ -45,7 +45,14 @@ export function startUndo(): () => void {
   const unsubscribe = useProject.subscribe((state, anterior) => {
     // Abrir projeto, recuperar autosave e limpar nao sao edicoes: entram pela
     // mesma porta no estado, mas ninguem espera desfaze-los com Ctrl+Z.
-    if (aplicando || estaCarregando()) return
+    if (aplicando) return
+    if (estaCarregando()) {
+      // Abrir OUTRO projeto troca o documento inteiro: o historico era do
+      // anterior, e um Ctrl+Z depois trazia o video de la para dentro deste
+      // (medido na integracao da Edicao rapida, 14/10).
+      if (state.audio?.path !== anterior.audio?.path || state.projectPath !== anterior.projectPath) esquecerHistorico()
+      return
+    }
     if (!mudou(state, anterior)) return
 
     /*
@@ -69,6 +76,14 @@ export function startUndo(): () => void {
   }
 }
 
+function esquecerHistorico(): void {
+  if (timer) clearTimeout(timer)
+  timer = null
+  antesDoGesto = null
+  pilha.atras = []
+  pilha.frente = []
+}
+
 function fecharPasso(): void {
   timer = null
   if (!antesDoGesto) return
@@ -90,6 +105,14 @@ function fecharPasso(): void {
 function fecharAgora(): void {
   if (timer) clearTimeout(timer)
   fecharPasso()
+}
+
+/**
+ * Fecha AGORA o passo que acabou de entrar (a Edicao rapida): ela e um passo
+ * so, e um gesto logo em seguida nao pode cair dentro dele.
+ */
+export function fecharPassoAgora(): void {
+  fecharAgora()
 }
 
 function aplicar(foto: Documento): void {

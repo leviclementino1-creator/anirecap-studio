@@ -24,6 +24,7 @@ import { encaixarEscolha } from '@shared/encaixe'
 import { useGerar } from './gerar'
 import { useRoteiro } from './gerar-roteiro'
 import { useProject } from './project'
+import { pedidoDaMontagem, useEdicaoRapida } from './edicao-rapida'
 
 /**
  * O ASSISTENTE "GERAR RECAP", passo 4 (Cenas). Dono: agente C.
@@ -137,6 +138,8 @@ interface EstadoDasCenasNaTela {
   sugerindo: string | null
   encaixando: boolean
   montando: boolean
+  /** O que a montagem esta fazendo agora (do main: "Rostos, sons e musica..."). null = sem recado. */
+  etapaDaMontagem: string | null
   /** O "Abrir no editor" esperando o segundo clique. */
   confirmando: Confirmacao | null
   previa: PreviaNoTocador | null
@@ -207,6 +210,7 @@ const LIMPO = {
   sugerindo: null,
   encaixando: false,
   montando: false,
+  etapaDaMontagem: null,
   confirmando: null,
   previa: null,
   erro: null,
@@ -805,23 +809,29 @@ export const useCenas = create<EstadoDasCenasNaTela>((set, get) => {
         set({ confirmando: 'nao-salvo' })
         return
       }
-      set({ confirmando: null, montando: true, erro: null, recado: null })
+      set({ confirmando: null, montando: true, etapaDaMontagem: null, erro: null, recado: null })
+      // O rodape diz o que esta rodando (a Edicao rapida leva ~20 s).
+      const pararDeOuvir = window.dangai.onMontarProgresso((e) => {
+        if (e.rascunhoId === id && get().montando) set({ etapaDaMontagem: e.texto })
+      })
       const montado = await naFila(async () => {
         if (!(await gravarPendentes())) return null
         if (!(await encaixarSePreciso(id))) return null
-        const r = await window.dangai.montarProjeto(id)
+        // A caixinha "Edicao rapida" do rodape: o projeto ja chega com som, rosto e legenda.
+        const r = await window.dangai.montarProjeto(id, await pedidoDaMontagem())
         if (!r.ok) {
           set({ erro: r.error })
           return null
         }
         return r.value
-      })
+      }).finally(pararDeOuvir)
       if (!montado || !ainda(id)) {
-        set({ montando: false })
+        set({ montando: false, etapaDaMontagem: null })
         return
       }
+      set({ etapaDaMontagem: 'Abrindo no editor...' })
       await useProject.getState().openProject(montado.projetoPath)
-      set({ montando: false, avisos: montado.avisos })
+      set({ montando: false, etapaDaMontagem: null, avisos: montado.avisos })
       // O openProject poe a falha no erro do editor e nao devolve nada: abriu = o caminho e o dele.
       if (useProject.getState().projectPath !== montado.projetoPath) {
         set({ erro: useProject.getState().error ?? 'Nao deu para abrir o projeto.' })
@@ -831,6 +841,8 @@ export const useCenas = create<EstadoDasCenasNaTela>((set, get) => {
       // false) sao as mesmas que ele faria de novo -- nao e edicao, nao fica "nao salvo".
       useProject.setState({ projectDirty: false })
       useGerar.getState().fechar()
+      // O que a Edicao rapida fez aparece no botao dela, na barra do editor.
+      if (montado.edicaoRapida) useEdicaoRapida.getState().mostrarResumo(montado.edicaoRapida, 'montagem')
     },
 
     desistirDeAbrir: () => set({ confirmando: null }),

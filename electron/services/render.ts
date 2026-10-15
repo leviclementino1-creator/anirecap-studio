@@ -1,12 +1,14 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ensureBrowser, makeCancelSignal, renderMedia, selectComposition } from '@remotion/renderer'
 import type { RenderProgress, RenderProps } from '@shared/contract'
 import { MUSIC_FADE_IN_SEC, MUSIC_FADE_OUT_SEC, VIDEO_FPS } from '@shared/contract'
+import type { PontoDeGanho } from '@shared/edicao-rapida'
 import { makeWebpackOverride } from '../../remotion.webpack'
 import { ffmpegPath } from './ffmpeg-path'
+import { filtroDoEnvelope, filtroDoLimitador, picoVerdadeiro, PICO_MAXIMO_DBTP, TETO_DO_MIX_DBTP } from './som/mix'
 
 const COMPOSITION_ID = 'dangai'
 
@@ -70,6 +72,11 @@ export interface TrechoParaMixar {
   gainDb: number
   fadeInSec: number
   fadeOutSec: number
+  /**
+   * Ducking (Edicao rapida): o envelope em TEMPO DO VIDEO, dB sobre gainDb,
+   * ja recortado no trecho (trilhaParaMixar). Ausente = volume fixo.
+   */
+  envelope?: readonly PontoDeGanho[]
 }
 
 export interface MusicBed {
@@ -448,7 +455,8 @@ function resolveMusic(request: RenderRequest): MusicBed | null {
   return existsSync(request.music.path) ? request.music : null
 }
 
-async function muxWithNormalizedAudio(
+/** Exportada para o teste do mix (scripts/teste/v-som-mix.ts), sem Remotion. */
+export async function muxWithNormalizedAudio(
   videoPath: string,
   audioPath: string,
   outputPath: string,
@@ -574,6 +582,8 @@ async function muxWithNormalizedAudio(
       entrada > 0 ? `afade=t=in:st=0:d=${entrada.toFixed(3)}` : null,
       saida > 0 ? `afade=t=out:st=${(t.duracaoSec - saida).toFixed(3)}:d=${saida.toFixed(3)}` : null,
     ].filter(Boolean)
+    // Ducking (Edicao rapida): o MESMO envelope do preview, no tempo do trecho.
+    const envelope = filtroDoEnvelope(t.envelope, t.at)
     chain.push(
       [
         `[${primeiraTrilha + k}:a]aformat=channel_layouts=stereo`,
@@ -581,6 +591,7 @@ async function muxWithNormalizedAudio(
         'asetpts=PTS-STARTPTS',
         ...fades,
         `volume=${(10 ** (t.gainDb / 20)).toFixed(5)}`,
+        ...(envelope ? [envelope] : []),
         `adelay=${ms}|${ms}[t${k}]`,
       ].join(','),
     )
@@ -607,28 +618,54 @@ async function muxWithNormalizedAudio(
    * quem alinhava as pontas era o -shortest, e ele cortava o VIDEO quando havia
    * trilha, levando embora os ultimos blocos.
    */
-  const mix = `${misturado}[cru];[cru]apad,atrim=0:${durationSec.toFixed(3)},asetpts=N/SR/TB[out]`
+  /*
+   * SEM CLIPAR (Edicao rapida): a voz chega aqui em -14 LUFS com pico em
+   * -1,5 dBTP, e a soma com musica e SFX passava disso sem ninguem segurar.
+   * O limitador do fim (som/mix.ts) so encosta nos picos da SOMA; a voz
+   * sozinha passa intacta, entao o loudness dela continua o de sempre.
+   *
+   * O AAC sobe o pico DEPOIS do limitador (medido: +0,3 dB num mix normal,
+   * +3,8 dB numa faixa alta e espremida de proposito). Por isso o MP4 pronto
+   * e medido, e passou de -1 dBTP ele e refeito com o teto mais baixo pelo
+   * tanto que passou (mix normal: uma passada so).
+   */
+  let teto = TETO_DO_MIX_DBTP
+  for (let tentativa = 0; ; tentativa++) {
+    const mix = `${misturado}[cru];[cru]${filtroDoLimitador(teto)},apad,atrim=0:${durationSec.toFixed(3)},asetpts=N/SR/TB[out]`
 
-  await runFfmpeg([
-    '-y',
-    ...inputs,
-    '-filter_complex', [...chain, mix].join(';'),
-    '-map', '0:v:0',
-    '-map', '[out]',
-    '-c:v', 'copy',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    '-ar', '48000',
-    // Estereo na entrega: narracao de TTS costuma vir mono, e alguns
-    // encoders de plataforma tratam mono de forma inconsistente.
-    '-ac', '2',
-    '-movflags', '+faststart',
-    // Trava de seguranca: o audio ja sai no tamanho certo do filtro, e o video
-    // vem com a duracao exata do Remotion. -t garante que nenhuma entrada
-    // (a musica em loop, em particular) estique a saida.
-    '-t', durationSec.toFixed(3),
-    outputPath,
-  ])
+    /*
+     * O grafo vai por ARQUIVO: o envelope de ducking de um video longo tem
+     * centenas de pontos, e a linha de comando do Windows para em 32 mil
+     * caracteres.
+     */
+    const grafo = join(dirname(videoPath), 'mix.txt')
+    writeFileSync(grafo, [...chain, mix].join(';\n'))
+
+    await runFfmpeg([
+      '-y',
+      ...inputs,
+      '-filter_complex_script', grafo,
+      '-map', '0:v:0',
+      '-map', '[out]',
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-ar', '48000',
+      // Estereo na entrega: narracao de TTS costuma vir mono, e alguns
+      // encoders de plataforma tratam mono de forma inconsistente.
+      '-ac', '2',
+      '-movflags', '+faststart',
+      // Trava de seguranca: o audio ja sai no tamanho certo do filtro, e o video
+      // vem com a duracao exata do Remotion. -t garante que nenhuma entrada
+      // (a musica em loop, em particular) estique a saida.
+      '-t', durationSec.toFixed(3),
+      outputPath,
+    ])
+
+    const pico = await picoVerdadeiro(outputPath)
+    if (pico === null || pico <= PICO_MAXIMO_DBTP || tentativa >= 2) break
+    teto -= pico - PICO_MAXIMO_DBTP + 0.3
+  }
 }
 
 interface LoudnessMeasurement {

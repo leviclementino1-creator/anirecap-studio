@@ -178,6 +178,22 @@ import {
 } from '@shared/cenas'
 import { candidatosDaFrase, salvarCenas, sugerirCenas } from './services/cenas'
 import { encaixarNaVoz, montarProjeto } from './services/montar'
+import { z } from 'zod'
+import {
+  loteDeRostosSchema,
+  pedidoDePlanoDeSomSchema,
+  type LoteDeRostos,
+  type MedidaDoSom,
+  type MusicaDaPasta,
+  type PedidoDePlanoDeSom,
+  type PlanoDeSom,
+  type RostosDoLote,
+  type SfxDaEdicaoRapida,
+} from '@shared/edicao-rapida'
+import { escolherMusica, listarMusicas, registrarMusicaUsada } from './services/som/musicas'
+import { planejarSom, sfxDaEdicaoRapida } from './services/som/planejar'
+import { medirSom } from './services/som/medir'
+import { rostosDosPedacos } from './services/montar/rostos-motor'
 
 /**
  * Envolve um handler para que erro nunca atravesse a ponte como excecao. O
@@ -1049,8 +1065,38 @@ export function registerIpc(): void {
 
   handle<[string], CenasGravadas>(IPC.encaixarNaVoz, async (rascunhoId) => encaixarNaVoz(idDoRascunho(rascunhoId)))
 
-  handle<[string, PedidoDeMontagem], ProjetoMontado>(IPC.montarProjeto, async (rascunhoId, pedido) =>
-    montarProjeto(idDoRascunho(rascunhoId), pedidoDeMontagemSchema.parse(pedido ?? {})),
+  handle<[string, PedidoDeMontagem], ProjetoMontado>(IPC.montarProjeto, async (rascunhoId, pedido) => {
+    const id = idDoRascunho(rascunhoId)
+    return montarProjeto(id, pedidoDeMontagemSchema.parse(pedido ?? {}), {
+      aoAndar: (texto) => enviarATodas(IPC.montarProgresso, { rascunhoId: id, texto }),
+    })
+  })
+
+  // ----------------------------------------------------------- Edicao rapida
+  // Contrato em shared/edicao-rapida.ts. Som = electron/services/som/ (agente A);
+  // rosto pelo motor = electron/services/montar/rostos-motor.ts (agente B).
+
+  handle<[], MusicaDaPasta[]>(IPC.listarMusicas, async () => listarMusicas())
+
+  handle<[string[] | undefined], MusicaDaPasta | null>(IPC.escolherMusica, async (evitar) =>
+    escolherMusica(z.array(z.string().max(1024)).max(50).parse(evitar ?? [])),
+  )
+
+  handle<[string | null, string | null | undefined], true>(IPC.registrarMusicaUsada, async (path, projeto) =>
+    registrarMusicaUsada(z.string().min(1).max(1024).nullable().parse(path ?? null), z.string().max(1024).nullable().parse(projeto ?? null)),
+  )
+
+  handle<[], SfxDaEdicaoRapida>(IPC.sfxDaEdicaoRapida, async () => sfxDaEdicaoRapida())
+
+  handle<[PedidoDePlanoDeSom], PlanoDeSom>(IPC.planejarSom, async (pedido) =>
+    planejarSom(pedidoDePlanoDeSomSchema.parse(pedido)),
+  )
+
+  // O preview no equilibrio do render (loudness da narracao e das faixas).
+  handle<[string], MedidaDoSom>(IPC.medirSom, async (path) => medirSom(z.string().min(1).max(1024).parse(path)))
+
+  handle<[LoteDeRostos], RostosDoLote>(IPC.rostosDosPedacos, async (lote) =>
+    rostosDosPedacos(loteDeRostosSchema.parse(lote)),
   )
 }
 

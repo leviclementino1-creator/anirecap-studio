@@ -12,6 +12,7 @@ stdin   → comandos JSON-line do host; hoje só ``{"cmd": "cancel"}``.
 Uso:
     python -m app.headless run        (requisição JSON pelo stdin, 1ª linha)
     python -m app.headless probe      (info de ambiente: versão, GPU)
+    python -m app.headless rostos     ([Studio] rostos em lote, ver app/rostos.py)
 
 Por que stdout é sagrado: o pipeline inteiro usa `print()` pra log. Se um
 print vazar no canal de eventos, o JSON quebra no meio e o host perde o
@@ -1356,6 +1357,20 @@ def _read_request() -> dict[str, Any]:
     return req
 
 
+def _rostos() -> int:
+    """[Studio] Os rostos dos blocos do Studio, em lote (app/rostos.py).
+
+    Mesmo cuidado do _run com o stdin: le a requisicao, solta o pipe e deixa
+    a thread de sondagem cuidar do cancelamento (e do host que morreu)."""
+    req = _read_request()
+    _detach_stdin()
+    cancel = _CancelFlag()
+    threading.Thread(target=_watch_stdin, args=(cancel,), daemon=True).start()
+    from .rostos import rodar
+
+    return rodar(req, _emit, lambda: cancel.requested)
+
+
 def _apply_request_to_config(cfg: Any, req: dict[str, Any]) -> None:
     """Passa os parâmetros da requisição pra Config.
 
@@ -1725,6 +1740,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if mode == "run":
             return _run()
+        if mode == "rostos":  # [Studio] app/rostos.py
+            return _rostos()
         _emit({"type": "failed", "message": f"modo desconhecido: {mode}"})
         return 2
     except Exception as e:  # noqa: BLE001 — a fronteira do processo

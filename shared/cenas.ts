@@ -4,6 +4,8 @@ import type { EpisodeIndex, Plano } from './episodio'
 // seta de valor e uma so, roteiro -> cenas, como roteiro -> voz).
 import type { Frase, RascunhoDoRecap, Redivisao, Roteiro } from './roteiro'
 import { hashDoTexto, palavrasDaFrase, type TakeDaVoz } from './voz'
+// edicao-rapida.ts so importa VALORES de contract.ts (sem ciclo com roteiro).
+import { configDaEdicaoRapidaSchema, type ResumoDaEdicaoRapida } from './edicao-rapida'
 
 /**
  * AS CENAS, do jeito que o Studio as entende: o contrato do passo 4 do
@@ -227,6 +229,13 @@ export const listaDeEscolhasSchema = z.array(escolhaDaFraseSchema)
 /** O "Abrir no editor". `pasta` null/ausente = a pasta padrao do projeto (o main decide). */
 export const pedidoDeMontagemSchema = z.object({
   pasta: z.string().min(1).max(1024).nullable().optional(),
+  /**
+   * A EDICAO RAPIDA junto da montagem (shared/edicao-rapida.ts): o projeto ja
+   * chega com SFX, musica, rosto e legenda. null/ausente = a montagem de
+   * sempre (o rosto pelo detector antigo). O estilo salvo da legenda entra nos
+   * dois casos: e o padrao de projeto novo, como no Dangai.
+   */
+  edicaoRapida: configDaEdicaoRapidaSchema.nullable().optional(),
 })
 export type PedidoDeMontagem = z.infer<typeof pedidoDeMontagemSchema>
 
@@ -259,6 +268,15 @@ export interface CenasGravadas {
 export interface ProjetoMontado {
   projetoPath: string
   avisos: string[]
+  /** O que a Edicao rapida fez. Ausente/null = montagem sem ela. */
+  edicaoRapida?: ResumoDaEdicaoRapida | null
+}
+
+/** O andamento do "Abrir no editor" (main -> renderer): o rodape do passo 4 mostra o texto. */
+export interface EtapaDaMontagem {
+  rascunhoId: string
+  /** ASCII curto ("Rostos, sons e musica...", "Gravando o projeto..."). */
+  texto: string
 }
 
 // ============================================================ funcoes puras

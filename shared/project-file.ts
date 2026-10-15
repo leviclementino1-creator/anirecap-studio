@@ -29,6 +29,7 @@ import {
   FORMATOS,
   FORMATO_PADRAO,
 } from './contract'
+import { papelDaSecaoSchema } from './roteiro'
 
 /**
  * O arquivo .anirecap (o .dangai do Dangai, com outro nome) -- o projeto salvo.
@@ -186,6 +187,41 @@ const bibliotecaSchema = z
 export type BibliotecaSalva = z.infer<typeof bibliotecaSchema>
 
 /**
+ * Uma PARTE do roteiro no tempo do video (Edicao rapida, 14/10).
+ *
+ * O whoosh entra nas viradas de parte e o impacto no comeco do gancho e do
+ * climax -- e so o roteiro sabe onde elas caem e qual e o papel de cada uma. O
+ * `section`/`sectionName` das imagens diz a parte de cada BLOCO, mas o nome e
+ * rotulo de tela e muda quando ele mexe nos blocos; isto aqui e o roteiro
+ * aprovado, gravado uma vez pela montagem.
+ *
+ * Tempo em segundos do video (= do take): `inicio` da parte e o offset do
+ * trecho da 1a frase dela, que e exatamente o corte do 1o bloco dela.
+ */
+export const fraseDoStudioSchema = z.object({
+  /** Frase.id ('f01'). */
+  id: z.string(),
+  inicio: z.number().nonnegative(),
+  fim: z.number().nonnegative(),
+  /**
+   * Os personagens dos eventos que a frase cita, sem repetir, na ordem dos
+   * eventos (nome como no elenco). O rosto prefere o deles ao centralizar.
+   */
+  personagens: z.array(z.string()).default([]),
+})
+export type FraseDoStudio = z.infer<typeof fraseDoStudioSchema>
+
+export const secaoDoStudioSchema = z.object({
+  /** Secao.id ('s1'). */
+  id: z.string(),
+  papel: papelDaSecaoSchema,
+  inicio: z.number().nonnegative(),
+  fim: z.number().nonnegative(),
+  frases: z.array(fraseDoStudioSchema).default([]),
+})
+export type SecaoDoStudio = z.infer<typeof secaoDoStudioSchema>
+
+/**
  * De onde o projeto veio quando nasceu do "Abrir no editor" do Gerar recap
  * (electron/services/montar/*). Ausente = projeto do jeito do Dangai.
  *
@@ -209,6 +245,12 @@ export const origemDoStudioSchema = z.object({
   vozAlinhada: z.boolean(),
   /** ISO de quando o projeto foi montado. */
   geradoEm: z.string(),
+  /**
+   * As partes do roteiro no tempo do video (ver secaoDoStudioSchema). Ausente
+   * no projeto montado antes da Edicao rapida: ai as viradas saem das imagens
+   * (`section`) ou dos paragrafos do transcript (secoesParaSom).
+   */
+  secoes: z.array(secaoDoStudioSchema).optional(),
 })
 export type OrigemDoStudio = z.infer<typeof origemDoStudioSchema>
 

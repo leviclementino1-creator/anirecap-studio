@@ -106,6 +106,48 @@ três para levar ao ancut-hub-engine:
      de nome composto); depois, 178 de 385 e 12 nomes, igual ao banco limpo.
      O `index.db` do Studio do Levi já tinha os 50 nomes da AniList.
 
+### Rostos em lote para o enquadramento (14/10)
+
+Motivo: a "Edição rápida" enquadra cada bloco 9:16 no rosto. O detector do
+Dangai (lbpcascade, frontal) achou rosto em 6 de 20 blocos do S4-37; o YOLO de
+anime do motor + a cabeça de reserva acham em 17 de 20. Importar o torch e
+subir a GPU custa ~8 s, então é UM processo para o lote inteiro. Esta mudança
+é só do Studio (não vai ao ancut-hub-engine): nada do corte nem do
+reconhecimento muda.
+
+7. **`app/rostos.py`** (arquivo novo) + **`app/headless.py`**: modo
+   `rostos` (`_rostos()` e uma linha no `main()`, marcados `[Studio]`).
+   - Pedido JSON na 1ª linha do stdin: `itens` (`chave`, `arquivo`,
+     `instantes` em s, `personagens` = quem a frase cita, `candidatos` = quem
+     o índice reconhece no plano), `anime`, `temporada`, `identificar`.
+   - Eventos: `pronto` (modelos no ar), um `rostos` por item (por quadro:
+     caixas `x,y,w,h` em px, `conf`, `tipo` `rosto`|`cabeca`, `personagem`,
+     `sim`, `quem`) e `fim`; erro pelo `failed` de sempre. O stdin fica
+     aberto e o cancelamento é o mesmo do `run` (`_watch_stdin`).
+   - Detecta com os MESMOS pesos do `AnimeFaceDetector`
+     (`_YOLO_REPO/_YOLO_FILE`, cabeça só nos quadros sem rosto, conf 0.4,
+     mínimo de 32 px a 1080p), pegando-os do cache do HuggingFace sem rede
+     primeiro (`local_files_only`). Não mexe em `face_detector.py`.
+   - Identifica só com 2+ rostos no quadro e `candidatos` (conjunto FECHADO:
+     as 2-3 pessoas que o índice vê no plano, nunca o elenco inteiro --
+     contra o elenco inteiro o CLIP trocou o Gen pelo Gozan e marcou um
+     figurante de fundo como Chrome). CLIP ViT-L/14 + protótipos como o
+     pipeline (`build_prototypes`), com os embeddings das fotos lidos do
+     `ref_features.npz` com a MESMA meta do `_feature_meta`; foto sem
+     embedding no cache é calculada e NÃO gravada. O CLIP sobe numa thread
+     logo no começo, em paralelo com o YOLO.
+   - SÓ LEITURA: `Config.load()` sem `ensure_dirs()`/`save()`, o elenco
+     achado por `AnimeFolderStore.franchise_for_name` + `resolve_anime_dir`
+     (o mesmo caminho do modo só-cortar), `FeatureCache` sem `save()`.
+     Conferido no teste: a pasta de dados fica intocada.
+   - Quem chama: `electron/services/montar/rostos-motor.ts` (a decisão do
+     foco, a suavização e a reserva no detector antigo moram lá).
+   - Medido no S4-37 (20 blocos, RTX 5080, `scripts/teste/v-rosto-s437.ts`):
+     rosto em 17/20 (85%) contra 6/20 (30%) do lbpcascade; 15,4 s o lote
+     inteiro identificando (pronto em ~9 s) e 12,4 s só detectando, contra
+     9,5 s do lbpcascade. O custo é quase todo fixo (torch + CUDA): o
+     lbpcascade cresce ~0,5 s por bloco, o motor ~0,1 s.
+
 ## Como o Studio chama
 
 `electron/services/motor.ts`:
@@ -119,7 +161,9 @@ três para levar ao ancut-hub-engine:
   não passa por ele) e o PATH com o ffmpeg do sistema primeiro e o
   ffmpeg-static do app no fim, de reserva.
 - Modos usados: `probe` (versão, GPU, ffmpeg), `parse <arquivo>` e `run`
-  (requisição JSON na 1ª linha do stdin; `{"cmd":"cancel"}` cancela).
+  (requisição JSON na 1ª linha do stdin; `{"cmd":"cancel"}` cancela), e
+  `rostos` (o item 7 acima, chamado por `montar/rostos-motor.ts` com o
+  próprio spawn; log em `<dados>/logs/ultimos-rostos.log`).
 - Log da última análise: `<dados>/logs/ultima-analise.log`.
 
 "Analisar com o AnCut" não usa esta pasta: chama o `CorteCenas.exe --headless`
@@ -182,6 +226,7 @@ normal.
 ## Atualizar a cópia
 
 1. Copiar o ancut-hub-engine novo por cima de `motor/` (sem `.venv`).
-2. Reaplicar as seis mudanças acima (procurar `[Studio]` no diff).
+2. Reaplicar as sete mudanças acima (procurar `[Studio]` no diff; o
+   `app/rostos.py` é só do Studio e fica como está).
 3. Atualizar o commit no topo deste arquivo e no `NOTICE`.
 4. `node out/teste/v-motor.cjs rapido` (ver `scripts/teste/v-motor.ts`).

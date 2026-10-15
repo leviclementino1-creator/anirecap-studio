@@ -40,10 +40,22 @@ import type {
   CandidatosDaFrase,
   CenasGravadas,
   EscolhaDaFrase,
+  EtapaDaMontagem,
   FiltrosDeCandidatos,
   PedidoDeMontagem,
   ProjetoMontado,
 } from './cenas'
+import type {
+  LoteDeRostos,
+  MedidaDoSom,
+  MusicaDaPasta,
+  PedidoDePlanoDeSom,
+  PlanoDeSom,
+  PontoDeGanho,
+  PreferenciasDaEdicaoRapida,
+  RostosDoLote,
+  SfxDaEdicaoRapida,
+} from './edicao-rapida'
 import type {
   AudioDoTake,
   EstimativaDeCusto,
@@ -216,6 +228,19 @@ export const IPC = {
   salvarCenas: 'recap:cenas-salvar',
   encaixarNaVoz: 'recap:cenas-encaixar',
   montarProjeto: 'recap:montar-projeto',
+  /** main -> renderer, EtapaDaMontagem (o que o "Abrir no editor" esta fazendo agora). */
+  montarProgresso: 'recap:montar-progresso',
+
+  // Edicao rapida. Tipos em shared/edicao-rapida.ts. Som (agente A) em
+  // electron/services/som/; rosto pelo motor (agente B) em
+  // electron/services/montar/rostos-motor.ts.
+  listarMusicas: 'som:listar-musicas',
+  escolherMusica: 'som:escolher-musica',
+  registrarMusicaUsada: 'som:registrar-musica',
+  planejarSom: 'som:planejar',
+  sfxDaEdicaoRapida: 'som:sfx-da-edicao-rapida',
+  medirSom: 'som:medir',
+  rostosDosPedacos: 'rostos:pedacos',
 } as const
 
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] as const
@@ -274,6 +299,11 @@ export interface StartRenderArgs {
     gainDb: number
     fadeInSec: number
     fadeOutSec: number
+    /**
+     * Ducking (Edicao rapida): o envelope de ganho em TEMPO DO VIDEO, dB sobre
+     * gainDb, recortado no trecho (trilhaParaMixar). Ausente = volume fixo.
+     */
+    envelope?: readonly PontoDeGanho[]
   }[]
 }
 
@@ -631,6 +661,15 @@ export interface PublicSettings {
   presetsDeCor: Record<string, unknown>[]
   /** Transicoes configuradas e guardadas com nome. Conferidas no renderer. */
   presetsDeTransicao: Record<string, unknown>[]
+  /**
+   * A pasta de musicas da Edicao rapida, CRUA: '' = o padrao
+   * (PASTA_DE_MUSICAS_PADRAO, se existir). So leitura: nada grava nela.
+   */
+  pastaDeMusicas: string
+  /** O caminho de fato, resolvido no main. '' = nenhuma pasta (sem musica). */
+  pastaDeMusicasEfetiva: string
+  /** O que a Edicao rapida faz por padrao e se vem ligada no "Abrir no editor". */
+  edicaoRapidaPadrao: PreferenciasDaEdicaoRapida
 }
 
 export interface SettingsPatch {
@@ -657,6 +696,9 @@ export interface SettingsPatch {
   recentes?: Record<string, unknown>[]
   presetsDeCor?: Record<string, unknown>[]
   presetsDeTransicao?: Record<string, unknown>[]
+  /** '' volta ao padrao. */
+  pastaDeMusicas?: string
+  edicaoRapidaPadrao?: PreferenciasDaEdicaoRapida
 }
 
 /** O resultado do botao "Testar" da chave do Gemini. */
@@ -1245,4 +1287,47 @@ export interface DangaiBridge {
    * encaixadas. O renderer abre pelo openProject de sempre.
    */
   montarProjeto(rascunhoId: string, pedido?: PedidoDeMontagem): Promise<IpcResult<ProjetoMontado>>
+  /** O que a montagem esta fazendo agora ("Rostos e sons...", "Gravando o projeto..."). */
+  onMontarProgresso(listener: (etapa: EtapaDaMontagem) => void): () => void
+
+  // ----------------------------------------------------------- Edicao rapida
+  // Tipos e funcoes puras em shared/edicao-rapida.ts. A action do editor junta
+  // tudo e aplica num set() so (um passo de Ctrl+Z).
+
+  /** As faixas da pasta de musicas (sem medir), com a ultima vez que cada uma entrou num projeto. */
+  listarMusicas(): Promise<IpcResult<MusicaDaPasta[]>>
+  /**
+   * A musica da vez SEM REPETIR entre shorts (musicaSemRepetir sobre o
+   * historico do userData), ja medida (duracao e LUFS). `evitar` = caminhos a
+   * pular agora. null = pasta vazia ou ausente. NAO registra: o historico e da musica que o
+   * projeto TEM ao ser gravado/renderizado (registrarMusicaUsada).
+   */
+  escolherMusica(evitar?: readonly string[]): Promise<IpcResult<MusicaDaPasta | null>>
+  /**
+   * Anota no historico (<userData>/som/musicas-usadas.json) a musica que o
+   * projeto TEM ao ser gravado/renderizado: uma entrada por projeto,
+   * sobrescrita. path null = o projeto ficou sem musica (a entrada sai).
+   */
+  registrarMusicaUsada(path: string | null, projeto?: string | null): Promise<IpcResult<true>>
+  /** Quantos whoosh/impactos a Edicao rapida tem e se sao so os de fabrica (o aviso do passo 4). */
+  sfxDaEdicaoRapida(): Promise<IpcResult<SfxDaEdicaoRapida>>
+  /**
+   * O plano de som: lista e mede os SFX (pasta do app, por tipo pelo nome, com
+   * reserva nos sons que vem com o app), roda planejarSfx e, com `musica`,
+   * escolhe/mede a musica e calcula ganho e ducking (REGRAS_DE_SOM_PADRAO).
+   * Nao grava nada. Vira trilhas com trilhasDoPlanoDeSom.
+   */
+  planejarSom(pedido: PedidoDePlanoDeSom): Promise<IpcResult<PlanoDeSom>>
+  /**
+   * O loudness de um arquivo de audio (BS.1770, com cache no userData) e
+   * quantos canais ele tem. O preview usa para tocar as faixas no MESMO
+   * equilibrio do render: la a narracao vai a -14 LUFS, aqui ela toca crua.
+   */
+  medirSom(path: string): Promise<IpcResult<MedidaDoSom>>
+  /**
+   * O enquadramento de cada pedaco num lote so: o detector YOLO de rosto de
+   * anime do motor (um processo para todos), preferindo o rosto de quem a
+   * frase cita; sem motor, o detector antigo (lbpcascade). Um foco por pedido.
+   */
+  rostosDosPedacos(lote: LoteDeRostos): Promise<IpcResult<RostosDoLote>>
 }

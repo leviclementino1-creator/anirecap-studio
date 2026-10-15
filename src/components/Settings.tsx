@@ -5,6 +5,7 @@ import { useProject } from "@/store/project";
 import { Atalhos } from "./Atalhos";
 import { AjustesDoStudio } from "./gerar/AjustesDoStudio";
 import { AjustesDeVoz } from "./gerar/AjustesDeVoz";
+import { AjustesDaEdicaoRapida } from "./gerar/AjustesDaEdicaoRapida";
 import { useGerar } from "@/store/gerar";
 
 /**
@@ -375,7 +376,7 @@ export function Settings() {
 
               <div className="my-5 h-px bg-line" />
 
-              <label className="mb-1.5 block text-[11px] font-medium text-ink-2">
+              <label id="config-sons" className="mb-1.5 block scroll-mt-2 text-[11px] font-medium text-ink-2">
                 Sons de transicao
               </label>
               <button
@@ -394,10 +395,12 @@ export function Settings() {
                 </span>
               </button>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-                Solte os seus .mp3 ou .wav ai dentro. Eles entram em rodizio,
-                uma transicao sim e outra nao — som em todo corte vira ruido de
-                fundo.
+                Solte os seus .mp3 ou .wav ai dentro. A Edicao rapida escolhe
+                pelo nome: whoosh nas viradas de parte, impact no gancho e no
+                climax. O resto fica em silencio.
               </p>
+
+              <AjustesDaEdicaoRapida settings={settings} onSettings={setSettings} />
 
               <div className="my-5 h-px bg-line" />
 

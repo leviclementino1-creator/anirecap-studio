@@ -54,7 +54,8 @@ import type {
   RoteiroReligado,
 } from '@shared/roteiro'
 import type { AudioDoTake, EstimativaDeCusto, ProgressoDaVoz, VozGerada } from '@shared/voz'
-import type { CandidatosDaFrase, CenasGravadas, ProjetoMontado } from '@shared/cenas'
+import type { CandidatosDaFrase, CenasGravadas, EtapaDaMontagem, ProjetoMontado } from '@shared/cenas'
+import type { MedidaDoSom, MusicaDaPasta, PlanoDeSom, RostosDoLote, SfxDaEdicaoRapida } from '@shared/edicao-rapida'
 
 /**
  * Unica superficie entre renderer e sistema. Tipada por DangaiBridge, entao um
@@ -408,6 +409,24 @@ const bridge: DangaiBridge = {
     ipcRenderer.invoke(IPC.encaixarNaVoz, rascunhoId) as Promise<IpcResult<CenasGravadas>>,
   montarProjeto: (rascunhoId, pedido) =>
     ipcRenderer.invoke(IPC.montarProjeto, rascunhoId, pedido ?? {}) as Promise<IpcResult<ProjetoMontado>>,
+  onMontarProgresso: (listener) => {
+    const handler = (_event: unknown, etapa: EtapaDaMontagem): void => listener(etapa)
+    ipcRenderer.on(IPC.montarProgresso, handler)
+    return () => {
+      ipcRenderer.off(IPC.montarProgresso, handler)
+    }
+  },
+
+  // Edicao rapida
+  listarMusicas: () => ipcRenderer.invoke(IPC.listarMusicas) as Promise<IpcResult<MusicaDaPasta[]>>,
+  escolherMusica: (evitar) =>
+    ipcRenderer.invoke(IPC.escolherMusica, evitar ?? []) as Promise<IpcResult<MusicaDaPasta | null>>,
+  registrarMusicaUsada: (path, projeto) =>
+    ipcRenderer.invoke(IPC.registrarMusicaUsada, path, projeto ?? null) as Promise<IpcResult<true>>,
+  sfxDaEdicaoRapida: () => ipcRenderer.invoke(IPC.sfxDaEdicaoRapida) as Promise<IpcResult<SfxDaEdicaoRapida>>,
+  planejarSom: (pedido) => ipcRenderer.invoke(IPC.planejarSom, pedido) as Promise<IpcResult<PlanoDeSom>>,
+  medirSom: (path) => ipcRenderer.invoke(IPC.medirSom, path) as Promise<IpcResult<MedidaDoSom>>,
+  rostosDosPedacos: (lote) => ipcRenderer.invoke(IPC.rostosDosPedacos, lote) as Promise<IpcResult<RostosDoLote>>,
 }
 
 contextBridge.exposeInMainWorld('dangai', bridge)

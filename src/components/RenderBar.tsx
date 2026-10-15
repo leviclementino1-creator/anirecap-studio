@@ -29,6 +29,9 @@ import {
 } from '@/store/estilo-legenda'
 import { CurvaDaEntradaEditor } from './CurvaDaEntrada'
 import { BotaoDeTransicao } from './BotaoDeTransicao'
+import { BotaoDaEdicaoRapida } from './EdicaoRapida'
+import { ControleDaMusica } from './ControleDaMusica'
+import { useApertoDaBarra } from './aperto-da-barra'
 import { useLayout } from '@/store/layout'
 import { useProject } from '@/store/project'
 import {
@@ -165,9 +168,15 @@ export function RenderBar() {
 
   const isRendering = render !== null
   const canRender = Boolean(audio) && images.length > 0
+  // A barra nao quebra linha: mede e aperta a Edicao rapida e a musica (e, no
+  // limite, o espaco entre os botoes) ate caber. Ver aperto-da-barra.ts.
+  const nomeDaMusica = useProject((s) => s.trilhas.find((t) => t.papel === 'musica')?.fileName ?? '')
+  const aperto = useApertoDaBarra(
+    [isRendering, lastOutput !== null, temSelecao, captionCount > 0, captionsEnabled, formatoLongo, nomeDaMusica, canRender].join('|'),
+  )
 
   return (
-    <div className="flex items-center gap-3">
+    <div ref={aperto.ref} className={`flex items-center ${aperto.nivel >= 5 ? 'gap-1.5' : aperto.nivel >= 4 ? 'gap-2' : 'gap-3'}`}>
       {!isRendering && <Home />}
 
       <button
@@ -175,7 +184,7 @@ export function RenderBar() {
         onClick={togglePlay}
         disabled={!canRender || isRendering}
         aria-label={playing ? 'Pausar' : 'Reproduzir'}
-        className="lift grid size-8 place-items-center rounded-sm border border-line bg-elevated text-ink-2 hover:text-ink disabled:opacity-40"
+        className="lift grid size-8 shrink-0 place-items-center rounded-sm border border-line bg-elevated text-ink-2 hover:text-ink disabled:opacity-40"
       >
         {playing ? <Pause size={14} strokeWidth={1.5} /> : <Play size={14} strokeWidth={1.5} />}
       </button>
@@ -233,7 +242,7 @@ export function RenderBar() {
           ].join(' ')}
         >
           <Pencil size={12} strokeWidth={1.5} />
-          Editar
+          {aperto.nivel < 6 ? 'Editar' : <span className="-ml-1.5 h-[1lh]" />}
         </button>
       )}
 
@@ -253,6 +262,10 @@ export function RenderBar() {
           Bins
         </button>
       )}
+
+      {/* EDICAO RAPIDA e a musica dela, ao lado das Bins: e o som do video. */}
+      {!isRendering && canRender && <BotaoDaEdicaoRapida soIcone={aperto.nivel >= 2} />}
+      {!isRendering && canRender && <ControleDaMusica nivel={aperto.nivel} />}
 
       {captionCount > 0 && !isRendering && !formatoLongo && (
         <button
@@ -287,14 +300,16 @@ export function RenderBar() {
         <button
           type="button"
           onClick={() => void window.dangai.revealFile(lastOutput)}
-          className="lift flex items-center gap-1.5 rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-[11px] text-ink-2 hover:text-ink"
+          aria-label="Abrir pasta"
+          title="Abrir a pasta do video"
+          className="lift flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border border-line bg-elevated px-2.5 py-1.5 text-[11px] text-ink-2 hover:text-ink"
         >
           <FolderOpen size={12} strokeWidth={1.5} />
-          Abrir pasta
+          {aperto.nivel < 5 ? 'Abrir pasta' : <span className="-ml-1.5 h-[1lh]" />}
         </button>
       )}
 
-      <div className="flex-1" />
+      <div ref={aperto.refDoEspaco} className="flex-1" />
 
       {isRendering ? (
         <div className="flex items-center gap-3">
@@ -334,7 +349,7 @@ export function RenderBar() {
             ].join(' ')}
           >
             <Sparkle size={12} strokeWidth={1.5} />
-            Upscale
+            {aperto.nivel < 6 ? 'Upscale' : <span className="-ml-1.5 h-[1lh]" />}
           </button>
 
           <button

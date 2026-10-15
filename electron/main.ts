@@ -15,12 +15,14 @@ import { configureAlinhador } from './services/alinhador'
 import { configureInverter } from './services/inverter'
 import { configureSobreposicao } from './services/sobreposicao'
 import { configureSfx, ensureSfxDir } from './services/sfx'
+import { configurarSom } from './services/som/medir'
 import { configureFontes, ensureFontesDir } from './services/fontes'
 import { configureUpscale, configureUpscaleCache } from './services/upscale'
 import { startUpdater } from './services/updater'
 import { configureWhisper, encerrarWhisper } from './services/whisper'
 import { configureFaces } from './services/faces'
 import { configurarMotor, encerrarMotor } from './services/motor'
+import { encerrarRostosDoMotor } from './services/montar/rostos-motor'
 import { configurarEpisodios } from './services/episodio/indice'
 
 const isDev = !app.isPackaged
@@ -162,6 +164,12 @@ app.whenReady().then(async () => {
       : join(app.getAppPath(), 'assets', 'sfx'),
   })
   ensureSfxDir()
+  // Edicao rapida: cache de medidas e historico de musicas em <userData>/som;
+  // os SFX do app sao a RESERVA quando a pasta dele nao tem um tipo.
+  configurarSom({
+    userData,
+    reservaDeSfx: app.isPackaged ? join(process.resourcesPath, 'sfx') : join(app.getAppPath(), 'assets', 'sfx'),
+  })
 
   // As fontes das legendas seguem o mesmo desenho dos SFX: pasta no userData
   // onde ele larga os arquivos. O app nao vem com fonte nenhuma alem da
@@ -220,6 +228,8 @@ app.whenReady().then(async () => {
 app.on('before-quit', encerrarWhisper)
 // O motor do Gerar recap tambem: torch na GPU nao pode sobrar depois da janela.
 app.on('before-quit', encerrarMotor)
+// E o motor de rostos da Edicao rapida (um processo por lote, com o torch).
+app.on('before-quit', encerrarRostosDoMotor)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

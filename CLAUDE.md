@@ -27,6 +27,22 @@ o caminho inteiro, na ordem decidida pelo Levi em 14/10 (`src/store/gerar-passos
    "Abrir no editor" monta o `.anirecap` (`electron/services/montar/`) em
    `<bibliotecaStudio>/_projetos/` e abre pelo caminho normal do Dangai.
 
+**Edição rápida** (14/10): o botão "Edicao rapida" do editor (e a caixinha
+ligada por padrão ao lado do "Abrir no editor") faz num passo só de Ctrl+Z:
+whoosh nas viradas de parte e impacto no gancho e no clímax (pasta de SFX, pelo
+nome, nivelado por LUFS contra a voz integrada E a frase em volta; com um
+arquivo só de um tipo, ele toca só nas 2 marcas principais, e o passo 4 avisa
+"SFX de fabrica"), música da pasta de músicas (padrão `G:/App Resumo/music`, só
+leitura; sem repetir, histórico em `<userData>/som` com UMA entrada por
+projeto, gravada ao salvar/renderizar, nunca ao aplicar) com ducking pelas
+palavras igual no preview e no render, o rosto pelo motor (`motor/app/rostos.py`,
+modo `rostos` em lote; sem motor, o detector antigo; no editor o recorte 9:16
+do clipe é refeito na hora) e a legenda no estilo salvo dele. O projeto montado
+já nasce com o estilo salvo e com `studio.secoes`. A barra do editor se mede e
+aperta (`aperto-da-barra.ts`) até caber na janela mínima. Alvos medidos: voz
+−14 LUFS, whoosh ~14 LU e impacto ~13 LU abaixo (e ≥ ~12 LU abaixo da voz ali),
+música −36 LUFS sob a voz e −30 nas pausas, nunca acima do arquivo, pico ≤ −1 dBTP.
+
 O projeto montado leva `studio.vozAlinhada`: a guarda de reanálise
 (`src/store/guarda-do-studio.ts`) impede que remover/inserir imagem, soltar
 arquivo ou trocar o roteiro troque o transcript da voz pelo do Whisper.
@@ -77,9 +93,10 @@ encerra uma cena.
 | `src/` | renderer: `App.tsx`, `components/`, `hooks/`, `store/` |
 | `src/remotion/` | composições Remotion que geram o vídeo |
 | `electron/` | processo main e `electron/services/` |
-| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha) e `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance) |
+| `shared/` | contrato entre main e renderer: `channels.ts`, `contract.ts`, `project-file.ts`, `plan.ts`, `align.ts`, `rhythm.ts`, `sfx.ts`, `selection.ts`; do Studio: `episodio.ts` (índice do episódio e estado do corte), `roteiro.ts` (eventos, roteiro, rascunho do recap e modo Texto), `voz.ts` (takes da narração, palavras com tempo, custo), `cenas.ts` (escolhas de cena por frase, fita, barrinha), `encaixe.ts` (a cena na duração real da frase: emenda, fala citada, sem relance), `edicao-rapida.ts` (plano de som, ducking, pedidos de rosto) e `loudness.ts` (BS.1770 em JS) |
+| `electron/services/som/` | a Edição rápida no main: `medir.ts` (loudness com cache), `musicas.ts` (pasta e histórico), `planejar.ts` (SFX e música) e `mix.ts` (envelope e limitador do render) |
 | `electron/services/episodio/`, `electron/services/gerar/` | o main do "Gerar recap": passo 1 (índice, `falas.ts`, `corte-fundo.ts`) e passo 2 (prompts, cache de IA, rascunho, `religar.ts` + `prompt-religar.ts`) |
-| `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`) |
+| `electron/services/cenas/`, `electron/services/montar/` | passo 4: `casar.ts` (a escolha de cena por regras, sem IA) e o "Abrir no editor" (pasta, foco, miniaturas e o `.anirecap`; `edicao-rapida.ts` e `rostos-motor.ts` para a Edição rápida) |
 | `electron/services/voz/` | o motor do passo 3: provedores (ElevenLabs, Fish), cache pago, alinhamento (palavras sem pontuação no wav2vec2), conferência pelo som (bordas, palavras suspeitas, fronteira de frase no silêncio), corte de pausas e velocidade, volume (-23 LUFS), emenda de frase regravada, áudio importado, taxa de crédito da conta, takes |
 | `src/components/gerar/`, `src/store/gerar*.ts` | as telas e as stores do assistente (`gerar-passos.ts` = a ordem dos passos; `gerar-cenas.ts` = o passo 4 e as sugestões em segundo plano) |
 | `scripts/` | ícone, SFX, `release.mjs` e testes manuais em `scripts/teste/` |

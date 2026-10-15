@@ -107,6 +107,7 @@ import {
 import { herdarAjustes, reaproveitar } from '@shared/remontar'
 import { retemporizar } from '@shared/legendas'
 import { abrirEspaco, removerCena, repararMetadesDeBaixo } from '@shared/indices'
+import { trilhaParaMixar } from '@shared/edicao-rapida'
 import {
   juntarComOProximo,
   separarTrecho as separarPedacos,
@@ -124,6 +125,9 @@ import {
 } from '@shared/trecho'
 import { semSujar } from './quiet'
 import { frasesReescritas, semGuarda, tirarImagemSemReanalise, vozDoStudio } from './guarda-do-studio'
+import type { ConfigDaEdicaoRapida, ResumoDaEdicaoRapida } from '@shared/edicao-rapida'
+import { prepararEdicaoRapida, registrarMusicaDoProjeto, soOQueMuda, type OpcoesDaEdicaoRapida } from './edicao-rapida'
+import { trocaQueNaoViraPadrao } from './troca-de-estilo'
 
 /** Estados da interface. Existem tres, e nao mais que tres. */
 export type Phase = 'empty' | 'editing' | 'rendering'
@@ -632,6 +636,12 @@ export interface ProjectState {
    * e a cama de musica viram clipes. Roda ao abrir o projeto.
    */
   migrarSonsAntigos: () => Promise<void>
+  /**
+   * EDICAO RAPIDA (14/10): SFX, musica com ducking, rosto pelo motor e o estilo
+   * salvo da legenda, num set() so -- UM passo de Ctrl+Z. O trabalho mora em
+   * ./edicao-rapida.ts. null = nada rodou (sem plano, ou outra coisa ocupada).
+   */
+  edicaoRapida: (config: ConfigDaEdicaoRapida, opcoes?: OpcoesDaEdicaoRapida) => Promise<ResumoDaEdicaoRapida | null>
   /**
    * Refaz as legendas que ele NAO editou, pelas regras de agora. O projeto
    * guarda as legendas prontas; sem isto, uma regra corrigida (como o teto de
@@ -3744,6 +3754,28 @@ export const useProject = create<ProjectState>((set, get) => ({
     }))
   },
 
+  edicaoRapida: async (config, opcoes = {}) => {
+    const antes = get()
+    if (!antes.audio || !antes.plan || antes.images.length === 0 || antes.busy !== null) return null
+    set({ busy: 'Edicao rapida...', error: null })
+    try {
+      // Todo o assincrono ANTES: o projeto so muda no set() de baixo.
+      const preparo = await prepararEdicaoRapida(antes, config, opcoes, { onda: ondaDoTrecho })
+      // Outro projeto aberto no meio: o que foi preparado nao e dele.
+      if (get().audio?.path !== antes.audio.path) return null
+      // So o que muda de verdade: patch vazio = nenhum passo de Ctrl+Z (o resumo nao oferece Desfazer).
+      const patch = soOQueMuda(preparo.aplicar(get()), get())
+      // O estilo salvo entrando (e o Ctrl+Z tirando) nao e ajuste dele: nao vira padrao.
+      trocaQueNaoViraPadrao(get(), { ...get(), ...patch })
+      const aplicou = Object.keys(patch).length > 0
+      if (aplicou) set({ ...patch, projectDirty: true })
+      // A musica entra no historico ao SALVAR/RENDERIZAR (registrarMusicaDoProjeto), nao aqui.
+      return { ...preparo.resumo, aplicou }
+    } finally {
+      if (get().busy === 'Edicao rapida...') set({ busy: null })
+    }
+  },
+
   refreshSfxManual: async () => {
     const atuais = get().sfxManual
     if (atuais.length === 0) return
@@ -4304,17 +4336,11 @@ export const useProject = create<ProjectState>((set, get) => ({
        */
       sfxCues: [],
       music: null,
+      // trilhaParaMixar: o de sempre e, no trecho com ducking (Edicao rapida),
+      // o envelope pelas palavras -- a mesma conta do preview.
       trilhas: get()
         .trilhas.filter((t) => !get().faixasMudas.audio.includes(t.faixa))
-        .map((t) => ({
-        path: t.path,
-        at: t.at,
-        inicioSec: t.inicioSec,
-        duracaoSec: duracaoDoTrecho(t),
-        gainDb: t.gainDb,
-        fadeInSec: t.fadeInSec,
-        fadeOutSec: t.fadeOutSec,
-      })),
+        .map((t) => trilhaParaMixar(t, get().transcript?.words ?? [], audio.durationSec)),
     })
 
     if (!result.ok) {
@@ -4327,6 +4353,8 @@ export const useProject = create<ProjectState>((set, get) => ({
       set({ render: null })
       return null
     }
+    // Entregou: a musica que o video TEM entra no historico de "ja usada".
+    registrarMusicaDoProjeto(get())
     return result.value
   },
 
@@ -4674,6 +4702,8 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (result.value === null) return
 
     get().markSaved(result.value)
+    // Gravou: a musica que o projeto TEM entra no historico de "ja usada".
+    registrarMusicaDoProjeto(get())
   },
 
   openProject: async (path) => {
@@ -4685,13 +4715,19 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (result.value === null) return
 
     await applyProjectFile(set, result.value.file, result.value.path, false)
-    get().refazerLegendasNaoEditadas()
     // O projeto guarda so o NOME da fonte; e esta leitura que reencontra a URL
     // dela na pasta -- ou derruba a escolha, se o arquivo nao estiver mais la.
-    await get().refreshFontes()
-    await get().refreshSfxManual()
-    await get().refreshTrilhas()
-    await get().refreshSobreposicoes()
+    // Ainda e abrir (sem passo de Ctrl+Z), e as legendas refeitas vem DEPOIS:
+    // o passo delas fotografava as faixas de audio ainda sem url e sem onda, e
+    // o primeiro Ctrl+Z depois de abrir as deixava mudas (a Edicao rapida poe
+    // trilhas em todo projeto montado).
+    await semSujar(async () => {
+      await get().refreshFontes()
+      await get().refreshSfxManual()
+      await get().refreshTrilhas()
+      await get().refreshSobreposicoes()
+    })
+    get().refazerLegendasNaoEditadas()
     await get().migrarSonsAntigos()
   },
 
@@ -4715,12 +4751,14 @@ export const useProject = create<ProjectState>((set, get) => ({
     // save de verdade. Marcar limpo faria o app dizer que nao ha nada a gravar
     // justamente sobre o trabalho que quase se perdeu.
     await applyProjectFile(set, result.value.file, result.value.path, true)
-    get().refazerLegendasNaoEditadas()
     // Mesmo motivo do openProject: a fonte volta pelo nome e precisa da URL.
-    await get().refreshFontes()
-    await get().refreshSfxManual()
-    await get().refreshTrilhas()
-    await get().refreshSobreposicoes()
+    await semSujar(async () => {
+      await get().refreshFontes()
+      await get().refreshSfxManual()
+      await get().refreshTrilhas()
+      await get().refreshSobreposicoes()
+    })
+    get().refazerLegendasNaoEditadas()
     await get().migrarSonsAntigos()
   },
 

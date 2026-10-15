@@ -25,6 +25,7 @@ import { dicaDoAtalho } from '@/store/atalhos'
 import { useGerar } from '@/store/gerar'
 import { useProject } from '@/store/project'
 import { desfazer, podeDesfazer, podeRefazer, refazer } from '@/store/undo'
+import { rodarEdicaoRapida, useDicaDaEdicaoRapida } from './EdicaoRapida'
 
 interface Command {
   id: string
@@ -182,6 +183,8 @@ function useCommands(): Command[] {
   const pendentes = useProject((s) => s.queue.filter((item) => item.status === 'pendente').length)
   const transcriptText = useProject((s) => s.transcript?.text ?? '')
   const gerarRodando = useGerar((s) => s.job !== null || s.fase === 'indexando')
+  const sfxManual = useProject((s) => s.sfxManual.length)
+  const dicaDaEdicao = useDicaDaEdicaoRapida()
 
   const pronto = Boolean(audio) && imageCount > 0
   const temTexto = (script?.trim().length ?? 0) >= 40 || transcriptText.trim().length >= 40
@@ -278,10 +281,22 @@ function useCommands(): Command[] {
       {
         id: 'sfx',
         label: sfxEnabled ? 'Mutar SFX' : 'Ativar SFX',
-        hint: sfxCount > 0 ? `${sfxCount}` : 'nenhum',
+        // O SFX antigo do Dangai so toca os sons postos a mao (sfxManual); o
+        // numero de antes sugeria sons que ele nao poe mais (o render manda
+        // sfxCues vazio). Os sons automaticos agora sao os da Edicao rapida.
+        hint: sfxManual > 0 ? `${sfxManual} postos a mao` : 'so os postos a mao',
         icon: Volume2,
         disabled: sfxCount === 0,
         run: () => store().toggleSfx(),
+      },
+      // A Edicao rapida (14/10): o mesmo botao da barra, achavel pelo Ctrl+K.
+      {
+        id: 'edicao-rapida',
+        label: 'Edicao rapida',
+        hint: dicaDaEdicao.nada ? 'nada ligado (Configuracoes)' : dicaDaEdicao.ligadas,
+        icon: WandSparkles,
+        disabled: !pronto || rendering || dicaDaEdicao.nada,
+        run: () => void rodarEdicaoRapida(),
       },
       {
         id: 'save',
@@ -378,5 +393,8 @@ function useCommands(): Command[] {
     pendentes,
     temTexto,
     gerarRodando,
+    sfxManual,
+    dicaDaEdicao.nada,
+    dicaDaEdicao.ligadas,
   ])
 }

@@ -32,6 +32,15 @@ import { useGerar } from '@/store/gerar'
 import { VIDEO_FPS } from '@shared/contract'
 import { semExtensaoDeProjeto } from '@shared/project-file'
 
+/**
+ * Deslizante, caixinha e botao nao tem texto para desfazer: depois de arrastar
+ * o volume da musica (o foco fica no range), o Ctrl+Z e do projeto. As teclas
+ * soltas (setas) continuam do deslizante.
+ */
+function semTexto(alvo: EventTarget | null): boolean {
+  return alvo instanceof HTMLInputElement && ['range', 'checkbox', 'radio', 'button', 'color'].includes(alvo.type)
+}
+
 /** O foco esta num lugar onde o proprio campo trata o teclado. */
 function editando(alvo: EventTarget | null): boolean {
   if (!(alvo instanceof HTMLElement)) return false
@@ -244,7 +253,7 @@ export function App() {
        */
       if (editando(event.target)) {
         if (ehTeclaSolta(combo)) return
-        if (acao === 'desfazer' || acao === 'refazer') return
+        if ((acao === 'desfazer' || acao === 'refazer') && !semTexto(event.target)) return
       }
 
       /*

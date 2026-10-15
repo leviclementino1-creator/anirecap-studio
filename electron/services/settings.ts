@@ -1,8 +1,14 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import type { VozPadrao } from '@shared/channels'
+import {
+  PASTA_DE_MUSICAS_PADRAO,
+  PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO,
+  preferenciasDaEdicaoRapidaSchema,
+  type PreferenciasDaEdicaoRapida,
+} from '@shared/edicao-rapida'
 
 /**
  * Guarda tres campos em um JSON no userData.
@@ -111,6 +117,14 @@ export interface Settings {
   presetsDeCor: Record<string, unknown>[]
   /** Transicoes configuradas e guardadas com nome. Conferidas no renderer. */
   presetsDeTransicao: Record<string, unknown>[]
+  /**
+   * Edicao rapida: a pasta de musicas. Vazio = PASTA_DE_MUSICAS_PADRAO quando
+   * existe (ver pastaDeMusicasEfetiva). SO LEITURA: o historico de "ja usada"
+   * mora no userData, nunca la.
+   */
+  pastaDeMusicas: string
+  /** Edicao rapida: o que ela faz por padrao e se vem ligada no "Abrir no editor". */
+  edicaoRapidaPadrao: PreferenciasDaEdicaoRapida
 }
 
 const DEFAULTS: Settings = {
@@ -135,6 +149,8 @@ const DEFAULTS: Settings = {
   recentes: [],
   presetsDeCor: [],
   presetsDeTransicao: [],
+  pastaDeMusicas: '',
+  edicaoRapidaPadrao: PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO,
 }
 
 let filePath: string | null = null
@@ -327,9 +343,21 @@ export function pastaDaBibliotecaStudio(): string {
   return escolhida || join(pastaDeDocumentos(), 'AniRecap Studio', 'Biblioteca')
 }
 
+/**
+ * A pasta de musicas da Edicao rapida, ja resolvida: a escolhida (se existe) ou
+ * PASTA_DE_MUSICAS_PADRAO (se existe). '' = nenhuma: a Edicao rapida segue sem
+ * musica e avisa. So leitura -- quem lista nunca grava nela.
+ */
+export function pastaDeMusicasEfetiva(): string {
+  const escolhida = getSettings().pastaDeMusicas
+  if (escolhida) return existsSync(escolhida) ? escolhida : ''
+  return existsSync(PASTA_DE_MUSICAS_PADRAO) ? PASTA_DE_MUSICAS_PADRAO : ''
+}
+
 /** A interface nunca recebe a chave inteira -- so o suficiente para reconhecer. */
 export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
   bibliotecaStudioEfetiva: string
+  pastaDeMusicasEfetiva: string
   hasApiKey: boolean
   apiKeyHint: string
   hasGeminiKey: boolean
@@ -360,6 +388,9 @@ export function getSettingsForRenderer(): Omit<Settings, CampoDeChave> & {
     recentes: settings.recentes,
     presetsDeCor: settings.presetsDeCor,
     presetsDeTransicao: settings.presetsDeTransicao,
+    pastaDeMusicas: settings.pastaDeMusicas,
+    pastaDeMusicasEfetiva: pastaDeMusicasEfetiva(),
+    edicaoRapidaPadrao: settings.edicaoRapidaPadrao,
     hasApiKey: key.length > 0,
     apiKeyHint: dicaDaChave(key),
     hasGeminiKey: settings.geminiApiKey.length > 0,
@@ -438,6 +469,11 @@ function coerce(raw: unknown): Settings {
           .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null)
           .slice(0, 50)
       : [],
+    pastaDeMusicas: typeof value['pastaDeMusicas'] === 'string' ? value['pastaDeMusicas'].trim() : '',
+    // .catch em cada campo do schema: valor estranho volta ao padrao sem levar os outros.
+    edicaoRapidaPadrao: preferenciasDaEdicaoRapidaSchema
+      .catch(PREFERENCIAS_DA_EDICAO_RAPIDA_PADRAO)
+      .parse(value['edicaoRapidaPadrao'] ?? {}),
   }
 }
 

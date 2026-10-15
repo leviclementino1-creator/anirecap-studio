@@ -29,3 +29,4 @@ motor/models/
 motor/Output/
 __pycache__/
 *.pyc
+motor/python/

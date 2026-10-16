@@ -13,6 +13,8 @@ import {
   ehProjetoDoDangai,
   projectFileSchema,
   PROJECT_FILE_VERSION,
+  VERSAO_MAIS_NOVA_QUE_ABRE,
+  versaoParaGravar,
   type FileReference,
   type OpenedProject,
   type ProjectFile,
@@ -106,7 +108,7 @@ export function saveProjectFile(path: string, file: ProjectFile): void {
   // arquivo esta indo. "Salvar como" numa outra pasta reescreve todos eles.
   const gravado: ProjectFile = {
     ...file,
-    version: PROJECT_FILE_VERSION,
+    version: versaoParaGravar(file),
     savedAt: new Date().toISOString(),
     audio: withRel(file.audio, base),
     subtitle: file.subtitle ? withRel(file.subtitle, base) : null,
@@ -166,7 +168,7 @@ export function writeAutosave(file: ProjectFile, projectPath: string | null): vo
   // faz sentido para algo guardado no userData.
   const conteudo = {
     projectPath,
-    file: { ...file, version: PROJECT_FILE_VERSION },
+    file: { ...file, version: versaoParaGravar(file) },
   }
   writeAtomic(autosavePath, JSON.stringify(conteudo, null, 2))
 }
@@ -275,7 +277,7 @@ function parse(raw: string, nome: string): ProjectFile {
    * Recusar e a unica saida que nao perde nada.
    */
   const versao = (json as { version?: unknown } | null)?.version
-  if (typeof versao === 'number' && versao > PROJECT_FILE_VERSION) {
+  if (typeof versao === 'number' && versao > VERSAO_MAIS_NOVA_QUE_ABRE) {
     // Um .dangai do futuro nao se resolve atualizando o Studio: o formato novo
     // e do Dangai, e so ele abre ate o Studio aprender. Dizer "atualize" ai
     // mandaria o usuario esperar uma versao que nao muda nada.

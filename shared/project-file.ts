@@ -46,6 +46,26 @@ import { papelDaSecaoSchema } from './roteiro'
  */
 
 export const PROJECT_FILE_VERSION = 1
+/**
+ * A versao 2 e a do Dangai com modulos (fase 0, faahpla/dangai 1c10e5e): o
+ * MESMO formato, mais `modulos` na raiz, nos trechos e nas sobreposicoes. Ele
+ * so grava 2 quando ha dado de modulo. O Studio abre a 2 (o `modulos` passa
+ * como campo desconhecido e volta intacto) e grava 2 nesse mesmo caso, para o
+ * arquivo nao "voltar" de versao ao passar por aqui.
+ */
+export const VERSAO_MAIS_NOVA_QUE_ABRE = 2
+
+function temDadosDeModulo(m: unknown): boolean {
+  return typeof m === 'object' && m !== null && Object.keys(m).length > 0
+}
+
+/** A versao com que o arquivo e gravado: 2 so quando ha dado de modulo (a regra do Dangai). */
+export function versaoParaGravar(file: object): number {
+  const f = file as { modulos?: unknown; trilhas?: readonly unknown[]; sobreposicoes?: readonly unknown[] }
+  const doItem = (x: unknown): boolean => temDadosDeModulo((x as { modulos?: unknown } | null)?.modulos)
+  const tem = temDadosDeModulo(f.modulos) || (f.trilhas ?? []).some(doItem) || (f.sobreposicoes ?? []).some(doItem)
+  return tem ? VERSAO_MAIS_NOVA_QUE_ABRE : PROJECT_FILE_VERSION
+}
 
 /**
  * O Studio grava .anirecap e abre tambem o .dangai.

@@ -15,7 +15,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { extrasDoProjeto, projectFileSchema } from '@shared/project-file'
+import { extrasDoProjeto, projectFileSchema, versaoParaGravar } from '@shared/project-file'
 
 let falhas = 0
 function conferir(nome: string, ok: boolean, detalhe = ''): void {
@@ -58,6 +58,16 @@ function minimo(): Record<string, unknown> {
     conferir('extrasDoProjeto devolve so o desconhecido', JSON.stringify(Object.keys(extras)) === '["modulos"]', Object.keys(extras).join(','))
     conferir('o valor volta igual', JSON.stringify(extras['modulos']) === JSON.stringify(bruto['modulos']))
   }
+}
+
+// 1b: a versao 2 do Dangai (fase 0): abre e volta como 2; sem modulo, 1
+{
+  const v2 = { ...minimo(), version: 2, modulos: { recap: { versao: 1 } } }
+  conferir('arquivo v2 do Dangai passa no schema', projectFileSchema.safeParse(v2).success)
+  conferir('com modulos na raiz grava 2', versaoParaGravar(v2) === 2)
+  conferir('com modulos so num trecho grava 2', versaoParaGravar({ ...minimo(), trilhas: [{ modulos: { recap: {} , x: 1 } }] }) === 2)
+  conferir('modulos vazio grava 1', versaoParaGravar({ ...minimo(), modulos: {} }) === 1)
+  conferir('sem modulos grava 1', versaoParaGravar(minimo()) === 1)
 }
 
 // 2: itens com campos novos (pega uma sobreposicao e um trecho reais do schema, se existirem no projeto do Levi)

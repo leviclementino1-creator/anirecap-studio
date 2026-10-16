@@ -76,6 +76,21 @@ export async function importarAudioDoLevi(
   const hash = await hashDoArquivo(pedido.caminho)
   const pcm = await decodificar(pedido.caminho, null, signal)
   if (duracaoDoPcm(pcm) < 1) throw new Error('Esse audio e curto demais para este roteiro.')
+  /*
+   * A DURACAO TEM QUE CABER NO ROTEIRO (v0.1.1). Barato e antes do Whisper: um
+   * episodio inteiro ou uma musica de 4 min nao passam 20 min no alinhador para
+   * so entao dar errado. Folgado de proposito -- 0,8 palavra/s (lentissimo) + 30
+   * s de pausa no maximo, 7 palavras/s no minimo -- porque o corte de pausas
+   * cuida do resto e quem grava a propria voz fala no ritmo que quiser.
+   */
+  const palavras = frases.reduce((n, f) => n + f.palavras.length, 0)
+  const duracao = duracaoDoPcm(pcm)
+  if (duracao > palavras / 0.8 + 30) {
+    throw new Error(
+      `Esse audio tem ${Math.round(duracao / 60)} min, e o roteiro da uns ${Math.round(palavras / 2.84)} s. Confira o arquivo.`,
+    )
+  }
+  if (duracao < palavras / 7) throw new Error('Esse audio e curto demais para este roteiro.')
   const bruto = gravarWavEnderecado(pastaDaVoz(rascunhoId), 'bruto', pcm)
 
   const chave = chaveDoImportado(hash, frases)

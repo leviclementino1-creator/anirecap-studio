@@ -358,10 +358,30 @@ export const projectFileSchema = z.object({
    * disto reabre sem selecao, que e exatamente como ele foi salvo.
    */
   biblioteca: bibliotecaSchema,
-  /** Projeto nascido do Gerar recap (ver origemDoStudioSchema). Ausente = do jeito do Dangai. */
-  studio: origemDoStudioSchema.optional(),
+  /**
+   * Projeto nascido do Gerar recap (ver origemDoStudioSchema). Ausente = do jeito do Dangai.
+   * Invalido (regex de uma versao mais nova) = sem origem, em vez de recusar o
+   * projeto inteiro como corrompido.
+   */
+  studio: origemDoStudioSchema.optional().catch(undefined),
 })
+  /*
+   * GUARDA O QUE NAO CONHECE (v0.1.1): campo de raiz de outra versao (o
+   * `modulos` do Dangai, o que vier depois) sai do schema intacto, e o store
+   * devolve ao salvar (extrasDoArquivo em src/store/project.ts).
+   */
+  .loose()
 export type ProjectFile = z.infer<typeof projectFileSchema>
+
+/** Os campos de raiz que esta versao entende; o resto e "extra" e so e guardado. */
+export const CAMPOS_DO_PROJETO: ReadonlySet<string> = new Set(Object.keys(projectFileSchema.shape))
+
+/** O que veio no arquivo e esta versao nao conhece, para voltar intacto no save. */
+export function extrasDoProjeto(file: Record<string, unknown>): Record<string, unknown> {
+  const extras: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(file)) if (!CAMPOS_DO_PROJETO.has(k)) extras[k] = v
+  return extras
+}
 
 /**
  * O autosave embrulha o projeto para carregar tambem de onde ele veio.

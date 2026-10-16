@@ -99,6 +99,7 @@ import {
 import type { CaptionBlock } from '@shared/contract'
 import {
   ehProjetoDoDangai,
+  extrasDoProjeto,
   PROJECT_FILE_VERSION,
   semExtensaoDeProjeto,
   type OrigemDoStudio,
@@ -228,6 +229,12 @@ export interface ProjectState {
    * transcript da voz pelo do Whisper (ver ./guarda-do-studio.ts).
    */
   studio: OrigemDoStudio | null
+  /**
+   * Campos de raiz que o arquivo trouxe e esta versao nao conhece (o `modulos`
+   * do Dangai, o que vier depois). So guardados: voltam intactos no save, para
+   * um projeto que passe pelos dois apps nao perder nada (v0.1.1).
+   */
+  extrasDoArquivo: Record<string, unknown>
   /**
    * Texto do gancho e do fechamento, e por quantos segundos cada um fica.
    *
@@ -1170,6 +1177,7 @@ export const useProject = create<ProjectState>((set, get) => ({
   settingsOpen: false,
   planEdited: false,
   studio: null,
+  extrasDoArquivo: {},
   hookText: '',
   hookSec: HOOK_SEC_DEFAULT,
   endText: '',
@@ -2649,6 +2657,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       audio: audio.value,
       // Video novo, narracao nova: nada da voz do Studio vale aqui.
       studio: null,
+      extrasDoArquivo: {},
       playhead: 0,
       // Legenda ligada mesmo no Long form: e para isso que ele trouxe o video.
       captionsEnabled: true,
@@ -4525,6 +4534,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       lastOutput: null,
       planEdited: false,
       studio: null,
+      extrasDoArquivo: {},
       automountBlocks: null,
       automountMode: null,
       automountSeries: null,
@@ -4587,6 +4597,8 @@ export const useProject = create<ProjectState>((set, get) => ({
     // que recalcula todos na hora de gravar. "Salvar como" em outra pasta
     // reescreve os caminhos relativos sem o renderer participar.
     return {
+      // Primeiro o que esta versao nao conhece; os campos dela vem por cima.
+      ...state.extrasDoArquivo,
       version: PROJECT_FILE_VERSION,
       savedAt: new Date().toISOString(),
       formato: state.formato,
@@ -4954,6 +4966,7 @@ async function applyProjectFile(
       planOrigin: file.planOrigin,
       planEdited: file.planEdited,
       studio: file.studio ?? null,
+      extrasDoArquivo: extrasDoProjeto(file),
       transcript: file.transcript,
       captions: file.captions,
       captionsEdited: file.captionsEdited,

@@ -1421,7 +1421,9 @@ export const sobreposicaoSchema = z.object({
    * Edicao rapida: quem pos o clipe (ver papelDaSobreposicaoSchema). Opcional
    * SEM default: projeto antigo abre e grava igual, byte a byte.
    */
-  papel: papelDaSobreposicaoSchema.optional(),
+  // Papel que esta versao nao conhece (de um Studio mais novo) vira "sem papel"
+  // em vez de derrubar o projeto inteiro como corrompido.
+  papel: papelDaSobreposicaoSchema.optional().catch(undefined),
   /**
    * Edicao rapida: o look que ela POS nesta camada (papel 'cor'). `cor`
    * diferente dele = ele mexeu, e rodar de novo deixa a camada como esta.
@@ -1429,6 +1431,13 @@ export const sobreposicaoSchema = z.object({
    */
   corOriginal: ajusteDeCorSchema.optional(),
 })
+  /*
+   * GUARDA O QUE NAO CONHECE (v0.1.1). O Dangai 1.67 grava campos novos na
+   * sobreposicao (chaves, curvaDasChaves, pivo) e o modulo do recap la dentro
+   * vai gravar os dele. O zod descarta chave desconhecida por padrao: abrir e
+   * salvar aqui apagaria os quadros-chave em silencio.
+   */
+  .loose()
 export type SobreposicaoSalva = z.infer<typeof sobreposicaoSchema>
 
 export const renderPropsSchema = z.object({
@@ -1838,7 +1847,8 @@ export const trechoDeAudioSchema = z.object({
    * Edicao rapida: quem pos o trecho (ver papelDaTrilhaSchema). Opcional SEM
    * default: projeto antigo abre e grava igual, byte a byte.
    */
-  papel: papelDaTrilhaSchema.optional(),
+  // Papel desconhecido vira "sem papel" em vez de derrubar o projeto (ver a sobreposicao).
+  papel: papelDaTrilhaSchema.optional().catch(undefined),
   /**
    * Ducking deste trecho pela voz (ver duckingSchema). null/ausente = volume
    * fixo, como sempre. O envelope e em TEMPO DO VIDEO (segue a narracao, nao o
@@ -1846,6 +1856,8 @@ export const trechoDeAudioSchema = z.object({
    */
   ducking: duckingSchema.nullable().optional(),
 })
+  // Guarda o que nao conhece, pelo mesmo motivo da sobreposicao.
+  .loose()
 export type TrechoDeAudioSalvo = z.infer<typeof trechoDeAudioSchema>
 
 /** Quanto o trecho toca de fato: o pedaco escolhido, ou ate o fim do arquivo. */

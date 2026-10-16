@@ -1,7 +1,7 @@
 {
   "name": "anirecap-studio",
   "productName": "AniRecap Studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Recap de anime com IA: do episodio ao short editavel. Base no Dangai.",
   "author": "Levi Clementino",

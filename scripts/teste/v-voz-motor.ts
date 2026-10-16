@@ -993,7 +993,14 @@ async function testes(): Promise<void> {
   ok('importar o mesmo audio de novo: alinhamento guardado (sem Whisper)', Date.now() - t9b < 8000 && g9b.take.bruto.arquivo === t9.bruto.arquivo, `${((Date.now() - t9b) / 1000).toFixed(1)} s`)
   conferirInvariantes(id9, g9b.take, 'importado-1.1')
   // Audio que nao e deste roteiro.
-  const outro = falarNoWindows('Hoje vamos falar de receitas de bolo de cenoura com cobertura de chocolate e dicas de forno.')
+  // Curto demais para o roteiro: recusa antes do Whisper (v0.1.1).
+  const curto = falarNoWindows('Hoje vamos falar de receitas de bolo de cenoura com cobertura de chocolate e dicas de forno.')
+  const erroCurto = await erroDe(() => importarAudio(id9, { caminho: curto, velocidade: 1, cortarPausas: false, pedidoId: pid() }, progresso))
+  ok('audio curto demais para o roteiro: recusa pela duracao', erroCurto.includes('curto demais'), erroCurto)
+  // Outro texto com duracao parecida: passa da duracao e e o alinhador que recusa.
+  const outro = falarNoWindows(
+    Array.from({ length: 5 }, () => 'Hoje vamos falar de receitas de bolo de cenoura com cobertura de chocolate e dicas de forno.').join(' '),
+  )
   const erro9 = await erroDe(() => importarAudio(id9, { caminho: outro, velocidade: 1, cortarPausas: false, pedidoId: pid() }, progresso))
   ok('audio de outro texto: recusa', erro9.includes('nao parece ser'), erro9)
   {

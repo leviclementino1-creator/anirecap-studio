@@ -28,7 +28,7 @@ o caminho inteiro, na ordem decidida pelo Levi em 14/10 (`src/store/gerar-passos
    palavras), e o aprendido fica entre 0,75x e 1,35x do inicial daquela
    velocidade. O 2,7 fixo ficou só como molde das frases por papel.
 3. **Voz**: ElevenLabs, Fish Audio ou áudio importado; corte de pausas, takes,
-   regravar frase e aprovação, no mesmo rascunho. Duas velocidades (15/10): a
+   regravar frase e aprovação, no mesmo rascunho. Áudio importado que não é o do roteiro é RECUSADO (v0.1.1): duração fora de 7 a 0,8 palavra/s (+30 s), ou o wav2vec2 abaixo de 0,6 com o Whisper discordando (`vereditoDoAlinhamento`, `v-audio-que-nao-bate.ts`). Duas velocidades (15/10): a
    NATIVA (speed do provedor, 0,7–1,2, padrão 1,2 no perfil; muda o áudio, é
    paga) e o "acelerar" do pós (atempo, até 1,25, grátis). A nativa só entra na
    chave do cache quando ≠ 1,0: a chave da 1,0 é a de antes (`v-voz-velocidade.ts`
@@ -105,6 +105,11 @@ encerra uma cena.
   porquê, e textos de interface em ASCII ("Trocar a cena (N opcoes)").
 - Projeto: grava `.anirecap` e abre `.anirecap` e `.dangai`, os dois no formato
   versão 1 (`shared/project-file.ts`). Nunca grava por cima de um `.dangai`.
+  **Guarda o que não conhece** (v0.1.1): a raiz, os trechos de áudio e as
+  sobreposições são `.loose()`, e o store devolve os campos de raiz
+  desconhecidos (`extrasDoArquivo`). Assim um projeto que passe pelo Dangai
+  1.67+ (quadros-chave, `modulos`) não perde nada. `papel` e `studio` inválidos
+  viram "sem" em vez de derrubar o projeto (`v-preservar.ts`).
 - Dados em `%APPDATA%/AniRecap Studio`, que sai do `productName` do
   `package.json` (igual no dev e no instalado). O updater está **ligado**
   (`ATUALIZACAO_LIGADA` em `electron/services/updater.ts`): o app instalado lê

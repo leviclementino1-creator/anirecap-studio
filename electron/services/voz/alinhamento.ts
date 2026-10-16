@@ -25,6 +25,8 @@ import {
 
 /** O limite do LegendAI (transcribe.ts sincronizar). */
 const SCORE_MINIMO = 0.35
+/** Acima disto o wav2vec2 sozinho basta, mesmo com o Whisper discordando (ver alinharPeloAudio). */
+const SCORE_SEGURO = 0.6
 
 export interface ResultadoDoAlinhador {
   casadas: PalavrasCasadas
@@ -73,6 +75,25 @@ export function correrContra<T>(promessa: Promise<T>, signal?: AbortSignal): Pro
   })
 }
 
+/**
+ * A decisao do alinharPeloAudio, pura (testada em scripts/teste/v-audio-que-nao-bate.ts).
+ * 'forcado' = tempos do wav2vec2; 'recusar' = nao e o audio deste roteiro;
+ * 'seguir' = cai nos caminhos de reserva (Whisper grosso, ou wav2vec2 fraco com aviso).
+ */
+export function vereditoDoAlinhamento(s: {
+  temForcado: boolean
+  confianca: number
+  whisperNega: boolean
+  temPeloWhisper: boolean
+  comWhisper: boolean
+}): 'forcado' | 'recusar' | 'seguir' {
+  if (s.temForcado && s.confianca >= SCORE_MINIMO && !(s.comWhisper && s.whisperNega && s.confianca < SCORE_SEGURO)) {
+    return 'forcado'
+  }
+  if (s.whisperNega || (s.comWhisper && !s.temPeloWhisper && s.confianca < SCORE_MINIMO)) return 'recusar'
+  return 'seguir'
+}
+
 export async function alinharPeloAudio(
   caminhoWav: string,
   frases: readonly Pick<FraseParaNarrar, 'fraseId' | 'palavras'>[],
@@ -111,12 +132,31 @@ export async function alinharPeloAudio(
     avisos.push(`Sincronia fina indisponivel (${(err instanceof Error ? err.message : String(err)).slice(0, 80)}).`)
   }
   const pelaIa = forcado ? palavrasDoAlinhador(forcado.tempos, frases) : null
+  const confianca = forcado?.score ?? 0
+  // O Whisper ouviu fala, mas nem metade das palavras e do roteiro.
+  const whisperNega = whisperOuviu && !peloWhisper
 
-  if (pelaIa && forcado && forcado.score >= SCORE_MINIMO) return { casadas: pelaIa, score: forcado.score, avisos }
-  // O Whisper ouviu outra coisa E o alinhador nao reconheceu: nao e este roteiro.
-  if (whisperOuviu && !peloWhisper) {
-    throw new Error('Esse audio nao parece ser a narracao deste roteiro. Confira o arquivo.')
-  }
+  /*
+   * AUDIO QUE NAO E O DO ROTEIRO (v0.1.1, achado por um usuario: importou um
+   * audio nada a ver e o take saiu "aceito com aviso"). Com o Whisper (audio
+   * importado), dois sinais decidem juntos:
+   *   - o wav2vec2 forca o texto no som e SEMPRE devolve tempos; a confianca
+   *     media e que diz se o som era esse texto (>= 0,35 no LegendAI);
+   *   - o Whisper ouve o que foi dito sem saber do roteiro.
+   * Confianca alta (>= 0,6) vale sozinha: o Whisper erra nome e girias. Entre
+   * 0,35 e 0,6, o Whisper tem que concordar. Abaixo de 0,35 sem o Whisper
+   * concordar, recusa (antes passava com um aviso que ninguem le). Sem o
+   * Whisper (TTS, onde o texto e o roteiro por construcao) fica como era.
+   */
+  const veredito = vereditoDoAlinhamento({
+    temForcado: pelaIa !== null && forcado !== null,
+    confianca,
+    whisperNega,
+    temPeloWhisper: peloWhisper !== null,
+    comWhisper: opcoes.whisper,
+  })
+  if (veredito === 'forcado' && pelaIa && forcado) return { casadas: pelaIa, score: forcado.score, avisos }
+  if (veredito === 'recusar') throw new Error('Esse audio nao parece ser a narracao deste roteiro. Confira o arquivo.')
   if (peloWhisper) {
     /*
      * Os tempos do whisper.cpp erram por centenas de ms neste material (t4: 624

@@ -14,6 +14,7 @@ import { classifyFile } from "@shared/channels";
 import { useRecentes } from "@/store/recentes";
 import { FORMATOS, medidasDo, type Formato } from "@shared/contract";
 import { BotaoGerarRecap } from "@/components/gerar/BotaoGerarRecap";
+import { AvisoDoDangai } from "@/components/AvisoDoDangai";
 import { PerguntaDoEpisodio, perguntarSeEpisodio } from "@/components/gerar/PerguntaDoEpisodio";
 
 interface DropzoneProps {
@@ -54,6 +55,7 @@ export function Dropzone({ isDragging }: DropzoneProps) {
         });
       }}
     >
+      <AvisoDoDangai />
       <div className="relative min-h-0 w-full flex-1">
         {/*
           A LINHA DE CIMA, numa linha so: Gerar recap (a funcao principal) na
